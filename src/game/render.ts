@@ -24,6 +24,12 @@ export interface ViewState {
 
 const TPX = 12; // pixels par tuile du terrain pré-rendu
 
+// Matériau commun des coques (cohérence visuelle façon Planetary Annihilation) :
+// métal neutre + panneaux à la couleur de l'équipe + accents lumineux.
+const HULL_DARK = '#272c31';
+const HULL_MID = '#4a525a';
+const HULL_LIGHT = '#5f6a73';
+
 export class Renderer {
   private ctx: CanvasRenderingContext2D;
   private mmCtx: CanvasRenderingContext2D;
@@ -512,6 +518,18 @@ export class Renderer {
       ctx.fillRect(0, 0, W, H);
     }
 
+    // ----- étalonnage : vignettage doux + lumière zénithale (rendu "caméra")
+    const vg = ctx.createRadialGradient(W / 2, H * 0.46, Math.min(W, H) * 0.42, W / 2, H * 0.5, Math.max(W, H) * 0.78);
+    vg.addColorStop(0, 'rgba(0,0,0,0)');
+    vg.addColorStop(1, 'rgba(4,6,10,0.26)');
+    ctx.fillStyle = vg;
+    ctx.fillRect(0, 0, W, H);
+    const tl = ctx.createLinearGradient(0, 0, 0, H);
+    tl.addColorStop(0, 'rgba(255,250,235,0.045)');
+    tl.addColorStop(0.45, 'rgba(0,0,0,0)');
+    ctx.fillStyle = tl;
+    ctx.fillRect(0, 0, W, H);
+
     this.drawMinimap(g, v, dtFrame);
   }
 
@@ -574,13 +592,24 @@ export class Renderer {
     const col = PLAYER_COLORS[u.owner];
 
     if (selected) {
-      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.arc(px, py, (def.radius + 0.26) * z, 0, Math.PI * 2); ctx.stroke();
+      // double anneau : couleur d'équipe + cœur blanc
+      ctx.strokeStyle = col;
+      ctx.globalAlpha = 0.9;
+      ctx.lineWidth = Math.max(2, z * 0.1);
+      ctx.beginPath(); ctx.arc(px, py, (def.radius + 0.3) * z, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(px, py, (def.radius + 0.3) * z, 0, Math.PI * 2); ctx.stroke();
     }
 
     ctx.save();
     ctx.translate(px, py);
+    // ombre au sol douce, commune à toutes les unités terrestres
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath();
+    ctx.ellipse(z * 0.08, z * 0.12, def.radius * 1.2 * z, def.radius * 0.85 * z, 0, 0, Math.PI * 2);
+    ctx.fill();
 
     if (def.armor === 'inf') {
       const r = def.radius * z;
@@ -741,10 +770,16 @@ export class Renderer {
         }
         ctx.fillStyle = 'rgba(0,0,0,0.3)';
         this.rr(ctx, -L / 2 + z * 0.05, -Wd / 2 + z * 0.07, L, Wd, z * 0.1); ctx.fill();
-        ctx.fillStyle = col;
+        ctx.fillStyle = HULL_MID;
         this.rr(ctx, -L / 2, -Wd / 2, L, Wd, z * 0.1); ctx.fill();
+        ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        // capot avant à la couleur de l'équipe
+        ctx.fillStyle = col;
+        this.rr(ctx, L * 0.18, -Wd / 2, L * 0.32, Wd, z * 0.08); ctx.fill();
         ctx.fillStyle = 'rgba(220,235,245,0.85)';
-        ctx.fillRect(L * 0.05, -Wd * 0.32, L * 0.22, Wd * 0.64);
+        ctx.fillRect(L * 0.02, -Wd * 0.32, L * 0.14, Wd * 0.64);
         ctx.strokeStyle = 'rgba(255,255,255,0.7)';
         ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(-L * 0.3, 0); ctx.lineTo(-L * 0.3, -Wd * 0.9); ctx.stroke();
@@ -762,15 +797,15 @@ export class Renderer {
           ctx.beginPath(); ctx.arc(k * L * 0.18, -Wd * 0.37, Math.max(1, Wd * 0.07), 0, Math.PI * 2); ctx.fill();
           ctx.beginPath(); ctx.arc(k * L * 0.18, Wd * 0.37, Math.max(1, Wd * 0.07), 0, Math.PI * 2); ctx.fill();
         }
-        // caisse + glacis avant éclairci
-        ctx.fillStyle = col;
+        // caisse métal neutre + glacis avant à la couleur de l'équipe
+        ctx.fillStyle = HULL_MID;
         this.rr(ctx, -L * 0.46, -Wd * 0.27, L * 0.92, Wd * 0.54, z * 0.07); ctx.fill();
         ctx.strokeStyle = 'rgba(0,0,0,0.4)';
         ctx.lineWidth = 1;
         ctx.stroke();
-        ctx.fillStyle = 'rgba(255,255,255,0.22)';
+        ctx.fillStyle = col;
         ctx.beginPath();
-        ctx.moveTo(L * 0.3, -Wd * 0.27); ctx.lineTo(L * 0.46, 0); ctx.lineTo(L * 0.3, Wd * 0.27);
+        ctx.moveTo(L * 0.22, -Wd * 0.27); ctx.lineTo(L * 0.46, 0); ctx.lineTo(L * 0.22, Wd * 0.27);
         ctx.closePath(); ctx.fill();
         // grilles moteur arrière
         ctx.strokeStyle = 'rgba(0,0,0,0.4)';
@@ -796,10 +831,12 @@ export class Renderer {
         ctx.save();
         ctx.translate(-L * 0.05, 0);
         ctx.rotate(tAng);
-        ctx.fillStyle = 'rgba(0,0,0,0.32)';
+        ctx.fillStyle = HULL_DARK;
         ctx.beginPath(); ctx.arc(0, 0, Wd * 0.31, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = 'rgba(255,255,255,0.32)';
+        ctx.fillStyle = col; // toit de tourelle à la couleur de l'équipe
         ctx.beginPath(); ctx.arc(0, 0, Wd * 0.23, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,255,0.3)';
+        ctx.beginPath(); ctx.arc(-Wd * 0.06, -Wd * 0.06, Wd * 0.09, 0, Math.PI * 2); ctx.fill();
         ctx.strokeStyle = '#e8e8e8';
         ctx.lineWidth = Math.max(2, z * 0.11);
         ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(L * 0.74, 0); ctx.stroke();
@@ -815,8 +852,12 @@ export class Renderer {
         ctx.fillStyle = '#23282c';
         this.rr(ctx, -L / 2, -Wd / 2, L, Wd * 0.2, z * 0.05); ctx.fill();
         this.rr(ctx, -L / 2, Wd / 2 - Wd * 0.2, L, Wd * 0.2, z * 0.05); ctx.fill();
-        ctx.fillStyle = col;
+        ctx.fillStyle = HULL_MID;
         this.rr(ctx, -L * 0.46, -Wd * 0.3, L * 0.92, Wd * 0.6, z * 0.08); ctx.fill();
+        // panneaux latéraux à la couleur de l'équipe
+        ctx.fillStyle = col;
+        this.rr(ctx, -L * 0.42, -Wd * 0.28, L * 0.5, Wd * 0.14, z * 0.04); ctx.fill();
+        this.rr(ctx, -L * 0.42, Wd * 0.14, L * 0.5, Wd * 0.14, z * 0.04); ctx.fill();
         // plaque de stabilisation arrière à rayures de danger
         ctx.fillStyle = '#2c3136';
         ctx.fillRect(-L * 0.64, -Wd * 0.55, L * 0.2, Wd * 1.1);
@@ -843,11 +884,20 @@ export class Renderer {
         const L = def.radius * 2.7 * z, Wd = def.radius * 2.1 * z;
         ctx.fillStyle = 'rgba(0,0,0,0.3)';
         this.rr(ctx, -L / 2 + z * 0.06, -Wd / 2 + z * 0.08, L, Wd, z * 0.12); ctx.fill();
-        ctx.fillStyle = col;
+        ctx.fillStyle = HULL_MID;
         this.rr(ctx, -L / 2, -Wd / 2, L, Wd, z * 0.12); ctx.fill();
         ctx.strokeStyle = 'rgba(0,0,0,0.4)';
         ctx.lineWidth = 1;
         ctx.stroke();
+        // chevron d'équipe sur l'avant industriel
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.moveTo(L * 0.18, -Wd * 0.5);
+        ctx.lineTo(L * 0.34, -Wd * 0.5);
+        ctx.lineTo(L * 0.42, 0);
+        ctx.lineTo(L * 0.34, Wd * 0.5);
+        ctx.lineTo(L * 0.18, Wd * 0.5);
+        ctx.closePath(); ctx.fill();
         ctx.fillStyle = 'rgba(0,0,0,0.18)';
         this.rr(ctx, -L / 2, -Wd / 2, L, Wd * 0.18, z * 0.1); ctx.fill();
         this.rr(ctx, -L / 2, Wd / 2 - Wd * 0.18, L, Wd * 0.18, z * 0.1); ctx.fill();
@@ -886,11 +936,11 @@ export class Renderer {
         ctx.fillStyle = '#1d2126'; // jupes blindées couvrant les chenilles
         this.rr(ctx, -L / 2, -Wd / 2, L, Wd * 0.3, z * 0.05); ctx.fill();
         this.rr(ctx, -L / 2, Wd / 2 - Wd * 0.3, L, Wd * 0.3, z * 0.05); ctx.fill();
-        ctx.fillStyle = col;
+        ctx.fillStyle = HULL_MID;
         this.rr(ctx, -L * 0.48, -Wd * 0.28, L * 0.96, Wd * 0.56, z * 0.06); ctx.fill();
-        ctx.fillStyle = 'rgba(255,255,255,0.18)';
+        ctx.fillStyle = col; // glacis d'équipe
         ctx.beginPath();
-        ctx.moveTo(L * 0.32, -Wd * 0.28); ctx.lineTo(L * 0.48, 0); ctx.lineTo(L * 0.32, Wd * 0.28);
+        ctx.moveTo(L * 0.26, -Wd * 0.28); ctx.lineTo(L * 0.48, 0); ctx.lineTo(L * 0.26, Wd * 0.28);
         ctx.closePath(); ctx.fill();
         let tAng2 = 0;
         if (u.engageId) {
@@ -910,7 +960,7 @@ export class Renderer {
         ctx.rotate(tAng2);
         ctx.fillStyle = '#1d2126';
         this.rr(ctx, -Wd * 0.34, -Wd * 0.3, Wd * 0.68, Wd * 0.6, z * 0.08); ctx.fill();
-        ctx.fillStyle = 'rgba(255,255,255,0.22)';
+        ctx.fillStyle = col; // toit de tourelle d'équipe
         this.rr(ctx, -Wd * 0.22, -Wd * 0.2, Wd * 0.44, Wd * 0.4, z * 0.06); ctx.fill();
         ctx.strokeStyle = '#e8e8e8';
         ctx.lineWidth = Math.max(2, z * 0.1);
@@ -928,14 +978,23 @@ export class Renderer {
         ctx.fillStyle = '#23282c';
         this.rr(ctx, -L / 2, -Wd / 2, L, Wd * 0.22, z * 0.04); ctx.fill();
         this.rr(ctx, -L / 2, Wd / 2 - Wd * 0.22, L, Wd * 0.22, z * 0.04); ctx.fill();
-        // coque anguleuse (pointe avant)
-        ctx.fillStyle = col;
+        // coque anguleuse (pointe avant) en métal neutre
+        ctx.fillStyle = HULL_MID;
         ctx.beginPath();
         ctx.moveTo(-L * 0.46, -Wd * 0.3);
         ctx.lineTo(L * 0.2, -Wd * 0.3);
         ctx.lineTo(L * 0.5, 0);
         ctx.lineTo(L * 0.2, Wd * 0.3);
         ctx.lineTo(-L * 0.46, Wd * 0.3);
+        ctx.closePath(); ctx.fill();
+        // bande dorsale d'équipe
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.moveTo(-L * 0.46, -Wd * 0.08);
+        ctx.lineTo(L * 0.38, -Wd * 0.08);
+        ctx.lineTo(L * 0.5, 0);
+        ctx.lineTo(L * 0.38, Wd * 0.08);
+        ctx.lineTo(-L * 0.46, Wd * 0.08);
         ctx.closePath(); ctx.fill();
         // casemate sombre fixe
         ctx.fillStyle = 'rgba(0,0,0,0.35)';
@@ -965,8 +1024,11 @@ export class Renderer {
         }
         ctx.fillStyle = 'rgba(0,0,0,0.3)';
         this.rr(ctx, -L / 2 + z * 0.06, -Wd / 2 + z * 0.08, L, Wd, z * 0.1); ctx.fill();
-        ctx.fillStyle = col;
+        ctx.fillStyle = HULL_MID;
         this.rr(ctx, -L / 2, -Wd / 2, L, Wd, z * 0.1); ctx.fill();
+        // panneaux avant d'équipe
+        ctx.fillStyle = col;
+        this.rr(ctx, L * 0.26, -Wd * 0.46, L * 0.2, Wd * 0.92, z * 0.05); ctx.fill();
         // plateau tournant + mortier massif
         ctx.fillStyle = '#1d2126';
         ctx.beginPath(); ctx.arc(-L * 0.1, 0, Wd * 0.38, 0, Math.PI * 2); ctx.fill();
@@ -993,8 +1055,12 @@ export class Renderer {
         }
         ctx.fillStyle = 'rgba(0,0,0,0.3)';
         this.rr(ctx, -L / 2 + z * 0.05, -Wd / 2 + z * 0.07, L, Wd, z * 0.1); ctx.fill();
-        ctx.fillStyle = col;
+        ctx.fillStyle = HULL_MID;
         this.rr(ctx, -L / 2, -Wd / 2, L, Wd, z * 0.1); ctx.fill();
+        // bandes d'équipe avant/arrière
+        ctx.fillStyle = col;
+        this.rr(ctx, L * 0.32, -Wd / 2, L * 0.16, Wd, z * 0.05); ctx.fill();
+        this.rr(ctx, -L * 0.48, -Wd / 2, L * 0.16, Wd, z * 0.05); ctx.fill();
         // parabole rotative (animée) + dôme
         const sweep = g.time * 2.4 + u.id;
         ctx.strokeStyle = '#9ad0ff';
@@ -1066,6 +1132,15 @@ export class Renderer {
     ctx.lineWidth = Math.max(1, z * 0.05);
     this.rr(ctx, px + 0.5, py + 0.5, bw - 1, bh - 1, z * 0.09); ctx.stroke();
     ctx.globalAlpha = 1;
+    // feu de statut pulsant à la couleur de l'équipe
+    if (b.built) {
+      ctx.globalAlpha = 0.45 + 0.4 * Math.sin(g.time * 3 + b.id);
+      ctx.fillStyle = col;
+      ctx.beginPath(); ctx.arc(px + bw - z * 0.22, py + bh - z * 0.22, Math.max(2, z * 0.11), 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = 'rgba(255,255,255,0.7)';
+      ctx.beginPath(); ctx.arc(px + bw - z * 0.22, py + bh - z * 0.22, Math.max(1, z * 0.04), 0, Math.PI * 2); ctx.fill();
+    }
 
     // détail par type
     const cx = px + bw / 2, cy = py + bh / 2;
@@ -1476,10 +1551,14 @@ export class Renderer {
 
   private healthBar(ctx: CanvasRenderingContext2D, cx: number, cy: number, w: number, f: number, strong: boolean) {
     f = Math.max(0, Math.min(1, f));
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(cx - w / 2, cy, w, strong ? 4 : 3);
+    const h = strong ? 4 : 3;
+    // cadre sombre arrondi + jauge avec liseré clair
+    ctx.fillStyle = 'rgba(8,10,12,0.8)';
+    this.rr(ctx, cx - w / 2 - 1, cy - 1, w + 2, h + 2, 2); ctx.fill();
     ctx.fillStyle = f > 0.55 ? '#5fd96a' : f > 0.25 ? '#e8c84a' : '#e05a4e';
-    ctx.fillRect(cx - w / 2, cy, w * f, strong ? 4 : 3);
+    if (w * f > 1) { this.rr(ctx, cx - w / 2, cy, w * f, h, 1.5); ctx.fill(); }
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    if (w * f > 1) ctx.fillRect(cx - w / 2, cy, w * f, 1);
   }
 
   // --------------------------------------------------------------- mini-carte
