@@ -2,6 +2,7 @@
 
 // Application : menu principal, écran de jeu (HUD), écran de fin.
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { Game, GameSettings, Building } from '../game/engine';
 import { AIController } from '../game/ai';
 import { Renderer } from '../game/render';
@@ -14,6 +15,9 @@ import {
 import { SPECIAL_MAPS } from '../game/map';
 
 type Screen = 'menu' | 'game' | 'end';
+type InfoKind = 'building' | 'unit' | 'upgrade';
+type InfoOrigin = 'bottom' | 'right';
+type InfoTarget = { kind: InfoKind; id: string; origin: InfoOrigin };
 
 const DIFF_LABELS: Record<Difficulty, string> = { easy: 'Facile', normal: 'Moyen', hard: 'Difficile' };
 
@@ -26,7 +30,10 @@ export default function GameApp() {
     const q = typeof window !== 'undefined' ? window.location.search : '';
     const special = q.includes('special=france') ? 'france' as const
       : q.includes('special=italy') ? 'italy' as const : null;
-    return { sizeId: 'medium', theme: 'temperate', opponents: 1, difficulty: 'normal', dayNight: true, special };
+    // ?seed=N : carte reproductible (tests visuels et debug)
+    const seedMatch = q.match(/seed=(\d+)/);
+    const seed = seedMatch ? parseInt(seedMatch[1], 10) : undefined;
+    return { sizeId: 'medium', theme: 'temperate', opponents: 1, difficulty: 'normal', dayNight: true, special, seed };
   });
   const [endedGame, setEndedGame] = useState<Game | null>(null);
 
@@ -343,6 +350,10 @@ function GameScreen({ settings, onEnd, onQuit }: {
   const [, setTick] = useState(0);
   const [paused, setPaused] = useState(false);
   const [muted, setMuted] = useState(false);
+  const [volume, setVolume] = useState(0.82);
+  const [musicVolume, setMusicVolume] = useState(0.52);
+  const [effectsVolume, setEffectsVolume] = useState(0.9);
+  const [infoTarget, setInfoTarget] = useState<InfoTarget | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current!;
@@ -381,6 +392,9 @@ function GameScreen({ settings, onEnd, onQuit }: {
     const ais: AIController[] = [];
     for (let i = 1; i < game.players.length; i++) ais.push(new AIController(game, i, settings.difficulty));
     const sfx = new Sfx();
+    sfx.setVolume(volume);
+    sfx.setMusicVolume(musicVolume);
+    sfx.setEffectsVolume(effectsVolume);
     sfxRef.current = sfx;
     const controls = new Controls(game, sfx, canvas, mm, () => setTick(t => t + 1));
     controlsRef.current = controls;
@@ -409,6 +423,7 @@ function GameScreen({ settings, onEnd, onQuit }: {
       controls.update(dt);
       const events = game.events.splice(0, game.events.length);
       sfx.handle(events, game.time, (x, y) => game.isVisibleTo(0, x, y));
+      sfx.updateRuntime(game, dt);
       renderer.draw(game, controls.getViewState(), dt);
       if (game.over && !endScheduled) {
         endScheduled = true;
@@ -435,6 +450,8 @@ function GameScreen({ settings, onEnd, onQuit }: {
       window.removeEventListener('resize', resize);
       window.removeEventListener('keydown', keyPause);
       controls.detach();
+      sfx.dispose();
+      if (sfxRef.current === sfx) sfxRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings]);
@@ -447,15 +464,90 @@ function GameScreen({ settings, onEnd, onQuit }: {
     setPaused(pausedRef.current);
   };
   const toggleMute = () => {
-    if (sfxRef.current) { sfxRef.current.muted = !sfxRef.current.muted; setMuted(sfxRef.current.muted); }
+    if (sfxRef.current) {
+      const next = !sfxRef.current.muted;
+      sfxRef.current.setMuted(next);
+      setMuted(next);
+    }
+  };
+  const changeVolume = (value: number) => {
+    setVolume(value);
+    if (sfxRef.current) {
+      sfxRef.current.ensure();
+      sfxRef.current.setVolume(value);
+      if (value > 0 && sfxRef.current.muted) {
+        sfxRef.current.setMuted(false);
+        setMuted(false);
+      }
+    }
+  };
+  const changeMusicVolume = (value: number) => {
+    setMusicVolume(value);
+    if (sfxRef.current) {
+      sfxRef.current.ensure();
+      sfxRef.current.setMusicVolume(value);
+      if (value > 0 && sfxRef.current.muted) {
+        sfxRef.current.setMuted(false);
+        setMuted(false);
+      }
+    }
+  };
+  const changeEffectsVolume = (value: number) => {
+    setEffectsVolume(value);
+    if (sfxRef.current) {
+      sfxRef.current.ensure();
+      sfxRef.current.setEffectsVolume(value);
+      if (value > 0 && sfxRef.current.muted) {
+        sfxRef.current.setMuted(false);
+        setMuted(false);
+      }
+    }
   };
 
   return (
-    <div className="game-root">
+    <div
+      className="game-root"
+      onPointerDown={e => {
+        const el = e.target as HTMLElement;
+        if (!el.closest('.info-popover') && !el.closest('.info-btn')) setInfoTarget(null);
+      }}
+    >
       <canvas ref={canvasRef} className="game-canvas" />
-      {game && controls && <TopBar game={game} paused={paused} muted={muted} onPause={togglePause} onMute={toggleMute} onQuit={onQuit} />}
+      {game && controls && (
+        <TopBar
+          game={game}
+          paused={paused}
+          muted={muted}
+          volume={volume}
+          musicVolume={musicVolume}
+          effectsVolume={effectsVolume}
+          onVolume={changeVolume}
+          onMusicVolume={changeMusicVolume}
+          onEffectsVolume={changeEffectsVolume}
+          onPause={togglePause}
+          onMute={toggleMute}
+          onQuit={onQuit}
+        />
+      )}
       <div className="minimap-wrap"><canvas ref={mmRef} /></div>
-      {game && controls && <BottomBar game={game} controls={controls} refresh={() => setTick(t => t + 1)} />}
+      {game && (
+        <ProductionSidebar
+          game={game}
+          refresh={() => setTick(t => t + 1)}
+          infoTarget={infoTarget}
+          setInfoTarget={setInfoTarget}
+        />
+      )}
+      {game && controls && (
+        <BottomBar
+          game={game}
+          controls={controls}
+          refresh={() => setTick(t => t + 1)}
+          infoTarget={infoTarget}
+          setInfoTarget={setInfoTarget}
+        />
+      )}
+      {infoTarget && <InfoPopover target={infoTarget} />}
       {controls?.placing && (
         <div className="hint-banner">
           Placement : {BUILDINGS[controls.placing].name} — cliquez sur le terrain (près de votre base) · Échap pour annuler
@@ -466,6 +558,9 @@ function GameScreen({ settings, onEnd, onQuit }: {
       )}
       {controls?.escortMode && (
         <div className="hint-banner">Escorte : cliquez sur l’unité alliée à protéger</div>
+      )}
+      {controls?.boxSelectMode && (
+        <div className="hint-banner">Sélection multiple : glissez pour encadrer vos unités</div>
       )}
       {paused && (
         <div className="pause-overlay">
@@ -480,8 +575,14 @@ function GameScreen({ settings, onEnd, onQuit }: {
 
 // ----------------------------------------------------------- barre du haut
 
-function TopBar({ game, paused, muted, onPause, onMute, onQuit }: {
-  game: Game; paused: boolean; muted: boolean;
+function TopBar({
+  game, paused, muted, volume, musicVolume, effectsVolume,
+  onVolume, onMusicVolume, onEffectsVolume, onPause, onMute, onQuit,
+}: {
+  game: Game; paused: boolean; muted: boolean; volume: number; musicVolume: number; effectsVolume: number;
+  onVolume: (value: number) => void;
+  onMusicVolume: (value: number) => void;
+  onEffectsVolume: (value: number) => void;
   onPause: () => void; onMute: () => void; onQuit: () => void;
 }) {
   const p = game.players[0];
@@ -500,6 +601,36 @@ function TopBar({ game, paused, muted, onPause, onMute, onQuit }: {
       <div className="stat hide-mobile">IA : {DIFF_LABELS[game.settings.difficulty]}</div>
       {underAttack && <div className="alert-flash">⚠ ATTAQUE !</div>}
       <div className="spacer" />
+      <label className="volume-ctrl" title="Volume">
+        <span>VOL</span>
+        <input
+          type="range"
+          min="0"
+          max="100"
+          value={Math.round(volume * 100)}
+          onChange={e => onVolume(Number(e.currentTarget.value) / 100)}
+        />
+      </label>
+      <label className="volume-ctrl hide-mobile" title="Musique">
+        <span>MUS</span>
+        <input
+          type="range"
+          min="0"
+          max="100"
+          value={Math.round(musicVolume * 100)}
+          onChange={e => onMusicVolume(Number(e.currentTarget.value) / 100)}
+        />
+      </label>
+      <label className="volume-ctrl hide-mobile" title="Effets">
+        <span>FX</span>
+        <input
+          type="range"
+          min="0"
+          max="100"
+          value={Math.round(effectsVolume * 100)}
+          onChange={e => onEffectsVolume(Number(e.currentTarget.value) / 100)}
+        />
+      </label>
       <button className="icon-btn" onClick={onMute}>{muted ? '🔇' : '🔊'}</button>
       <button className="icon-btn" onClick={onPause}>{paused ? '▶' : 'II'}</button>
       <button className="icon-btn" onClick={onQuit}>✕</button>
@@ -509,43 +640,287 @@ function TopBar({ game, paused, muted, onPause, onMute, onQuit }: {
 
 // ----------------------------------------------------------- barre du bas
 
-function BottomBar({ game, controls, refresh }: { game: Game; controls: Controls; refresh: () => void }) {
+type ProductionCategoryId = 'infantry' | 'vehicles' | 'air';
+
+const BUILDING_INFO: Record<BuildingTypeId, string> = {
+  hq: 'Centre vital de ta base. Protège-le en priorité : s’il tombe, la partie est perdue.',
+  power: 'Produit l’énergie nécessaire aux bâtiments. Construis-en avant d’étendre ta base pour éviter les pénuries.',
+  refinery: 'Transforme le minerai récolté en ressources utilisables. Place-la près des gisements pour accélérer ton économie.',
+  depot: 'Améliore la logistique autour des raffineries. Utile quand ton économie commence à s’étendre.',
+  barracks: 'Produit l’infanterie. Utile pour défendre rapidement, explorer et soutenir tes véhicules.',
+  factory: 'Produit les véhicules terrestres. Indispensable pour créer tanks, artilleries, récolteurs et unités mécaniques.',
+  radar: 'Améliore la vision stratégique et la lecture de la carte. À construire quand tu veux mieux anticiper les attaques.',
+  radarcenter: 'Renforce fortement la vision de ton armée et de tes bâtiments. Excellent pour contrôler la carte en milieu de partie.',
+  airport: 'Produit et réarme les avions. Utilise-le pour reconnaissance rapide et frappes ciblées.',
+  tech: 'Débloque les améliorations globales. À utiliser quand ton économie peut financer une montée en puissance durable.',
+  lab: 'Débloque les bâtiments et unités de niveau 2. Un investissement important pour dominer le milieu et la fin de partie.',
+  power2: 'Centrale avancée à forte production. Idéale pour alimenter une base T2 dense sans multiplier les petites centrales.',
+  refinery2: 'Raffinerie avancée plus rentable et plus rapide. Construis-la pour sécuriser une économie de fin de partie.',
+  barracks2: 'Centre d’infanterie avancée. Sert à produire des soldats spécialisés capables de peser contre les blindés et les bases.',
+  factory2: 'Complexe de véhicules avancés. Produit les blindés lourds, véhicules spécialisés et artilleries de fin de partie.',
+  turret: 'Défense fixe anti-infanterie. Place-la près des accès ou des récolteurs vulnérables.',
+  atgun: 'Défense fixe anti-véhicule. Efficace contre les tanks, mais dépend d’une bonne position.',
+  aa: 'Défense anti-aérienne. Protège les zones importantes contre les avions ennemis.',
+};
+
+const UNIT_INFO: Record<UnitTypeId, string> = {
+  rifle: 'Infanterie de base bon marché. Utile pour tenir le terrain tôt, protéger une zone et accompagner les véhicules.',
+  bazooka: 'Infanterie anti-véhicule. Idéal contre tanks et blindés, mais vulnérable contre l’infanterie.',
+  sniper: 'Infanterie longue portée. Très efficace contre les soldats, mais fragile face aux véhicules.',
+  engineer: 'Unité de soutien qui répare bâtiments et véhicules. Garde-la en retrait et envoie-la là où les combats usent tes forces.',
+  jeep: 'Véhicule rapide de reconnaissance et harcèlement. Utilise-le pour explorer, chasser les cibles isolées ou tester une défense.',
+  tank: 'Unité blindée principale. Solide, polyvalente, efficace pour tenir une ligne de front.',
+  artillery: 'Unité longue portée. Parfaite pour détruire bâtiments et défenses, mais vulnérable au contact.',
+  harvester: 'Récolte automatiquement le minerai et le rapporte à une raffinerie. Protège-le : sans récolteurs, ton économie s’écroule.',
+  bomber: 'Avion d’attaque rapide. Excellent pour frapper une cible importante puis rentrer se réarmer.',
+  scoutplane: 'Avion de reconnaissance non armé. Utilise-le pour révéler la carte, trouver des expansions ou repérer une attaque.',
+  elite: 'Infanterie T2 polyvalente et résistante. Bonne pour renforcer une ligne, nettoyer l’infanterie et tenir les points clés.',
+  rocketeer: 'Infanterie anti-blindé avancée. Très utile contre véhicules lourds et bâtiments, mais à protéger contre les tirs directs.',
+  kamikaze: 'Unité d’assaut à usage unique. À envoyer sur des groupes ou bâtiments importants quand l’échange vaut le sacrifice.',
+  heavytank: 'Char lourd de rupture. Lent mais très robuste, parfait pour mener une attaque frontale.',
+  tankdestroyer: 'Véhicule spécialisé anti-char. Très fort contre blindés, moins flexible contre l’infanterie et les attaques multiples.',
+  heavyarty: 'Artillerie lourde de siège. Dévastatrice à longue portée, mais lente et fragile si l’ennemi approche.',
+  radarvehicle: 'Véhicule de reconnaissance avancée. Sert à surveiller la carte et sécuriser les mouvements de ton armée.',
+};
+
+const UPGRADE_INFO: Record<UpgradeId, string> = {
+  refining: 'Augmente les revenus de minerai. Très rentable si tu as déjà plusieurs récolteurs actifs.',
+  powerplus: 'Améliore la production énergétique. Utile pour soutenir une base dense sans construire trop de centrales.',
+  armor: 'Renforce les véhicules. À choisir si ton armée repose sur les blindés et les engagements prolongés.',
+  ammo: 'Augmente les dégâts globaux. Bon choix quand tu veux transformer une armée existante en vraie force offensive.',
+  optics: 'Améliore la vision. Utile pour repérer plus tôt les attaques et contrôler les zones contestées.',
+  repairs: 'Accélère les réparations. Fort dans les parties longues où bâtiments et véhicules survivent après les combats.',
+};
+
+function infoDetails(target: InfoTarget): { title: string; body: string } {
+  if (target.kind === 'building') {
+    const id = target.id as BuildingTypeId;
+    return { title: BUILDINGS[id].name, body: BUILDING_INFO[id] ?? BUILDINGS[id].desc };
+  }
+  if (target.kind === 'unit') {
+    const id = target.id as UnitTypeId;
+    return { title: UNITS[id].name, body: UNIT_INFO[id] ?? UNITS[id].desc };
+  }
+  const id = target.id as UpgradeId;
+  return { title: UPGRADES[id].name, body: UPGRADE_INFO[id] ?? UPGRADES[id].desc };
+}
+
+function sameInfo(a: InfoTarget | null, b: InfoTarget) {
+  return !!a && a.kind === b.kind && a.id === b.id && a.origin === b.origin;
+}
+
+function InfoButton({
+  target, current, setInfoTarget,
+}: {
+  target: InfoTarget;
+  current: InfoTarget | null;
+  setInfoTarget: (target: InfoTarget | null) => void;
+}) {
+  const active = sameInfo(current, target);
+  return (
+    <button
+      type="button"
+      className={`info-btn ${active ? 'active' : ''}`}
+      aria-label="Informations"
+      aria-pressed={active}
+      onPointerDown={e => e.stopPropagation()}
+      onClick={e => {
+        e.stopPropagation();
+        setInfoTarget(active ? null : target);
+      }}
+    >
+      i
+    </button>
+  );
+}
+
+function InfoPopover({ target }: { target: InfoTarget }) {
+  const info = infoDetails(target);
+  return (
+    <div className={`info-popover info-${target.origin}`} onPointerDown={e => e.stopPropagation()}>
+      <div className="info-popover-title">{info.title}</div>
+      <div className="info-popover-body">{info.body}</div>
+    </div>
+  );
+}
+
+function InfoTile({
+  children, target, current, setInfoTarget, className = '',
+}: {
+  children: ReactNode;
+  target: InfoTarget;
+  current: InfoTarget | null;
+  setInfoTarget: (target: InfoTarget | null) => void;
+  className?: string;
+}) {
+  return (
+    <div className={`info-tile ${className}`}>
+      {children}
+      <InfoButton target={target} current={current} setInfoTarget={setInfoTarget} />
+    </div>
+  );
+}
+
+const PRODUCTION_CATEGORIES: { id: ProductionCategoryId; label: string; sub: string; producers: BuildingTypeId[] }[] = [
+  { id: 'infantry', label: 'Caserne', sub: 'Infanterie', producers: ['barracks', 'barracks2'] },
+  { id: 'vehicles', label: 'Usine', sub: 'Véhicules', producers: ['factory', 'factory2'] },
+  { id: 'air', label: 'Aéroport', sub: 'Aérien', producers: ['airport'] },
+];
+
+function findBestProducer(game: Game, type: UnitTypeId): { building: Building | null; reason: string } {
+  const unit = UNITS[type];
+  const producers = game.buildings
+    .filter(b => b.owner === 0 && !b.dead && b.built && b.type === unit.builtAt)
+    .sort((a, b) => a.queue.length - b.queue.length || a.id - b.id);
+
+  if (producers.length === 0) {
+    return { building: null, reason: `Requiert : ${BUILDINGS[unit.builtAt].name}` };
+  }
+
+  for (const b of producers) {
+    if (game.canQueueUnit(b.id, type).ok) return { building: b, reason: '' };
+  }
+
+  const reason = producers
+    .map(b => game.canQueueUnit(b.id, type).reason)
+    .find(Boolean) ?? 'Indisponible';
+  return { building: null, reason };
+}
+
+function ProductionSidebar({
+  game, refresh, infoTarget, setInfoTarget,
+}: {
+  game: Game;
+  refresh: () => void;
+  infoTarget: InfoTarget | null;
+  setInfoTarget: (target: InfoTarget | null) => void;
+}) {
+  const [active, setActive] = useState<ProductionCategoryId>('infantry');
+  const cat = PRODUCTION_CATEGORIES.find(c => c.id === active) ?? PRODUCTION_CATEGORIES[0];
+  const units = (Object.keys(UNITS) as UnitTypeId[])
+    .filter(t => cat.producers.includes(UNITS[t].builtAt));
+
+  return (
+    <aside className="prod-sidebar">
+      <div className="prod-head">
+        <div>Production</div>
+        <span>globale</span>
+      </div>
+      <div className="prod-tabs">
+        {PRODUCTION_CATEGORIES.map(c => (
+          <button
+            key={c.id}
+            className={`prod-tab ${active === c.id ? 'active' : ''}`}
+            onClick={() => setActive(c.id)}
+          >
+            <b>{c.label}</b>
+            <span>{c.sub}</span>
+          </button>
+        ))}
+      </div>
+      <div className="prod-list">
+        {units.map(t => {
+          const unit = UNITS[t];
+          const { building, reason } = findBestProducer(game, t);
+          const queueLabel = building ? `${building.queue.length}/5` : '—';
+          return (
+            <InfoTile
+              key={t}
+              className="prod-info-tile"
+              target={{ kind: 'unit', id: t, origin: 'right' }}
+              current={infoTarget}
+              setInfoTarget={setInfoTarget}
+            >
+              <button
+                className={`prod-unit ${building ? '' : 'disabled'}`}
+                disabled={!building}
+                title={unit.desc}
+                onClick={() => {
+                  if (building && game.queueUnit(building.id, t)) refresh();
+                }}
+              >
+                <span className="prod-unit-main">
+                  <span className="prod-unit-name">{unit.name}</span>
+                  <span className="prod-cost">◆ {unit.cost}</span>
+                </span>
+                <span className="prod-unit-meta">
+                  <span>{building ? BUILDINGS[building.type].name : reason}</span>
+                  <span>file {queueLabel}</span>
+                </span>
+              </button>
+            </InfoTile>
+          );
+        })}
+      </div>
+    </aside>
+  );
+}
+
+function BottomBar({
+  game, controls, refresh, infoTarget, setInfoTarget,
+}: {
+  game: Game;
+  controls: Controls;
+  refresh: () => void;
+  infoTarget: InfoTarget | null;
+  setInfoTarget: (target: InfoTarget | null) => void;
+}) {
+  const [mobileOpen, setMobileOpen] = useState(false);
   const selB = controls.selectedBuilding ? game.buildingById.get(controls.selectedBuilding) : undefined;
   const selUnits = controls.selectedUnits
     .map(id => game.unitById.get(id))
     .filter((u): u is NonNullable<typeof u> => !!u && !u.dead);
 
   if (selUnits.length > 0) {
-    return <UnitPanel game={game} controls={controls} refresh={refresh} units={selUnits.map(u => u.id)} />;
+    return <UnitPanel game={game} controls={controls} refresh={refresh} units={selUnits.map(u => u.id)} mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} />;
   }
   if (selB && !selB.dead && selB.type !== 'hq') {
-    return <BuildingPanel game={game} controls={controls} refresh={refresh} b={selB} />;
+    return <BuildingPanel game={game} controls={controls} refresh={refresh} b={selB} infoTarget={infoTarget} setInfoTarget={setInfoTarget} mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} />;
   }
-  return <ConstructionPanel game={game} controls={controls} refresh={refresh} />;
+  return <ConstructionPanel game={game} controls={controls} refresh={refresh} infoTarget={infoTarget} setInfoTarget={setInfoTarget} mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} />;
 }
 
-function ConstructionPanel({ game, controls, refresh }: { game: Game; controls: Controls; refresh: () => void }) {
+function ConstructionPanel({
+  game, controls, refresh, infoTarget, setInfoTarget, mobileOpen, setMobileOpen,
+}: {
+  game: Game;
+  controls: Controls;
+  refresh: () => void;
+  infoTarget: InfoTarget | null;
+  setInfoTarget: (target: InfoTarget | null) => void;
+  mobileOpen: boolean;
+  setMobileOpen: (open: boolean | ((open: boolean) => boolean)) => void;
+}) {
   return (
-    <div className="bottombar">
+    <div className={`bottombar ${mobileOpen ? 'mobile-open' : 'mobile-closed'}`}>
       <div className="panel-title">
         Construction
         <span className="sub">Choisissez un bâtiment puis cliquez sur le terrain</span>
+        <button className="mobile-panel-toggle" onClick={() => setMobileOpen(o => !o)}>
+          {mobileOpen ? 'Fermer' : 'Ouvrir'}
+        </button>
       </div>
       <div className="cmd-row">
         {BUILD_ORDER_UI.map(id => {
           const def = BUILDINGS[id];
           const chk = game.canBuild(0, id);
           return (
-            <button
+            <InfoTile
               key={id}
-              className={`build-btn ${controls.placing === id ? 'placing-now' : ''}`}
-              disabled={!chk.ok}
-              onClick={() => { controls.startPlacement(id); refresh(); }}
+              target={{ kind: 'building', id, origin: 'bottom' }}
+              current={infoTarget}
+              setInfoTarget={setInfoTarget}
             >
-              <span className="bname">{def.name}</span>
-              <span className="bcost">◆ {def.cost}</span>
-              {!chk.ok && <span className="breason">{chk.reason}</span>}
-            </button>
+              <button
+                className={`build-btn ${controls.placing === id ? 'placing-now' : ''}`}
+                disabled={!chk.ok}
+                onClick={() => { controls.startPlacement(id); refresh(); }}
+              >
+                <span className="bname">{def.name}</span>
+                <span className="bcost">◆ {def.cost}</span>
+                {!chk.ok && <span className="breason">{chk.reason}</span>}
+              </button>
+            </InfoTile>
           );
         })}
       </div>
@@ -553,7 +928,18 @@ function ConstructionPanel({ game, controls, refresh }: { game: Game; controls: 
   );
 }
 
-function BuildingPanel({ game, controls, refresh, b }: { game: Game; controls: Controls; refresh: () => void; b: Building }) {
+function BuildingPanel({
+  game, controls, refresh, b, infoTarget, setInfoTarget, mobileOpen, setMobileOpen,
+}: {
+  game: Game;
+  controls: Controls;
+  refresh: () => void;
+  b: Building;
+  infoTarget: InfoTarget | null;
+  setInfoTarget: (target: InfoTarget | null) => void;
+  mobileOpen: boolean;
+  setMobileOpen: (open: boolean | ((open: boolean) => boolean)) => void;
+}) {
   const def = BUILDINGS[b.type];
   const producible = (Object.keys(UNITS) as UnitTypeId[]).filter(t => UNITS[t].builtAt === b.type);
   const isProd = producible.length > 0;
@@ -561,7 +947,7 @@ function BuildingPanel({ game, controls, refresh, b }: { game: Game; controls: C
   const p = game.players[0];
 
   return (
-    <div className="bottombar">
+    <div className={`bottombar ${mobileOpen ? 'mobile-open' : 'mobile-closed'}`}>
       <div className="panel-title">
         {def.name}
         <span className="sub">
@@ -569,23 +955,32 @@ function BuildingPanel({ game, controls, refresh, b }: { game: Game; controls: C
           {!b.built && ` — construction ${Math.round(b.progress * 100)} %`}
           {isProd && b.built && ' — clic droit sur la carte : point de ralliement'}
         </span>
+        <button className="mobile-panel-toggle" onClick={() => setMobileOpen(o => !o)}>
+          {mobileOpen ? 'Fermer' : 'Ouvrir'}
+        </button>
       </div>
       <div className="cmd-row">
         {b.built && isProd && producible.map(t => {
           const u = UNITS[t];
           const chk = game.canQueueUnit(b.id, t);
           return (
-            <button
+            <InfoTile
               key={t}
-              className="build-btn"
-              disabled={!chk.ok}
-              title={u.desc}
-              onClick={() => { if (game.queueUnit(b.id, t)) refresh(); }}
+              target={{ kind: 'unit', id: t, origin: 'bottom' }}
+              current={infoTarget}
+              setInfoTarget={setInfoTarget}
             >
-              <span className="bname">{u.name}</span>
-              <span className="bcost">◆ {u.cost}</span>
-              {!chk.ok && chk.reason && <span className="breason">{chk.reason}</span>}
-            </button>
+              <button
+                className="build-btn"
+                disabled={!chk.ok}
+                title={u.desc}
+                onClick={() => { if (game.queueUnit(b.id, t)) refresh(); }}
+              >
+                <span className="bname">{u.name}</span>
+                <span className="bcost">◆ {u.cost}</span>
+                {!chk.ok && chk.reason && <span className="breason">{chk.reason}</span>}
+              </button>
+            </InfoTile>
           );
         })}
         {b.built && isTech && (Object.keys(UPGRADES) as UpgradeId[]).map(id => {
@@ -593,16 +988,22 @@ function BuildingPanel({ game, controls, refresh, b }: { game: Game; controls: C
           const owned = !!p.upgrades[id];
           const queued = b.queue.some(q => q.up === id);
           return (
-            <button
+            <InfoTile
               key={id}
-              className={`build-btn ${owned ? 'researched' : ''}`}
-              disabled={owned || queued || p.ore < up.cost}
-              title={up.desc}
-              onClick={() => { if (game.queueUpgrade(b.id, id)) refresh(); }}
+              target={{ kind: 'upgrade', id, origin: 'bottom' }}
+              current={infoTarget}
+              setInfoTarget={setInfoTarget}
             >
-              <span className="bname">{owned ? '✓ ' : ''}{up.name}</span>
-              <span className="bcost">{owned ? 'Acquis' : `◆ ${up.cost}`}</span>
-            </button>
+              <button
+                className={`build-btn ${owned ? 'researched' : ''}`}
+                disabled={owned || queued || p.ore < up.cost}
+                title={up.desc}
+                onClick={() => { if (game.queueUpgrade(b.id, id)) refresh(); }}
+              >
+                <span className="bname">{owned ? '✓ ' : ''}{up.name}</span>
+                <span className="bcost">{owned ? 'Acquis' : `◆ ${up.cost}`}</span>
+              </button>
+            </InfoTile>
           );
         })}
         {b.built && b.queue.length > 0 && b.queue.map((q, i) => (
@@ -629,7 +1030,16 @@ function BuildingPanel({ game, controls, refresh, b }: { game: Game; controls: C
   );
 }
 
-function UnitPanel({ game, controls, refresh, units }: { game: Game; controls: Controls; refresh: () => void; units: number[] }) {
+function UnitPanel({
+  game, controls, refresh, units, mobileOpen, setMobileOpen,
+}: {
+  game: Game;
+  controls: Controls;
+  refresh: () => void;
+  units: number[];
+  mobileOpen: boolean;
+  setMobileOpen: (open: boolean | ((open: boolean) => boolean)) => void;
+}) {
   const byType = new Map<UnitTypeId, number>();
   for (const id of units) {
     const u = game.unitById.get(id);
@@ -638,10 +1048,13 @@ function UnitPanel({ game, controls, refresh, units }: { game: Game; controls: C
   const hasCombat = [...byType.keys()].some(t => UNITS[t].weapon);
 
   return (
-    <div className="bottombar">
+    <div className={`bottombar ${mobileOpen ? 'mobile-open' : 'mobile-closed'}`}>
       <div className="panel-title">
         Unités sélectionnées
         <span className="sub">clic droit / tap : déplacer · attaquer · récolter · réparer</span>
+        <button className="mobile-panel-toggle" onClick={() => setMobileOpen(o => !o)}>
+          {mobileOpen ? 'Fermer' : 'Ouvrir'}
+        </button>
       </div>
       <div className="cmd-row sel-summary">
         {[...byType.entries()].map(([t, n]) => (

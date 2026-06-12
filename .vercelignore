@@ -1,0 +1,10 @@
+.git/
+.claude/
+settings.local.json
+node_modules/
+.next/
+.next-dev/
+.next-build/
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store

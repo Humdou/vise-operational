@@ -5,6 +5,7 @@ import { Camera, ViewState } from './render';
 import { Sfx } from './audio';
 
 interface PointerInfo { id: number; x: number; y: number; sx: number; sy: number; t: number }
+type OrderMarker = ViewState['orderMarkers'][number];
 
 export class Controls {
   cam: Camera = { x: 0, y: 0, zoom: 26 };
@@ -32,7 +33,10 @@ export class Controls {
   private groups = new Map<number, number[]>();
   private lastClickT = 0;
   private lastClickUnit = 0;
+  private lastEmptyTapT = 0;
+  private lastEmptyTap = { x: 0, y: 0 };
   private mmDragging = false;
+  private orderMarkers: OrderMarker[] = [];
   private detachFns: (() => void)[] = [];
 
   constructor(game: Game, sfx: Sfx, canvas: HTMLCanvasElement, minimap: HTMLCanvasElement, onChange: () => void) {
@@ -301,6 +305,22 @@ export class Controls {
     }
     const unit = this.pickUnit(w.x, w.y);
     const building = this.pickBuilding(w.x, w.y);
+    const empty = !unit && !building;
+
+    if (empty) {
+      const now = performance.now();
+      const closeTap = Math.hypot(px - this.lastEmptyTap.x, py - this.lastEmptyTap.y) < 42;
+      if (now - this.lastEmptyTapT < 360 && closeTap) {
+        this.boxSelectMode = true;
+        this.selectedBuilding = 0;
+        this.selectedUnits = [];
+        this.lastEmptyTapT = 0;
+        this.onChange();
+        return;
+      }
+      this.lastEmptyTapT = now;
+      this.lastEmptyTap = { x: px, y: py };
+    }
 
     if (unit && unit.owner === 0) { this.selectUnits([unit.id]); return; }
     if (building && building.owner === 0 && this.selectedUnits.length === 0) {
@@ -439,6 +459,7 @@ export class Controls {
         const b = this.g.buildingById.get(this.selectedBuilding);
         if (b && (b.type === 'barracks' || b.type === 'factory' || b.type === 'airport')) {
           this.g.setRally(b.id, wx, wy);
+          this.addOrderMarker('rally', wx, wy);
           this.sfx.order();
         }
       }
@@ -454,11 +475,13 @@ export class Controls {
 
     if (enemyUnit) {
       this.g.cmdAttack(sel, enemyUnit.id, false);
+      this.addOrderMarker('attack', enemyUnit.x, enemyUnit.y);
       this.sfx.order();
       return;
     }
     if (building && building.owner !== 0) {
       this.g.cmdAttack(sel, building.id, true);
+      this.addOrderMarker('attack', wx, wy);
       this.sfx.order();
       return;
     }
@@ -467,6 +490,7 @@ export class Controls {
       const rest = sel.filter(id => !harvesters.includes(id));
       if (harvesters.length > 0) this.g.cmdHarvest(harvesters, node.id);
       if (rest.length > 0) this.g.cmdMove(rest, wx, wy);
+      this.addOrderMarker('harvest', node.tx, node.ty);
       this.sfx.order();
       return;
     }
@@ -476,6 +500,7 @@ export class Controls {
         this.g.cmdRepairTarget(engineers, building.id, true);
         const rest = sel.filter(id => !engineers.includes(id));
         if (rest.length > 0) this.g.cmdMove(rest, wx, wy);
+        this.addOrderMarker('move', wx, wy);
         this.sfx.order();
         return;
       }
@@ -497,6 +522,7 @@ export class Controls {
       if (acted) { this.sfx.order(); return; }
     }
     this.g.cmdMove(sel, wx, wy, false);
+    this.addOrderMarker('move', wx, wy);
     this.sfx.order();
   }
 
@@ -506,6 +532,7 @@ export class Controls {
     const target = this.pickUnit(wx, wy, true);
     if (target && !sel.includes(target.id) && !UNITS[target.type].isAir) {
       this.g.cmdEscort(sel, target.id);
+      this.addOrderMarker('move', target.x, target.y);
       this.sfx.order();
     } else {
       this.sfx.error();
@@ -516,7 +543,36 @@ export class Controls {
     const sel = this.aliveSelection();
     if (sel.length === 0) return;
     this.g.cmdMove(sel, wx, wy, true);
+    this.addOrderMarker('attack', wx, wy);
     this.sfx.order();
+  }
+
+  private addOrderMarker(kind: OrderMarker['kind'], x: number, y: number) {
+    this.orderMarkers.push({ kind, x, y, t: this.g.time });
+    if (this.orderMarkers.length > 24) this.orderMarkers.splice(0, this.orderMarkers.length - 24);
+  }
+
+  private cursorKind(): ViewState['cursor']['kind'] {
+    if (this.placing) return this.getViewStatePlacementValid() ? 'place-ok' : 'place-bad';
+    if (!this.mouse.inside) return 'default';
+    const w = this.toWorld(this.mouse.x, this.mouse.y);
+    const unit = this.pickUnit(w.x, w.y);
+    const building = this.pickBuilding(w.x, w.y);
+    if ((unit && unit.owner !== 0) || (building && building.owner !== 0)) return 'enemy';
+    const node = this.pickNode(w.x, w.y);
+    if (node) return 'ore';
+    if ((unit && unit.owner === 0) || (building && building.owner === 0)) return 'ally';
+    if (this.attackMoveMode) return 'attack';
+    if (this.selectedUnits.length > 0 || this.selectedBuilding) return 'move';
+    return 'default';
+  }
+
+  private getViewStatePlacementValid() {
+    if (!this.placing) return false;
+    const w = this.toWorld(this.mouse.x, this.mouse.y);
+    const def = BUILDINGS[this.placing];
+    const tx = Math.round(w.x - def.w / 2), ty = Math.round(w.y - def.h / 2);
+    return this.g.canPlace(0, this.placing, tx, ty) && this.g.canBuild(0, this.placing).ok;
   }
 
   stopSelection() {
@@ -622,6 +678,7 @@ export class Controls {
         x1: this.boxNow.x * this.dpr, y1: this.boxNow.y * this.dpr,
       };
     }
+    this.orderMarkers = this.orderMarkers.filter(m => this.g.time - m.t < 0.85);
     return {
       cam: this.cam,
       selectedUnits: this.selectedUnits,
@@ -630,6 +687,13 @@ export class Controls {
       placeTx, placeTy, placeValid,
       box,
       attackMoveMode: this.attackMoveMode,
+      cursor: {
+        x: this.mouse.x * this.dpr,
+        y: this.mouse.y * this.dpr,
+        inside: this.mouse.inside,
+        kind: this.cursorKind(),
+      },
+      orderMarkers: [...this.orderMarkers],
     };
   }
 }

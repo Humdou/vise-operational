@@ -52,6 +52,8 @@ export interface Unit {
   cargo: number;
   cargoValue: number; // valeur de la cargaison (minerai rare = ×3)
   unloadT: number;
+  // animation de sortie de bâtiment — purement visuel, jamais lu par le gameplay
+  exitFx?: { x: number; y: number; t0: number };
   // aviation
   airState?: 'pad' | 'fly' | 'return';
   padBuildingId?: number;
@@ -82,6 +84,8 @@ export interface Building {
   repairOn: boolean;
   cd: number;
   engageId: number;
+  // heure de la dernière sortie d'unité — purement visuel (animation de porte)
+  doorT?: number;
   dead: boolean;
 }
 
@@ -727,6 +731,8 @@ export class Game {
             const c = this.buildingCenter(b);
             const spot = this.findFreeTileNear(c.x, b.ty + b.h + 0.5);
             const harv = this.spawnUnit(b.owner, 'harvester', spot.x, spot.y);
+            harv.exitFx = { x: c.x, y: c.y, t0: this.time };
+            b.doorT = this.time;
             const node = this.bestNodeFor(b.owner, harv.x, harv.y);
             if (node) harv.order = { kind: 'harvest', nodeId: node.id };
           }
@@ -745,9 +751,14 @@ export class Game {
               const c = this.buildingCenter(b);
               const u = this.spawnUnit(b.owner, item.unit, c.x, c.y);
               u.padBuildingId = b.id;
+              u.exitFx = { x: c.x, y: c.y, t0: this.time };
+              b.doorT = this.time;
             } else {
               const spot = this.findFreeTileNear(b.tx + b.w / 2, b.ty + b.h + 0.5);
               const u = this.spawnUnit(b.owner, item.unit, spot.x, spot.y);
+              const bc = this.buildingCenter(b);
+              u.exitFx = { x: bc.x, y: bc.y, t0: this.time };
+              b.doorT = this.time;
               if (item.unit === 'harvester') {
                 const node = this.bestNodeFor(b.owner, u.x, u.y);
                 if (node) u.order = { kind: 'harvest', nodeId: node.id };

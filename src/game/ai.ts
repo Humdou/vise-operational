@@ -45,20 +45,20 @@ const DIFF: Record<Difficulty, DiffParams> = {
     dithers: 0.3, maxFactories: 1, maxBarracks: 1,
   },
   normal: {
-    thinkInterval: 2.0, reactionDelay: 1.6, harvPerRefinery: 2, maxHarvesters: 6,
-    maxRefineries: 3, defensesPerBase: 2, defPerRefinery: 1,
-    attackBase: 2600, retreatRatio: 0.45, harass: true, harassCooldown: 50,
+    thinkInterval: 1.8, reactionDelay: 1.5, harvPerRefinery: 2.2, maxHarvesters: 7,
+    maxRefineries: 4, defensesPerBase: 2, defPerRefinery: 1,
+    attackBase: 2450, retreatRatio: 0.48, harass: true, harassCooldown: 44,
     protectHarvesters: true, expandSkill: 0.7, upgradeAppetite: 0.6,
-    armyGrowth: 3.8, techTiming: 280, labTiming: 430, counterAttack: true,
+    armyGrowth: 4.4, techTiming: 250, labTiming: 390, counterAttack: true,
     dithers: 0.08, maxFactories: 2, maxBarracks: 1,
   },
   hard: {
-    thinkInterval: 0.9, reactionDelay: 0.6, harvPerRefinery: 3, maxHarvesters: 10,
-    maxRefineries: 6, defensesPerBase: 3, defPerRefinery: 2,
-    attackBase: 3000, retreatRatio: 0.62, harass: true, harassCooldown: 28,
+    thinkInterval: 0.75, reactionDelay: 0.55, harvPerRefinery: 3.2, maxHarvesters: 12,
+    maxRefineries: 7, defensesPerBase: 3, defPerRefinery: 2,
+    attackBase: 2550, retreatRatio: 0.66, harass: true, harassCooldown: 22,
     protectHarvesters: true, expandSkill: 1.0, upgradeAppetite: 1.0,
-    armyGrowth: 7.0, techTiming: 190, labTiming: 280, counterAttack: true,
-    dithers: 0, maxFactories: 3, maxBarracks: 2,
+    armyGrowth: 8.2, techTiming: 165, labTiming: 245, counterAttack: true,
+    dithers: 0, maxFactories: 4, maxBarracks: 2,
   },
 };
 
@@ -105,6 +105,7 @@ export class AIController {
   // Mémoire de composition adverse observée (décroît avec le temps).
   private seenVehicles = 0;
   private seenInfantry = 0;
+  private lastScoutObjective: { x: number; y: number } | null = null;
 
   constructor(game: Game, playerId: number, difficulty: Difficulty) {
     this.g = game;
@@ -132,6 +133,7 @@ export class AIController {
     this.manageDefense();
     if (this.p.protectHarvesters) this.protectHarvesters();
     this.manageScouting();
+    this.manageTactics();
     this.manageAttack();
     this.manageRepairs();
   }
@@ -219,6 +221,43 @@ export class AIController {
     return v;
   }
 
+  private econBuildings(): Building[] {
+    return [
+      ...this.myBuildings('refinery'),
+      ...this.myBuildings('refinery2'),
+    ].filter(b => b.built);
+  }
+
+  private knownEnemyBuildings(...types: BuildingTypeId[]): KnownBuilding[] {
+    return [...this.known.values()].filter(kb => types.includes(kb.type));
+  }
+
+  private nearestKnownEnemyEco(): KnownBuilding | null {
+    const base = this.baseCenter();
+    const ecos = this.knownEnemyBuildings('refinery', 'refinery2', 'depot', 'power', 'power2');
+    let best: KnownBuilding | null = null, bestScore = -Infinity;
+    for (const kb of ecos) {
+      const d = Math.hypot(kb.x - base.x, kb.y - base.y);
+      const value =
+        kb.type === 'refinery2' ? 620 :
+        kb.type === 'refinery' ? 560 :
+        kb.type === 'depot' ? 430 :
+        kb.type === 'power2' ? 360 : 300;
+      const score = value - d * 3;
+      if (score > bestScore) { bestScore = score; best = kb; }
+    }
+    return best;
+  }
+
+  private visibleEnemyHarvesters(): Unit[] {
+    return this.g.units.filter(u =>
+      !u.dead &&
+      u.owner !== this.pid &&
+      u.type === 'harvester' &&
+      !this.g.players[u.owner].defeated &&
+      this.g.isVisibleTo(this.pid, u.x, u.y));
+  }
+
   // ------------------------------------------------------------ construction
   //
   // L'IA choisit UN objectif de construction et ÉPARGNE pour lui : la
@@ -279,7 +318,7 @@ export class AIController {
     if (counts('factory') === 0) return at(base.x, base.y, 'factory');
 
     // 3 bis. Production doublée en milieu de partie (économie le permettant).
-    const refsBuilt = this.myBuildings('refinery').filter(b => b.built);
+    const refsBuilt = this.econBuildings();
     if (counts('factory') < this.p.maxFactories && this.g.time > 330 && refsBuilt.length >= 2) {
       return at(base.x, base.y, 'factory');
     }
@@ -290,17 +329,17 @@ export class AIController {
     // 4. Expansion économique : une raffinerie par gisement découvert non couvert.
     // Quand l'heure du Laboratoire est venue, l'expansion au-delà de 3 raffineries
     // attend : la supériorité technologique passe d'abord.
-    const refs = this.myBuildings('refinery').filter(b => b.built);
+    const refs = this.econBuildings();
     const labDue = this.g.time > this.p.labTiming && counts('lab') === 0;
-    const refCap = labDue ? Math.min(3, this.p.maxRefineries) : this.p.maxRefineries;
-    const wantRefs = Math.min(refCap, 1 + Math.floor(this.g.time / 200) + (me.ore > 1500 ? 1 : 0));
+    const refCap = labDue ? Math.min(this.p.maxRefineries, this.p.expandSkill >= 1 ? 4 : 3) : this.p.maxRefineries;
+    const wantRefs = Math.min(refCap, 1 + Math.floor(this.g.time / (this.p.expandSkill >= 1 ? 155 : 200)) + (me.ore > 1300 ? 1 : 0));
     if (refs.length < wantRefs && this.g.rng() < this.p.expandSkill + 0.25) {
       const node = this.pickExpansionNode(base, 999, refs);
       if (node) return at(node.x, node.y, 'refinery', 7);
     }
 
     // 4 bis. Laboratoire avancé : investissement prioritaire dès l'heure venue.
-    if (labDue && refs.length >= 2) return at(base.x, base.y, 'lab');
+    if (labDue && refs.length >= 2 && counts('factory') > 0) return at(base.x, base.y, 'lab');
 
     // 5. Défenses : QG puis chaque raffinerie (selon la difficulté).
     if (this.g.time > 140) {
@@ -366,6 +405,9 @@ export class AIController {
         if (counts('power2') === 0 && me.powerUse > me.powerProd * 0.6) return at(base.x, base.y, 'power2');
         if (counts('factory2') === 0) return at(base.x, base.y, 'factory2');
         if (counts('barracks2') === 0) return at(base.x, base.y, 'barracks2');
+        if (this.p.expandSkill >= 1 && counts('factory2') < 2 && refs.length >= 4 && me.ore > 1200) {
+          return at(base.x, base.y, 'factory2');
+        }
         // Raffinerie T2 sur le gisement couvert le plus riche : zone économique forte.
         if (counts('refinery2') < 1 + Math.floor(this.g.time / 700) && me.ore > 800) {
           let bestN: { x: number; y: number } | null = null, bestA = 0;
@@ -414,6 +456,7 @@ export class AIController {
   // Recherche en spirale d'un emplacement valide autour d'un point.
   private placeNear(type: BuildingTypeId, ax: number, ay: number, maxR = 14): boolean {
     const def = BUILDINGS[type];
+    let best: { tx: number; ty: number; score: number } | null = null;
     for (let r = 1; r <= maxR; r += 1) {
       const steps = Math.max(6, r * 5);
       const a0 = this.g.rng() * Math.PI * 2;
@@ -421,12 +464,78 @@ export class AIController {
         const a = a0 + (s / steps) * Math.PI * 2;
         const tx = Math.round(ax + Math.cos(a) * r - def.w / 2);
         const ty = Math.round(ay + Math.sin(a) * r - def.h / 2);
-        if (this.g.canPlace(this.pid, type, tx, ty)) {
-          return this.g.place(this.pid, type, tx, ty);
+        if (this.aiKnowsFootprint(tx, ty, def.w, def.h) && this.g.canPlace(this.pid, type, tx, ty)) {
+          const score = this.scorePlacement(type, tx, ty, ax, ay);
+          if (!best || score > best.score) best = { tx, ty, score };
         }
       }
     }
-    return false;
+    return best ? this.g.place(this.pid, type, best.tx, best.ty) : false;
+  }
+
+  private aiKnowsFootprint(tx: number, ty: number, w: number, h: number): boolean {
+    for (let y = ty; y < ty + h; y++) {
+      for (let x = tx; x < tx + w; x++) {
+        if (!this.g.isExploredBy(this.pid, x, y)) return false;
+      }
+    }
+    return true;
+  }
+
+  private scorePlacement(type: BuildingTypeId, tx: number, ty: number, ax: number, ay: number): number {
+    const def = BUILDINGS[type];
+    const cx = tx + def.w / 2, cy = ty + def.h / 2;
+    const base = this.baseCenter();
+    const enemy = this.enemyDirection();
+    const toEnemyX = enemy.x - base.x, toEnemyY = enemy.y - base.y;
+    const toEnemyD = Math.max(1, Math.hypot(toEnemyX, toEnemyY));
+    const frontX = base.x + (toEnemyX / toEnemyD) * 7;
+    const frontY = base.y + (toEnemyY / toEnemyD) * 7;
+    const backX = base.x - (toEnemyX / toEnemyD) * 5;
+    const backY = base.y - (toEnemyY / toEnemyD) * 5;
+
+    let score = -Math.hypot(cx - ax, cy - ay) * 10;
+
+    for (const b of this.myBuildings()) {
+      const bc = this.g.buildingCenter(b);
+      const d = Math.hypot(cx - bc.x, cy - bc.y);
+      if (d < Math.max(def.w, def.h) + Math.max(b.w, b.h) + 1.5) score -= 180;
+      if (d < 8) score -= 18;
+      if (b.type === type && d < 13) score -= 90;
+      if ((type === 'power' || type === 'power2') && d < 7) score += 12;
+    }
+
+    if (type === 'refinery' || type === 'refinery2') {
+      let bestNode = Infinity;
+      let rareBonus = 0;
+      for (const n of this.g.nodes) {
+        if (n.amount < 80 || !this.g.isExploredBy(this.pid, n.tx, n.ty)) continue;
+        const d = Math.hypot(cx - n.tx, cy - n.ty);
+        if (d < bestNode) {
+          bestNode = d;
+          rareBonus = n.kind === 'rare' ? 120 : 0;
+        }
+      }
+      score += Math.max(0, 260 - bestNode * 28) + rareBonus;
+      score += Math.max(0, 80 - Math.hypot(cx - base.x, cy - base.y) * 2);
+    } else if (type === 'turret' || type === 'atgun' || type === 'aa') {
+      score += Math.max(0, 180 - Math.hypot(cx - frontX, cy - frontY) * 18);
+      score += Math.max(0, 120 - Math.hypot(cx - ax, cy - ay) * 20);
+      if (type === 'aa' && this.needAA) score += 80;
+    } else if (type === 'factory' || type === 'factory2' || type === 'barracks' || type === 'barracks2') {
+      score += Math.max(0, 150 - Math.hypot(cx - frontX, cy - frontY) * 10);
+      score += type.endsWith('2') ? Math.max(0, 80 - Math.hypot(cx - base.x, cy - base.y) * 6) : 0;
+    } else if (type === 'power' || type === 'power2' || type === 'tech' || type === 'lab') {
+      score += Math.max(0, 140 - Math.hypot(cx - backX, cy - backY) * 12);
+    } else if (type === 'radar' || type === 'radarcenter' || type === 'airport') {
+      score += Math.max(0, 120 - Math.hypot(cx - base.x, cy - base.y) * 8);
+    } else {
+      score += Math.max(0, 100 - Math.hypot(cx - base.x, cy - base.y) * 7);
+    }
+
+    if (this.p.expandSkill < 0.6) score += (this.g.rng() - 0.5) * 220;
+    else score += (this.g.rng() - 0.5) * 35;
+    return score;
   }
 
   // -------------------------------------------------------------- production
@@ -437,13 +546,17 @@ export class AIController {
     const spendable = () => me.ore - this.reserve;
 
     // Récolteurs : l'économie passe avant tout (les 2 premiers ignorent l'épargne).
-    const refs = this.myBuildings('refinery').filter(b => b.built);
+    const refs = this.econBuildings();
     let harvesters = this.myUnits('harvester').length;
-    const wantHarv = Math.min(Math.max(2, Math.round(refs.length * this.p.harvPerRefinery)), this.p.maxHarvesters);
+    const richEco = refs.filter(r => r.type === 'refinery2').length;
+    const wantHarv = Math.min(
+      Math.max(2, Math.round(refs.length * this.p.harvPerRefinery + richEco * 0.8)),
+      this.p.maxHarvesters,
+    );
     const factories = this.myBuildings('factory').filter(b => b.built);
 
     // File de production plus profonde quand l'économie le permet.
-    const queueDepth = spendable() > 1100 ? 2 : 1;
+    const queueDepth = spendable() > 1700 && refs.length >= 3 ? 3 : spendable() > 900 ? 2 : 1;
     for (const f of factories) {
       while (f.queue.length < queueDepth) {
         if (harvesters < wantHarv) {
@@ -590,6 +703,31 @@ export class AIController {
   }
 
   private protectHarvesters() {
+    const availableGuards = this.myUnits().filter(u =>
+      this.isCombat(u) &&
+      u.order.kind === 'idle' &&
+      !this.waveIds.includes(u.id) &&
+      !this.harassIds.includes(u.id) &&
+      u.id !== this.scoutId);
+
+    if (availableGuards.length > 0) {
+      const existingEscorts = this.myUnits().filter(u => this.isCombat(u) && u.order.kind === 'escort').length;
+      let escortBudget = Math.max(0, (this.p.expandSkill >= 1 ? 4 : 2) - existingEscorts);
+      for (const h of this.myUnits('harvester')) {
+        if (availableGuards.length === 0 || escortBudget <= 0) break;
+        const farFromGuard = !this.myUnits().some(u =>
+          this.isCombat(u) &&
+          u.order.kind === 'escort' &&
+          u.order.targetId === h.id);
+        const farFromBase = Math.hypot(h.x - this.baseCenter().x, h.y - this.baseCenter().y) > 16;
+        if (farFromGuard && farFromBase) {
+          const escort = availableGuards.shift()!;
+          this.g.cmdEscort([escort.id], h.id);
+          escortBudget--;
+        }
+      }
+    }
+
     for (const h of this.myUnits('harvester')) {
       const threats = this.visibleEnemiesNear(h.x, h.y, 6).filter(t => UNITS[t.type].weapon);
       if (threats.length === 0) continue;
@@ -627,6 +765,45 @@ export class AIController {
     }
   }
 
+  private manageTactics() {
+    const base = this.baseCenter();
+    const enemyEco = this.pickPressureTarget();
+
+    for (const u of this.myUnits()) {
+      if (!this.isCombat(u)) continue;
+      const def = UNITS[u.type];
+      if (u.hp < def.hp * 0.28 && !this.harassIds.includes(u.id)) {
+        this.waveIds = this.waveIds.filter(id => id !== u.id);
+        const ref = this.g.nearestRefinery(this.pid, u.x, u.y);
+        const fallback = ref ? this.g.buildingCenter(ref) : base;
+        this.g.cmdMove([u.id], fallback.x, fallback.y);
+        continue;
+      }
+
+      if (u.order.kind !== 'idle' && u.order.kind !== 'escort') continue;
+      const enemies = this.visibleEnemiesNear(u.x, u.y, 8).filter(e => UNITS[e.type].weapon || e.type === 'harvester');
+      if (enemies.length > 0) {
+        enemies.sort((a, b) => this.targetUnitScore(b, u.x, u.y) - this.targetUnitScore(a, u.x, u.y));
+        this.g.cmdAttack([u.id], enemies[0].id, false);
+      } else if (enemyEco && u.order.kind === 'idle' && this.p.expandSkill >= 1 && Math.hypot(u.x - base.x, u.y - base.y) > 18) {
+        this.g.cmdMove([u.id], enemyEco.x, enemyEco.y, true);
+      }
+    }
+  }
+
+  private targetUnitScore(u: Unit, x: number, y: number): number {
+    const d = Math.hypot(u.x - x, u.y - y);
+    const def = UNITS[u.type];
+    const role =
+      u.type === 'harvester' ? 120 :
+      u.type === 'artillery' || u.type === 'heavyarty' ? 95 :
+      u.type === 'bomber' ? 90 :
+      def.armor === 'heavy' ? 70 :
+      def.armor === 'inf' ? 45 : 55;
+    const weak = (1 - u.hp / Math.max(1, def.hp)) * 45;
+    return role + weak - d * 4;
+  }
+
   // ------------------------------------------------------------- exploration
 
   private manageScouting() {
@@ -638,16 +815,8 @@ export class AIController {
     // Avion radar disponible : reconnaissance large et sans risque.
     const plane = this.myUnits('scoutplane').find(u => u.airState === 'pad' && (u.rearmT ?? 0) <= 0);
     if (plane) {
-      const { w, h } = this.g.map;
-      const base = this.baseCenter();
-      let bx = -1, by = -1, bd = -1;
-      for (let tries = 0; tries < 30; tries++) {
-        const tx = 3 + Math.floor(this.g.rng() * (w - 6));
-        const ty = 3 + Math.floor(this.g.rng() * (h - 6));
-        if (me.fog[ty * w + tx] !== 0) continue;
-        const d = Math.hypot(tx - base.x, ty - base.y);
-        if (d > bd) { bd = d; bx = tx; by = ty; }
-      }
+      const target = this.pickScoutTarget(48);
+      const bx = target?.x ?? -1, by = target?.y ?? -1;
       if (bx >= 0) this.g.cmdMove([plane.id], bx, by);
     }
     const scout = this.scoutId ? this.g.unitById.get(this.scoutId) : undefined;
@@ -664,23 +833,55 @@ export class AIController {
       if (!pick) return;
       this.scoutId = pick.id;
     }
-    // Cible : la tuile inconnue la plus éloignée de la base parmi un échantillon
-    // (l'ennemi est probablement loin : l'exploration converge vers lui).
-    const { w, h } = this.g.map;
-    const base = this.baseCenter();
-    let bestX = -1, bestY = -1, bestD = -1;
-    for (let tries = 0; tries < 30; tries++) {
-      const tx = 2 + Math.floor(this.g.rng() * (w - 4));
-      const ty = 2 + Math.floor(this.g.rng() * (h - 4));
-      const i = ty * w + tx;
-      if (me.fog[i] !== 0 || !this.g.nav.pass[i]) continue;
-      const d = Math.hypot(tx - base.x, ty - base.y);
-      if (d > bestD) { bestD = d; bestX = tx; bestY = ty; }
-    }
-    if (bestX >= 0) {
-      this.g.cmdMove([this.scoutId], bestX, bestY);
+    const target = this.pickScoutTarget(36);
+    if (target) {
+      this.g.cmdMove([this.scoutId], target.x, target.y);
+      this.lastScoutObjective = target;
       this.scoutTargetT = this.g.time;
     }
+  }
+
+  private pickScoutTarget(samples: number): { x: number; y: number } | null {
+    const me = this.g.players[this.pid];
+    const { w, h } = this.g.map;
+    const base = this.baseCenter();
+    const refs = this.econBuildings();
+    let best: { x: number; y: number } | null = null;
+    let bestScore = -Infinity;
+
+    for (const n of this.g.nodes) {
+      if (n.amount < 250) continue;
+      if (this.g.isExploredBy(this.pid, n.tx, n.ty)) continue;
+      const d = Math.hypot(n.tx - base.x, n.ty - base.y);
+      const nearRef = refs.some(r => {
+        const c = this.g.buildingCenter(r);
+        return Math.hypot(c.x - n.tx, c.y - n.ty) < 12;
+      });
+      if (nearRef) continue;
+      const score = n.amount * (n.kind === 'rare' ? 3.2 : 1) - d * 9;
+      if (score > bestScore) { bestScore = score; best = { x: n.tx, y: n.ty }; }
+    }
+
+    const enemy = this.enemyDirection();
+    for (let tries = 0; tries < samples; tries++) {
+      let tx: number, ty: number;
+      if (this.known.size > 0 && this.g.rng() < 0.45) {
+        tx = Math.round(enemy.x + (this.g.rng() - 0.5) * 34);
+        ty = Math.round(enemy.y + (this.g.rng() - 0.5) * 34);
+      } else {
+        tx = 2 + Math.floor(this.g.rng() * (w - 4));
+        ty = 2 + Math.floor(this.g.rng() * (h - 4));
+      }
+      if (tx < 2 || ty < 2 || tx >= w - 2 || ty >= h - 2) continue;
+      const i = ty * w + tx;
+      if (me.fog[i] !== 0 || !this.g.nav.pass[i]) continue;
+      const dBase = Math.hypot(tx - base.x, ty - base.y);
+      const dLast = this.lastScoutObjective ? Math.hypot(tx - this.lastScoutObjective.x, ty - this.lastScoutObjective.y) : 20;
+      const enemyBias = this.known.size > 0 ? 70 - Math.hypot(tx - enemy.x, ty - enemy.y) : 0;
+      const score = dBase * 2 + enemyBias + Math.min(20, dLast);
+      if (score > bestScore) { bestScore = score; best = { x: tx, y: ty }; }
+    }
+    return best;
   }
 
   // ----------------------------------------------------------------- attaque
@@ -688,29 +889,32 @@ export class AIController {
   private manageAttack() {
     const me = this.g.players[this.pid];
 
-    // Harcèlement : jeeps contre récolteurs connus.
+    // Harcèlement : petits groupes rapides contre récolteurs/économie connus.
     this.harassT -= this.p.thinkInterval;
     if (this.p.harass && this.harassT <= 0) {
       this.harassIds = this.harassIds.filter(id => this.g.unitById.get(id) && !this.g.unitById.get(id)!.dead);
       if (this.harassIds.length === 0) {
-        const jeeps = this.myUnits('jeep').filter(u =>
-          u.order.kind === 'idle' && !this.waveIds.includes(u.id) && u.id !== this.scoutId);
-        if (jeeps.length >= 2) {
-          let target: Unit | null = null;
-          for (const u of this.g.units) {
-            if (u.dead || u.owner === this.pid || u.type !== 'harvester') continue;
-            if (this.g.players[u.owner].defeated) continue;
-            if (this.g.isVisibleTo(this.pid, u.x, u.y)) { target = u; break; }
-          }
-          const kref = [...this.known.values()].find(kb => kb.type === 'refinery');
+        const raiders = this.myUnits().filter(u =>
+          this.isCombat(u) &&
+          u.order.kind === 'idle' &&
+          !this.waveIds.includes(u.id) &&
+          u.id !== this.scoutId &&
+          (u.type === 'jeep' || u.type === 'rifle' || u.type === 'bazooka' || u.type === 'elite' || u.type === 'rocketeer'));
+        const minRaiders = this.p.expandSkill >= 1 ? 2 : 3;
+        if (raiders.length >= minRaiders) {
+          const target = this.visibleEnemyHarvesters()
+            .sort((a, b) => Math.hypot(a.x - this.baseCenter().x, a.y - this.baseCenter().y) -
+                            Math.hypot(b.x - this.baseCenter().x, b.y - this.baseCenter().y))[0] ?? null;
+          const kref = this.nearestKnownEnemyEco();
+          const raidSize = Math.min(this.p.expandSkill >= 1 ? 5 : 3, raiders.length);
           if (target) {
-            this.harassIds = jeeps.slice(0, 3).map(j => j.id);
+            this.harassIds = raiders.slice(0, raidSize).map(j => j.id);
             this.g.cmdAttack(this.harassIds, target.id, false);
             this.harassT = this.p.harassCooldown;
           } else if (kref) {
-            this.harassIds = jeeps.slice(0, 3).map(j => j.id);
+            this.harassIds = raiders.slice(0, raidSize).map(j => j.id);
             this.g.cmdMove(this.harassIds, kref.x, kref.y, true);
-            this.harassT = this.p.harassCooldown * 1.4;
+            this.harassT = this.p.harassCooldown * 1.25;
           }
         }
       }
@@ -788,10 +992,20 @@ export class AIController {
       return;
     }
 
+    const pressureTarget = this.pickPressureTarget();
+    if (pressureTarget && value >= threshold * (this.p.expandSkill >= 1 ? 0.42 : 0.58) && idle.length >= 3) {
+      const squad = this.pickAttackForce(idle, threshold * 0.5, true);
+      if (squad.length > 0) {
+        this.g.cmdMove(squad.map(u => u.id), pressureTarget.x, pressureTarget.y, true);
+        this.attackThreshold = Math.max(this.p.attackBase * 0.85, this.attackThreshold * 0.94);
+        return;
+      }
+    }
+
     if (value >= threshold) {
       const target = this.pickAttackTarget();
       if (target) {
-        this.waveIds = idle.map(u => u.id);
+        this.waveIds = this.pickAttackForce(idle, threshold, false).map(u => u.id);
         this.waveTarget = target;
         this.waveStartT = this.g.time;
         this.g.cmdMove(this.waveIds, target.x, target.y, true);
@@ -819,12 +1033,55 @@ export class AIController {
 
   // Cible de vague : économie exposée d'abord, puis production, puis QG.
   // Riposte : forte préférence pour le joueur qui nous a attaqués récemment.
+  private pickPressureTarget(): { x: number; y: number } | null {
+    const harvesters = this.visibleEnemyHarvesters();
+    if (harvesters.length > 0) {
+      const base = this.baseCenter();
+      harvesters.sort((a, b) => Math.hypot(a.x - base.x, a.y - base.y) - Math.hypot(b.x - base.x, b.y - base.y));
+      return { x: harvesters[0].x, y: harvesters[0].y };
+    }
+    const eco = this.nearestKnownEnemyEco();
+    if (eco) return { x: eco.x, y: eco.y };
+    return null;
+  }
+
+  private pickAttackForce(idle: Unit[], threshold: number, raid: boolean): Unit[] {
+    const base = this.baseCenter();
+    const sorted = [...idle].sort((a, b) => {
+      const av =
+        a.type === 'heavytank' || a.type === 'heavyarty' || a.type === 'tankdestroyer' ? 4 :
+        a.type === 'tank' || a.type === 'artillery' ? 3 :
+        a.type === 'jeep' || a.type === 'elite' || a.type === 'rocketeer' ? 2 : 1;
+      const bv =
+        b.type === 'heavytank' || b.type === 'heavyarty' || b.type === 'tankdestroyer' ? 4 :
+        b.type === 'tank' || b.type === 'artillery' ? 3 :
+        b.type === 'jeep' || b.type === 'elite' || b.type === 'rocketeer' ? 2 : 1;
+      return bv - av;
+    });
+    const reserveValue = raid ? 500 : (this.p.expandSkill >= 1 ? 650 : 900);
+    const maxUnits = raid ? (this.p.expandSkill >= 1 ? 6 : 4) : sorted.length;
+    const out: Unit[] = [];
+    let picked = 0;
+    let leftValue = this.armyValue(sorted);
+    for (const u of sorted) {
+      if (out.length >= maxUnits) break;
+      const cost = UNITS[u.type].cost;
+      const closeToBase = Math.hypot(u.x - base.x, u.y - base.y) < 22;
+      if (!raid && closeToBase && leftValue - cost < reserveValue) continue;
+      out.push(u);
+      picked += cost;
+      leftValue -= cost;
+      if (raid && out.length >= 3 && picked >= threshold * 0.35) break;
+    }
+    return out.length > 0 ? out : sorted.slice(0, Math.min(maxUnits, sorted.length));
+  }
+
   private pickAttackTarget(): { x: number; y: number } | null {
     const base = this.baseCenter();
     const prio: Record<string, number> = {
-      refinery: 5, refinery2: 5.5, power: 4, power2: 4.2, factory: 3.5, factory2: 3.8,
-      barracks: 3, barracks2: 3.2, airport: 3.5, lab: 3.6, depot: 3,
-      turret: 1.5, atgun: 1.5, aa: 2, radar: 2.5, radarcenter: 2.7, tech: 2.5, hq: 2.8,
+      refinery: 6.2, refinery2: 7.0, power: 4.6, power2: 4.8, factory: 4.4, factory2: 5.1,
+      barracks: 3.2, barracks2: 3.9, airport: 4.2, lab: 5.4, depot: 4.8,
+      turret: 1.2, atgun: 1.3, aa: 1.8, radar: 3.0, radarcenter: 3.2, tech: 3.8, hq: 3.6,
     };
     const revengeActive = this.p.counterAttack && this.g.time - this.revengeT < 120;
     let best: KnownBuilding | null = null, bestScore = -Infinity;
