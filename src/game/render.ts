@@ -30,6 +30,138 @@ const HULL_DARK = '#272c31';
 const HULL_MID = '#4a525a';
 const HULL_LIGHT = '#5f6a73';
 
+// Résolution des sprites pré-calculés (px par tuile) : le détail est "cuit"
+// une seule fois en haute résolution puis affiché lissé — beaucoup plus fin
+// qu'un dessin direct, et plus rapide.
+const SPX = 48;
+
+// Éclaircit (f>0) ou assombrit (f<0) une couleur (#rrggbb ou rgb(r,g,b)).
+function shade(color: string, f: number): string {
+  let r = 0, g = 0, b = 0;
+  if (color.startsWith('#')) {
+    r = parseInt(color.slice(1, 3), 16);
+    g = parseInt(color.slice(3, 5), 16);
+    b = parseInt(color.slice(5, 7), 16);
+  } else {
+    const m2 = color.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    if (m2) { r = +m2[1]; g = +m2[2]; b = +m2[3]; }
+  }
+  const m = (v: number) => Math.max(0, Math.min(255, Math.round(f > 0 ? v + (255 - v) * f : v * (1 + f))));
+  return `rgb(${m(r)},${m(g)},${m(b)})`;
+}
+
+// Plaque de métal biseautée : dégradé vertical, contour d'encrage, arête claire.
+function plate(c: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number, base: string) {
+  const gr = c.createLinearGradient(0, y, 0, y + h);
+  gr.addColorStop(0, shade(base, 0.22));
+  gr.addColorStop(0.45, base);
+  gr.addColorStop(1, shade(base, -0.28));
+  c.fillStyle = gr;
+  c.beginPath();
+  if (typeof c.roundRect === 'function') c.roundRect(x, y, w, h, r); else c.rect(x, y, w, h);
+  c.fill();
+  c.strokeStyle = 'rgba(0,0,0,0.55)';
+  c.lineWidth = Math.max(1, SPX * 0.03);
+  c.stroke();
+  c.strokeStyle = 'rgba(255,255,255,0.28)';
+  c.lineWidth = 1;
+  c.beginPath(); c.moveTo(x + r, y + 1.5); c.lineTo(x + w - r, y + 1.5); c.stroke();
+}
+
+// Polygone de blindage avec dégradé directionnel.
+function armor(c: CanvasRenderingContext2D, pts: [number, number][], base: string, lightDir = -1) {
+  let minY = Infinity, maxY = -Infinity;
+  for (const p of pts) { minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]); }
+  const gr = c.createLinearGradient(0, lightDir < 0 ? minY : maxY, 0, lightDir < 0 ? maxY : minY);
+  gr.addColorStop(0, shade(base, 0.2));
+  gr.addColorStop(1, shade(base, -0.26));
+  c.fillStyle = gr;
+  c.beginPath();
+  c.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) c.lineTo(pts[i][0], pts[i][1]);
+  c.closePath();
+  c.fill();
+  c.strokeStyle = 'rgba(0,0,0,0.5)';
+  c.lineWidth = Math.max(1, SPX * 0.03);
+  c.stroke();
+}
+
+// Chenille : bande sombre, galets, maillons.
+function tracks(c: CanvasRenderingContext2D, x: number, y: number, len: number, wd: number) {
+  plate(c, x, y, len, wd, wd * 0.3, '#1c2024');
+  c.fillStyle = '#33393f';
+  const n = Math.max(3, Math.floor(len / (wd * 0.9)));
+  for (let k = 0; k < n; k++) {
+    c.beginPath();
+    c.arc(x + wd * 0.6 + (k * (len - wd * 1.2)) / Math.max(1, n - 1), y + wd / 2, wd * 0.3, 0, Math.PI * 2);
+    c.fill();
+  }
+  c.strokeStyle = 'rgba(255,255,255,0.12)';
+  c.lineWidth = 1;
+  for (let k = 0; k < len; k += 4) {
+    c.beginPath(); c.moveTo(x + k, y + 1); c.lineTo(x + k, y + wd - 1); c.stroke();
+  }
+}
+
+// Canon : fût cylindrique en dégradé + frein de bouche.
+function barrel(c: CanvasRenderingContext2D, x: number, y: number, len: number, thick: number, brake = true) {
+  const gr = c.createLinearGradient(0, y - thick / 2, 0, y + thick / 2);
+  gr.addColorStop(0, '#b9c2c9');
+  gr.addColorStop(0.5, '#7d8790');
+  gr.addColorStop(1, '#3c434a');
+  c.fillStyle = gr;
+  c.fillRect(x, y - thick / 2, len, thick);
+  c.strokeStyle = 'rgba(0,0,0,0.5)';
+  c.lineWidth = 1;
+  c.strokeRect(x, y - thick / 2, len, thick);
+  if (brake) {
+    c.fillStyle = '#2c3136';
+    c.fillRect(x + len - thick * 1.4, y - thick * 0.8, thick * 1.4, thick * 1.6);
+    c.fillStyle = 'rgba(255,255,255,0.18)';
+    c.fillRect(x + len - thick * 1.4, y - thick * 0.8, thick * 1.4, 2);
+  }
+}
+
+// Greebles : petits détails techniques (évents, boîtiers, boulons).
+function greebles(c: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, seed: number, n: number) {
+  const rng = mulberry32(seed);
+  for (let k = 0; k < n; k++) {
+    const gx = x + rng() * w, gy = y + rng() * h;
+    const kind = rng();
+    if (kind < 0.4) { // évent
+      c.fillStyle = 'rgba(0,0,0,0.35)';
+      const gw = 3 + rng() * 5;
+      c.fillRect(gx, gy, gw, 2);
+      c.fillRect(gx, gy + 3, gw, 2);
+    } else if (kind < 0.75) { // boîtier
+      c.fillStyle = `rgba(255,255,255,${0.06 + rng() * 0.08})`;
+      c.fillRect(gx, gy, 3 + rng() * 4, 3 + rng() * 3);
+      c.strokeStyle = 'rgba(0,0,0,0.3)';
+      c.lineWidth = 1;
+      c.strokeRect(gx, gy, 3 + rng() * 4, 3 + rng() * 3);
+    } else { // boulon
+      c.fillStyle = 'rgba(255,255,255,0.22)';
+      c.beginPath(); c.arc(gx, gy, 1.2, 0, Math.PI * 2); c.fill();
+    }
+  }
+}
+
+// Usure : éraflures et salissures discrètes.
+function weather(c: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, seed: number) {
+  const rng = mulberry32(seed * 7 + 3);
+  for (let k = 0; k < 14; k++) {
+    const gx = x + rng() * w, gy = y + rng() * h;
+    if (rng() < 0.5) {
+      c.strokeStyle = `rgba(0,0,0,${0.08 + rng() * 0.1})`;
+      c.lineWidth = 1;
+      c.beginPath(); c.moveTo(gx, gy); c.lineTo(gx + (rng() - 0.5) * 8, gy + (rng() - 0.5) * 8); c.stroke();
+    } else {
+      c.fillStyle = `rgba(60,48,30,${0.06 + rng() * 0.08})`;
+      c.beginPath(); c.arc(gx, gy, 1 + rng() * 2.5, 0, Math.PI * 2); c.fill();
+    }
+  }
+}
+
 export class Renderer {
   private ctx: CanvasRenderingContext2D;
   private mmCtx: CanvasRenderingContext2D;
@@ -322,7 +454,7 @@ export class Renderer {
       if (u.airState) continue;
       if (u.x < tx0 - 1 || u.x > tx1 + 1 || u.y < ty0 - 1 || u.y > ty1 + 1) continue;
       if (u.owner !== 0 && !g.isVisibleTo(0, u.x, u.y)) continue;
-      this.drawUnit(ctx, g, u, sx, sy, z, v.selectedUnits.includes(u.id));
+      this.drawUnitSprite(ctx, g, u, sx, sy, z, v.selectedUnits.includes(u.id));
     }
 
     // ----- projectiles
@@ -433,42 +565,12 @@ export class Renderer {
         ctx.fillStyle = 'rgba(0,0,0,0.25)';
         ctx.beginPath(); ctx.ellipse(px + z * 0.4, py + z * 0.5, z * 0.4, z * 0.18, 0, 0, Math.PI * 2); ctx.fill();
       }
+      const sprA = this.unitSprites(u.type, u.owner);
+      const sA = z / SPX;
       ctx.save();
       ctx.translate(px, py - (flying ? z * 0.5 : 0));
-      ctx.rotate(u.dir + Math.PI / 2);
-      ctx.fillStyle = PLAYER_COLORS[u.owner];
-      if (u.type === 'scoutplane') {
-        // avion radar : fuselage fin, ailes droites, radôme bleu clair
-        ctx.fillRect(-z * 0.06, -z * 0.42, z * 0.12, z * 0.78);
-        ctx.fillRect(-z * 0.42, -z * 0.08, z * 0.84, z * 0.14);
-        ctx.fillRect(-z * 0.18, z * 0.28, z * 0.36, z * 0.08);
-        ctx.fillStyle = '#9ad0ff';
-        ctx.beginPath(); ctx.arc(0, -z * 0.05, z * 0.11, 0, Math.PI * 2); ctx.fill();
-      } else {
-        // chasseur-bombardier : ailes en flèche, nacelles moteur, verrière
-        ctx.beginPath();
-        ctx.moveTo(0, -z * 0.5);                  // nez
-        ctx.lineTo(z * 0.12, -z * 0.1);
-        ctx.lineTo(z * 0.44, z * 0.22);           // aile droite en flèche
-        ctx.lineTo(z * 0.4, z * 0.32);
-        ctx.lineTo(z * 0.08, z * 0.18);
-        ctx.lineTo(z * 0.1, z * 0.42);            // empennage droit
-        ctx.lineTo(0, z * 0.34);
-        ctx.lineTo(-z * 0.1, z * 0.42);
-        ctx.lineTo(-z * 0.08, z * 0.18);
-        ctx.lineTo(-z * 0.4, z * 0.32);
-        ctx.lineTo(-z * 0.44, z * 0.22);          // aile gauche
-        ctx.lineTo(-z * 0.12, -z * 0.1);
-        ctx.closePath();
-        ctx.fill();
-        // nacelles moteur
-        ctx.fillStyle = '#2c3136';
-        ctx.fillRect(-z * 0.22, z * 0.05, z * 0.09, z * 0.22);
-        ctx.fillRect(z * 0.13, z * 0.05, z * 0.09, z * 0.22);
-        // verrière
-        ctx.fillStyle = 'rgba(180,225,255,0.85)';
-        ctx.beginPath(); ctx.ellipse(0, -z * 0.22, z * 0.06, z * 0.14, 0, 0, Math.PI * 2); ctx.fill();
-      }
+      ctx.rotate(u.dir);
+      ctx.drawImage(sprA.body, -sprA.body.width / 2 * sA, -sprA.body.height / 2 * sA, sprA.body.width * sA, sprA.body.height * sA);
       ctx.restore();
       if (v.selectedUnits.includes(u.id)) {
         ctx.strokeStyle = '#fff';
@@ -583,6 +685,441 @@ export class Renderer {
     else ctx.rect(x, y, w, h);
   }
 
+  // ----------------------------------------------- sprites d'unités pré-cuits
+  //
+  // Chaque unité est dessinée UNE fois en 48 px/tuile (dégradés, blindage,
+  // greebles, usure) puis affichée avec rotation lissée : détail x20 et
+  // rendu par frame plus léger qu'avant.
+
+  private spriteCache = new Map<string, { body: HTMLCanvasElement; turret?: HTMLCanvasElement }>();
+
+  private unitSprites(type: string, owner: number): { body: HTMLCanvasElement; turret?: HTMLCanvasElement } {
+    const key = `${type}:${owner}`;
+    let spr = this.spriteCache.get(key);
+    if (!spr) {
+      spr = this.bakeUnit(type, PLAYER_COLORS[owner]);
+      this.spriteCache.set(key, spr);
+    }
+    return spr;
+  }
+
+  private newSprite(tiles: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = Math.ceil(tiles * SPX);
+    const c = cv.getContext('2d')!;
+    c.translate(cv.width / 2, cv.height / 2);
+    return [cv, c];
+  }
+
+  private bakeUnit(type: string, col: string): { body: HTMLCanvasElement; turret?: HTMLCanvasElement } {
+    const T = SPX;
+    const def = UNITS[type as keyof typeof UNITS];
+    const r = def.radius * T;
+
+    // ---------- infanterie : soldat avec casque, gilet, arme détaillée
+    if (def.armor === 'inf' && !def.isAir) {
+      const [cv, c] = this.newSprite(1.8);
+      const torso = (base: string, rad = r) => {
+        const gr = c.createRadialGradient(-rad * 0.35, -rad * 0.35, rad * 0.2, 0, 0, rad);
+        gr.addColorStop(0, shade(base, 0.3));
+        gr.addColorStop(0.7, base);
+        gr.addColorStop(1, shade(base, -0.35));
+        c.fillStyle = gr;
+        c.beginPath(); c.arc(0, 0, rad, 0, Math.PI * 2); c.fill();
+        c.strokeStyle = 'rgba(0,0,0,0.55)';
+        c.lineWidth = 1.5;
+        c.stroke();
+        // épaules
+        c.fillStyle = shade(base, -0.25);
+        c.beginPath(); c.arc(0, -rad * 0.85, rad * 0.34, 0, Math.PI * 2); c.fill();
+        c.beginPath(); c.arc(0, rad * 0.85, rad * 0.34, 0, Math.PI * 2); c.fill();
+      };
+      const helmet = (base: string) => {
+        const gr = c.createRadialGradient(-r * 0.25, -r * 0.25, r * 0.1, 0, 0, r * 0.62);
+        gr.addColorStop(0, shade(base, 0.45));
+        gr.addColorStop(1, shade(base, -0.3));
+        c.fillStyle = gr;
+        c.beginPath(); c.arc(0, 0, r * 0.62, 0, Math.PI * 2); c.fill();
+        c.strokeStyle = 'rgba(0,0,0,0.4)';
+        c.lineWidth = 1;
+        c.stroke();
+      };
+      const rifle = (len: number, stock = true) => {
+        if (stock) { c.fillStyle = '#6b4f2e'; c.fillRect(r * 0.1, -1.8, r * 0.7, 3.6); }
+        barrel(c, r * 0.7, 0, len - r * 0.7, 2.6, false);
+      };
+
+      switch (type) {
+        case 'rifle':
+          c.fillStyle = '#5a4a32'; c.fillRect(-r * 1.15 - 3, -3.5, 7, 7); // sac
+          torso(col); helmet('#3c4046'); rifle(r * 1.7);
+          break;
+        case 'elite':
+          c.fillStyle = '#5a4a32'; c.fillRect(-r * 1.15 - 3, -4, 8, 8);
+          torso(shade(col, -0.2));
+          c.strokeStyle = '#e7c44a'; c.lineWidth = 2;
+          c.beginPath(); c.arc(0, 0, r * 0.92, 0, Math.PI * 2); c.stroke();
+          helmet('#23262a');
+          rifle(r * 2.0);
+          c.strokeStyle = '#e7c44a'; c.lineWidth = 1.6;
+          c.beginPath(); c.moveTo(r * 2.0, 0); c.lineTo(r * 2.3, 0); c.stroke(); // baïonnette
+          break;
+        case 'bazooka': {
+          torso(col); helmet('#3c4046');
+          const gr2 = c.createLinearGradient(0, -5, 0, 5);
+          gr2.addColorStop(0, '#cbb277'); gr2.addColorStop(0.5, '#9a8146'); gr2.addColorStop(1, '#5e4d27');
+          c.fillStyle = gr2;
+          c.fillRect(-r * 1.0, -4, r * 2.9, 8);
+          c.fillStyle = '#1d2126';
+          c.fillRect(r * 1.5, -5.5, r * 0.4, 11); // gueule
+          c.fillStyle = '#ff5e72';
+          c.beginPath(); c.arc(-r * 1.0, 0, 3.4, 0, Math.PI * 2); c.fill(); // venturi
+          break;
+        }
+        case 'rocketeer': {
+          c.fillStyle = '#4a3f23';
+          c.fillRect(-r * 1.3 - 4, -7, 9, 14); // râtelier dorsal
+          c.fillStyle = '#ff5e72';
+          for (const oy of [-5, -1.7, 1.7, 5]) { c.beginPath(); c.arc(-r * 1.3, oy, 1.6, 0, Math.PI * 2); c.fill(); }
+          torso(col); helmet('#23262a');
+          for (const oy of [-3.6, 3.6]) {
+            const gr2 = c.createLinearGradient(0, oy - 3, 0, oy + 3);
+            gr2.addColorStop(0, '#a8915a'); gr2.addColorStop(1, '#574a26');
+            c.fillStyle = gr2;
+            c.fillRect(-r * 1.0, oy - 3, r * 3.1, 6);
+            c.fillStyle = '#1d2126';
+            c.fillRect(r * 1.7, oy - 4, r * 0.35, 8);
+          }
+          break;
+        }
+        case 'sniper': {
+          const rngS = mulberry32(42);
+          for (let k = 0; k < 5; k++) { // ghillie
+            const gr2 = c.createRadialGradient(0, 0, 1, 0, 0, r * 0.7);
+            gr2.addColorStop(0, '#3a4429'); gr2.addColorStop(1, '#222a18');
+            c.fillStyle = gr2;
+            c.beginPath();
+            c.arc((rngS() - 0.5) * r * 1.2, (rngS() - 0.5) * r * 1.2, r * (0.5 + rngS() * 0.3), 0, Math.PI * 2);
+            c.fill();
+          }
+          c.strokeStyle = 'rgba(0,0,0,0.4)'; c.lineWidth = 1;
+          c.beginPath(); c.arc(0, 0, r * 0.95, 0, Math.PI * 2); c.stroke();
+          barrel(c, r * 0.3, 0, r * 2.5, 2, false);
+          c.fillStyle = '#9ad0ff';
+          c.beginPath(); c.arc(r * 1.0, -2.5, 2.4, 0, Math.PI * 2); c.fill(); // lunette
+          c.strokeStyle = '#c9d1d9'; c.lineWidth = 1.4; // bipied
+          c.beginPath(); c.moveTo(r * 2.5, 0); c.lineTo(r * 2.9, -4); c.stroke();
+          c.beginPath(); c.moveTo(r * 2.5, 0); c.lineTo(r * 2.9, 4); c.stroke();
+          break;
+        }
+        case 'engineer':
+          c.fillStyle = '#e07b2c'; // boîte à outils
+          c.fillRect(-3, r * 0.9, 9, 6.5);
+          c.strokeStyle = 'rgba(0,0,0,0.4)'; c.lineWidth = 1;
+          c.strokeRect(-3, r * 0.9, 9, 6.5);
+          torso('#b9bec8');
+          helmet('#ffd84d');
+          c.fillStyle = '#ffd84d';
+          c.fillRect(-r * 0.85, -2, r * 0.5, 4); // visière
+          c.strokeStyle = '#fff'; c.lineWidth = 2;
+          c.beginPath(); c.moveTo(r * 0.4, 0); c.lineTo(r * 1.4, 0); c.stroke(); // clé
+          c.beginPath(); c.arc(r * 1.5, 0, 2.6, 0.6, Math.PI * 1.5); c.stroke();
+          break;
+        case 'kamikaze':
+          torso('#3a1d20');
+          c.strokeStyle = 'rgba(0,0,0,0.5)'; c.lineWidth = 1;
+          for (const a of [-0.9, 0, 0.9]) { // charges sur le gilet
+            const bx = Math.cos(a + Math.PI) * r * 0.5, by = Math.sin(a + Math.PI) * r * 0.5;
+            c.fillStyle = '#c23030';
+            c.fillRect(bx - 2.6, by - 2.6, 5.2, 5.2);
+            c.strokeRect(bx - 2.6, by - 2.6, 5.2, 5.2);
+          }
+          c.strokeStyle = '#e8c84a'; c.lineWidth = 1; // câblage
+          c.beginPath(); c.arc(0, 0, r * 0.55, 0.4, Math.PI * 1.6); c.stroke();
+          helmet('#2c2326');
+          break;
+      }
+      weather(c, -r, -r, r * 2, r * 2, type.length * 17);
+      return { body: cv };
+    }
+
+    // ---------- aviation
+    if (def.isAir) {
+      const [cv, c] = this.newSprite(1.6);
+      const Tz = T;
+      if (type === 'scoutplane') {
+        armor(c, [[-Tz * 0.42, -Tz * 0.05], [Tz * 0.38, -Tz * 0.05], [Tz * 0.38, Tz * 0.05], [-Tz * 0.42, Tz * 0.05]], HULL_LIGHT); // fuselage
+        armor(c, [[-Tz * 0.05, -Tz * 0.44], [Tz * 0.09, -Tz * 0.44], [Tz * 0.05, 0], [Tz * 0.09, Tz * 0.44], [-Tz * 0.05, Tz * 0.44]], col); // ailes droites
+        armor(c, [[-Tz * 0.4, -Tz * 0.18], [-Tz * 0.28, 0], [-Tz * 0.4, Tz * 0.18]], col); // empennage
+        const gr2 = c.createRadialGradient(0, 0, 1, 0, 0, Tz * 0.13);
+        gr2.addColorStop(0, '#e8f4ff'); gr2.addColorStop(1, '#5a93d0');
+        c.fillStyle = gr2;
+        c.beginPath(); c.arc(Tz * 0.02, 0, Tz * 0.13, 0, Math.PI * 2); c.fill(); // rotodôme
+        c.strokeStyle = 'rgba(0,0,0,0.4)'; c.lineWidth = 1; c.stroke();
+      } else {
+        // chasseur-bombardier : ailes en flèche
+        armor(c, [
+          [Tz * 0.52, 0], [Tz * 0.1, -Tz * 0.12], [-Tz * 0.22, -Tz * 0.46], [-Tz * 0.34, -Tz * 0.4],
+          [-Tz * 0.18, -Tz * 0.08], [-Tz * 0.44, -Tz * 0.1], [-Tz * 0.5, 0],
+          [-Tz * 0.44, Tz * 0.1], [-Tz * 0.18, Tz * 0.08], [-Tz * 0.34, Tz * 0.4],
+          [-Tz * 0.22, Tz * 0.46], [Tz * 0.1, Tz * 0.12],
+        ], col);
+        c.fillStyle = '#2c3136'; // nacelles
+        c.fillRect(-Tz * 0.2, -Tz * 0.2, Tz * 0.26, Tz * 0.09);
+        c.fillRect(-Tz * 0.2, Tz * 0.11, Tz * 0.26, Tz * 0.09);
+        const gr2 = c.createLinearGradient(0, -3, 0, 3);
+        gr2.addColorStop(0, '#eaf6ff'); gr2.addColorStop(1, '#7db4e0');
+        c.fillStyle = gr2;
+        c.beginPath(); c.ellipse(Tz * 0.24, 0, Tz * 0.13, Tz * 0.06, 0, 0, Math.PI * 2); c.fill();
+      }
+      return { body: cv };
+    }
+
+    // ---------- véhicules
+    const [cv, c] = this.newSprite(3);
+    const seed = type.length * 31 + 7;
+    let turretCv: HTMLCanvasElement | undefined;
+
+    if (type === 'jeep') {
+      const L = r * 2.3, Wd = r * 1.35;
+      for (const [ox, oy] of [[-0.32, -0.66], [0.32, -0.66], [-0.32, 0.66], [0.32, 0.66]]) {
+        plate(c, ox * L - 5, oy * Wd - 4, 10, 8, 3, '#15181b'); // roues
+      }
+      plate(c, -L / 2, -Wd / 2, L, Wd, 5, HULL_MID);
+      plate(c, L * 0.16, -Wd / 2 + 2, L * 0.34, Wd - 4, 4, col); // capot d'équipe
+      const gr2 = c.createLinearGradient(0, -Wd * 0.3, 0, Wd * 0.3);
+      gr2.addColorStop(0, '#dff0fa'); gr2.addColorStop(1, '#8fb6cf');
+      c.fillStyle = gr2;
+      c.fillRect(L * 0.0, -Wd * 0.3, L * 0.13, Wd * 0.6); // pare-brise
+      plate(c, -L * 0.46, -Wd * 0.28, L * 0.3, Wd * 0.56, 3, HULL_DARK); // plateau arrière
+      c.fillStyle = '#2c3136';
+      c.beginPath(); c.arc(-L * 0.44, 0, Wd * 0.2, 0, Math.PI * 2); c.fill(); // roue de secours
+      greebles(c, -L * 0.4, -Wd * 0.4, L * 0.3, Wd * 0.8, seed, 4);
+      weather(c, -L / 2, -Wd / 2, L, Wd, seed);
+    } else if (type === 'tank' || type === 'heavytank') {
+      const heavy = type === 'heavytank';
+      const L = r * (heavy ? 2.5 : 2.4), Wd = r * (heavy ? 2.1 : 2.0);
+      tracks(c, -L / 2, -Wd / 2, L, Wd * (heavy ? 0.3 : 0.26));
+      tracks(c, -L / 2, Wd / 2 - Wd * (heavy ? 0.3 : 0.26), L, Wd * (heavy ? 0.3 : 0.26));
+      armor(c, [
+        [-L * 0.48, -Wd * 0.28], [L * 0.22, -Wd * 0.28], [L * 0.5, 0],
+        [L * 0.22, Wd * 0.28], [-L * 0.48, Wd * 0.28],
+      ], HULL_MID);
+      armor(c, [[L * 0.2, -Wd * 0.26], [L * 0.47, 0], [L * 0.2, Wd * 0.26]], col); // glacis d'équipe
+      c.strokeStyle = 'rgba(0,0,0,0.4)'; c.lineWidth = 1; // grilles moteur
+      for (let k = 0; k < 4; k++) {
+        c.beginPath();
+        c.moveTo(-L * (0.44 - k * 0.045), -Wd * 0.2);
+        c.lineTo(-L * (0.44 - k * 0.045), Wd * 0.2);
+        c.stroke();
+      }
+      greebles(c, -L * 0.3, -Wd * 0.24, L * 0.4, Wd * 0.48, seed, heavy ? 7 : 5);
+      weather(c, -L / 2, -Wd / 2, L, Wd, seed);
+      // tourelle (sprite séparé, pivote vers la cible)
+      const [tcv, tc] = this.newSprite(2.6);
+      const tr = Wd * (heavy ? 0.36 : 0.32);
+      if (heavy) {
+        barrel(tc, tr * 0.4, -Wd * 0.13, L * 0.78, 5);
+        barrel(tc, tr * 0.4, Wd * 0.13, L * 0.78, 5);
+        plate(tc, -tr, -tr * 0.85, tr * 2, tr * 1.7, tr * 0.4, HULL_DARK);
+        plate(tc, -tr * 0.62, -tr * 0.55, tr * 1.24, tr * 1.1, tr * 0.3, col);
+      } else {
+        barrel(tc, tr * 0.3, 0, L * 0.8, 5.5);
+        const gr2 = tc.createRadialGradient(-tr * 0.3, -tr * 0.3, 2, 0, 0, tr);
+        gr2.addColorStop(0, shade(HULL_DARK, 0.35)); gr2.addColorStop(1, shade(HULL_DARK, -0.2));
+        tc.fillStyle = gr2;
+        tc.beginPath(); tc.arc(0, 0, tr, 0, Math.PI * 2); tc.fill();
+        tc.strokeStyle = 'rgba(0,0,0,0.5)'; tc.lineWidth = 1.5; tc.stroke();
+        const gr3 = tc.createRadialGradient(-tr * 0.2, -tr * 0.2, 1, 0, 0, tr * 0.66);
+        gr3.addColorStop(0, shade(col, 0.25)); gr3.addColorStop(1, shade(col, -0.25));
+        tc.fillStyle = gr3;
+        tc.beginPath(); tc.arc(0, 0, tr * 0.66, 0, Math.PI * 2); tc.fill();
+        tc.fillStyle = 'rgba(255,255,255,0.4)';
+        tc.beginPath(); tc.arc(-tr * 0.2, -tr * 0.2, tr * 0.18, 0, Math.PI * 2); tc.fill(); // écoutille
+      }
+      turretCv = tcv;
+    } else if (type === 'artillery' || type === 'heavyarty') {
+      const heavy = type === 'heavyarty';
+      const L = r * (heavy ? 2.5 : 2.3), Wd = r * (heavy ? 2.0 : 1.5);
+      if (heavy) {
+        c.strokeStyle = '#2c3136'; c.lineWidth = 5; // vérins
+        for (const [vx2, vy2] of [[-0.5, -0.55], [-0.5, 0.55], [0.35, -0.55], [0.35, 0.55]]) {
+          c.beginPath(); c.moveTo(vx2 * L * 0.6, vy2 * Wd * 0.5); c.lineTo(vx2 * L, vy2 * Wd); c.stroke();
+          c.fillStyle = '#1d2126';
+          c.beginPath(); c.arc(vx2 * L, vy2 * Wd, 4, 0, Math.PI * 2); c.fill();
+        }
+      } else {
+        tracks(c, -L / 2, -Wd / 2, L, Wd * 0.2);
+        tracks(c, -L / 2, Wd / 2 - Wd * 0.2, L, Wd * 0.2);
+      }
+      plate(c, -L / 2, -Wd * 0.32, L, Wd * 0.64, 5, HULL_MID);
+      plate(c, heavy ? L * 0.26 : -L * 0.44, -Wd * 0.3, L * 0.2, Wd * 0.6, 3, col); // panneau d'équipe
+      // plaque arrière à rayures
+      plate(c, -L * 0.62, -Wd * 0.52, L * 0.16, Wd * 1.04, 2, '#2c3136');
+      c.fillStyle = '#e8c84a';
+      c.fillRect(-L * 0.62, -Wd * 0.52, L * 0.16, Wd * 0.14);
+      c.fillRect(-L * 0.62, Wd * 0.38, L * 0.16, Wd * 0.14);
+      // berceau + cylindres de recul + canon
+      plate(c, -L * 0.12, -Wd * 0.2, L * 0.34, Wd * 0.4, 3, HULL_DARK);
+      c.strokeStyle = '#9aa6b0'; c.lineWidth = 2;
+      c.beginPath(); c.moveTo(-L * 0.02, -Wd * 0.12); c.lineTo(L * 0.45, -Wd * 0.12); c.stroke();
+      c.beginPath(); c.moveTo(-L * 0.02, Wd * 0.12); c.lineTo(L * 0.45, Wd * 0.12); c.stroke();
+      barrel(c, -L * 0.05, 0, L * (heavy ? 1.0 : 1.12), heavy ? 9 : 6);
+      if (heavy) {
+        c.fillStyle = '#1d2126';
+        c.beginPath(); c.arc(-L * 0.1, 0, Wd * 0.34, 0, Math.PI * 2); c.fill();
+        c.strokeStyle = '#9aa6b0'; c.lineWidth = 1.5; c.stroke();
+      }
+      greebles(c, -L * 0.45, -Wd * 0.28, L * 0.3, Wd * 0.56, seed, 4);
+      weather(c, -L / 2, -Wd / 2, L, Wd, seed);
+    } else if (type === 'harvester') {
+      const L = r * 2.7, Wd = r * 2.1;
+      tracks(c, -L / 2, -Wd / 2, L, Wd * 0.2);
+      tracks(c, -L / 2, Wd / 2 - Wd * 0.2, L, Wd * 0.2);
+      plate(c, -L / 2, -Wd * 0.34, L, Wd * 0.68, 6, HULL_MID);
+      armor(c, [ // chevron industriel d'équipe
+        [L * 0.16, -Wd * 0.34], [L * 0.32, -Wd * 0.34], [L * 0.42, 0],
+        [L * 0.32, Wd * 0.34], [L * 0.16, Wd * 0.34], [L * 0.28, 0],
+      ], col);
+      // tambour d'admission
+      plate(c, L * 0.42, -Wd * 0.5, L * 0.28, Wd, 4, '#33393f');
+      c.strokeStyle = '#9aa6b0'; c.lineWidth = 2;
+      for (let k = 0; k < 4; k++) {
+        const yy = -Wd * 0.42 + k * Wd * 0.28;
+        c.beginPath(); c.moveTo(L * 0.44, yy); c.lineTo(L * 0.68, yy); c.stroke();
+      }
+      // benne (le remplissage est dessiné en direct)
+      plate(c, -L * 0.44, -Wd * 0.32, L * 0.58, Wd * 0.64, 4, '#1d2126');
+      c.fillStyle = '#2c3136'; // cheminées
+      c.beginPath(); c.arc(L * 0.3, -Wd * 0.4, 4.4, 0, Math.PI * 2); c.fill();
+      c.beginPath(); c.arc(L * 0.3, Wd * 0.4, 4.4, 0, Math.PI * 2); c.fill();
+      greebles(c, -L * 0.4, -Wd * 0.28, L * 0.2, Wd * 0.56, seed, 4);
+      weather(c, -L / 2, -Wd / 2, L, Wd, seed);
+    } else if (type === 'tankdestroyer') {
+      const L = r * 2.6, Wd = r * 1.8;
+      tracks(c, -L / 2, -Wd / 2, L, Wd * 0.22);
+      tracks(c, -L / 2, Wd / 2 - Wd * 0.22, L, Wd * 0.22);
+      armor(c, [
+        [-L * 0.46, -Wd * 0.3], [L * 0.2, -Wd * 0.3], [L * 0.5, 0],
+        [L * 0.2, Wd * 0.3], [-L * 0.46, Wd * 0.3],
+      ], HULL_MID);
+      armor(c, [ // bande dorsale d'équipe
+        [-L * 0.46, -Wd * 0.08], [L * 0.38, -Wd * 0.08], [L * 0.5, 0],
+        [L * 0.38, Wd * 0.08], [-L * 0.46, Wd * 0.08],
+      ], col);
+      armor(c, [ // casemate
+        [-L * 0.3, -Wd * 0.18], [L * 0.08, -Wd * 0.18], [L * 0.24, 0],
+        [L * 0.08, Wd * 0.18], [-L * 0.3, Wd * 0.18],
+      ], HULL_DARK);
+      barrel(c, L * 0.1, 0, L * 1.05, 5);
+      greebles(c, -L * 0.28, -Wd * 0.16, L * 0.3, Wd * 0.32, seed, 4);
+      weather(c, -L / 2, -Wd / 2, L, Wd, seed);
+    } else if (type === 'radarvehicle') {
+      const L = r * 2.4, Wd = r * 1.6;
+      for (const ox of [-0.36, 0, 0.36]) {
+        plate(c, ox * L - 4.5, -Wd * 0.64 - 3.5, 9, 7, 3, '#15181b');
+        plate(c, ox * L - 4.5, Wd * 0.64 - 3.5, 9, 7, 3, '#15181b');
+      }
+      plate(c, -L / 2, -Wd / 2, L, Wd, 5, HULL_MID);
+      plate(c, L * 0.3, -Wd / 2 + 2, L * 0.18, Wd - 4, 3, col);
+      plate(c, -L * 0.48, -Wd / 2 + 2, L * 0.18, Wd - 4, 3, col);
+      const gr2 = c.createRadialGradient(-2, -2, 1, 0, 0, Wd * 0.26);
+      gr2.addColorStop(0, '#eaf6ff'); gr2.addColorStop(1, '#7da8c9');
+      c.fillStyle = gr2;
+      c.beginPath(); c.arc(0, 0, Wd * 0.26, 0, Math.PI * 2); c.fill(); // dôme
+      c.strokeStyle = 'rgba(0,0,0,0.4)'; c.lineWidth = 1; c.stroke();
+      greebles(c, -L * 0.3, -Wd * 0.4, L * 0.5, Wd * 0.8, seed, 4);
+      weather(c, -L / 2, -Wd / 2, L, Wd, seed);
+    }
+    return { body: cv, turret: turretCv };
+  }
+
+  // Rendu d'une unité via son sprite haute résolution + surcouches dynamiques.
+  private drawUnitSprite(
+    ctx: CanvasRenderingContext2D, g: Game, u: Unit,
+    sx: (x: number) => number, sy: (y: number) => number, z: number, selected: boolean,
+  ) {
+    const def = UNITS[u.type];
+    const px = sx(u.x), py = sy(u.y);
+    const col = PLAYER_COLORS[u.owner];
+    const spr = this.unitSprites(u.type, u.owner);
+    const s = z / SPX;
+
+    if (selected) {
+      ctx.strokeStyle = col;
+      ctx.globalAlpha = 0.9;
+      ctx.lineWidth = Math.max(2, z * 0.1);
+      ctx.beginPath(); ctx.arc(px, py, (def.radius + 0.3) * z, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(px, py, (def.radius + 0.3) * z, 0, Math.PI * 2); ctx.stroke();
+    }
+
+    // ombre au sol
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath();
+    ctx.ellipse(px + z * 0.08, py + z * 0.12, def.radius * 1.2 * z, def.radius * 0.85 * z, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // corps orienté
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(u.dir);
+    ctx.drawImage(spr.body, -spr.body.width / 2 * s, -spr.body.height / 2 * s, spr.body.width * s, spr.body.height * s);
+
+    // surcouche : remplissage de la benne du récolteur
+    if (u.type === 'harvester' && u.cargo > 1) {
+      const L = def.radius * 2.7 * z, Wd = def.radius * 2.1 * z;
+      const fillF = Math.min(1, u.cargo / 320);
+      ctx.fillStyle = u.cargoValue > u.cargo * 1.5 ? '#c43050' : '#e7c44a';
+      this.rr(ctx, -L * 0.42, -Wd * 0.27, L * 0.52 * fillF, Wd * 0.54, z * 0.05);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // tourelle pivotante (tank, tank lourd)
+    if (spr.turret) {
+      let tAng = u.dir;
+      if (u.engageId) {
+        const tgt = u.engageIsBuilding ? g.buildingById.get(u.engageId) : g.unitById.get(u.engageId);
+        if (tgt) {
+          const bx = u.engageIsBuilding
+            ? (tgt as { tx: number; w: number }).tx + (tgt as { w: number }).w / 2
+            : (tgt as { x: number }).x;
+          const by = u.engageIsBuilding
+            ? (tgt as { ty: number; h: number }).ty + (tgt as { h: number }).h / 2
+            : (tgt as { y: number }).y;
+          tAng = Math.atan2(by - u.y, bx - u.x);
+        }
+      }
+      const pivot = -def.radius * 0.12 * z;
+      ctx.save();
+      ctx.translate(px + Math.cos(u.dir) * pivot, py + Math.sin(u.dir) * pivot);
+      ctx.rotate(tAng);
+      ctx.drawImage(spr.turret, -spr.turret.width / 2 * s, -spr.turret.height / 2 * s, spr.turret.width * s, spr.turret.height * s);
+      ctx.restore();
+    }
+
+    // surcouches non orientées
+    if (u.type === 'kamikaze') {
+      const pulse = 0.45 + 0.35 * Math.sin(g.time * 7 + u.id);
+      ctx.strokeStyle = `rgba(255,70,70,${pulse})`;
+      ctx.lineWidth = Math.max(1.5, z * 0.09);
+      ctx.beginPath(); ctx.arc(px, py, def.radius * 1.35 * z, 0, Math.PI * 2); ctx.stroke();
+    } else if (u.type === 'radarvehicle') {
+      const sweep = g.time * 2.4 + u.id;
+      ctx.strokeStyle = '#9ad0ff';
+      ctx.lineWidth = Math.max(2, z * 0.1);
+      ctx.beginPath(); ctx.arc(px, py, def.radius * 0.9 * z, sweep, sweep + Math.PI * 0.7); ctx.stroke();
+    }
+
+    if (selected || u.hp < u.maxHp) {
+      this.healthBar(ctx, px, py - (def.radius + 0.45) * z, Math.max(14, def.radius * 2.4 * z), u.hp / u.maxHp, selected);
+    }
+  }
+
+  // (ancien rendu vectoriel direct, conservé en secours)
   private drawUnit(
     ctx: CanvasRenderingContext2D, g: Game, u: Unit,
     sx: (x: number) => number, sy: (y: number) => number, z: number, selected: boolean,
