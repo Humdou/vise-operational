@@ -714,10 +714,25 @@ export class Renderer {
     c.translate(cv.width / 2, cv.height / 2);
     const seed = type.length * 53 + 11;
 
-    // ---- dôme : volume sphérique avec spéculaire et ombre portée
+    // ---- dôme : volume sphérique avec jupe murale (hauteur façon Red Alert)
     const dome = (x: number, y: number, r: number, base: string, ring = true) => {
-      c.fillStyle = 'rgba(0,0,0,0.32)';
-      c.beginPath(); c.ellipse(x + r * 0.16, y + r * 0.2, r, r * 0.92, 0, 0, Math.PI * 2); c.fill();
+      const drop = r * 0.34; // hauteur du mur visible côté sud
+      c.fillStyle = 'rgba(0,0,0,0.35)';
+      c.beginPath(); c.ellipse(x + r * 0.18, y + drop + r * 0.24, r * 1.05, r * 0.5, 0, 0, Math.PI * 2); c.fill();
+      // mur cylindrique sous le dôme
+      const wallGr = c.createLinearGradient(x - r, 0, x + r, 0);
+      wallGr.addColorStop(0, shade(base, -0.5));
+      wallGr.addColorStop(0.5, shade(base, -0.18));
+      wallGr.addColorStop(1, shade(base, -0.55));
+      c.fillStyle = wallGr;
+      c.beginPath();
+      c.moveTo(x - r, y);
+      c.lineTo(x - r, y + drop);
+      c.arc(x, y + drop, r, Math.PI, 0, true);
+      c.lineTo(x + r, y);
+      c.closePath();
+      c.fill();
+      // coupole
       const gr = c.createRadialGradient(x - r * 0.35, y - r * 0.35, r * 0.1, x, y, r);
       gr.addColorStop(0, shade(base, 0.42));
       gr.addColorStop(0.55, base);
@@ -736,16 +751,27 @@ export class Renderer {
       c.beginPath(); c.ellipse(x - r * 0.4, y - r * 0.4, r * 0.16, r * 0.1, -0.7, 0, Math.PI * 2); c.fill();
     };
 
-    // ---- capsule : hangar en demi-canon (dégradé en travers de l'axe)
+    // ---- capsule : hangar en demi-canon avec mur sud visible (extrusion)
     const capsule = (x: number, y: number, len: number, wd: number, base: string, vertical = false) => {
       c.save();
       c.translate(x, y);
       if (vertical) c.rotate(Math.PI / 2);
-      c.fillStyle = 'rgba(0,0,0,0.3)';
+      const drop = wd * 0.34;
+      c.fillStyle = 'rgba(0,0,0,0.35)';
       c.beginPath();
-      if (typeof c.roundRect === 'function') c.roundRect(-len / 2 + 3, -wd / 2 + 4, len, wd, wd / 2);
-      else c.rect(-len / 2 + 3, -wd / 2 + 4, len, wd);
+      if (typeof c.roundRect === 'function') c.roundRect(-len / 2 + 3, -wd / 2 + drop + 5, len, wd, wd / 2);
+      else c.rect(-len / 2 + 3, -wd / 2 + drop + 5, len, wd);
       c.fill();
+      // mur frontal (extrusion vers le bas)
+      const wallGr = c.createLinearGradient(0, wd / 2, 0, wd / 2 + drop);
+      wallGr.addColorStop(0, shade(base, -0.2));
+      wallGr.addColorStop(1, shade(base, -0.55));
+      c.fillStyle = wallGr;
+      c.beginPath();
+      if (typeof c.roundRect === 'function') c.roundRect(-len / 2, -wd / 2 + drop, len, wd, wd / 2);
+      else c.rect(-len / 2, -wd / 2 + drop, len, wd);
+      c.fill();
+      // toit bombé
       const gr = c.createLinearGradient(0, -wd / 2, 0, wd / 2);
       gr.addColorStop(0, shade(base, -0.25));
       gr.addColorStop(0.28, shade(base, 0.35));
@@ -793,30 +819,33 @@ export class Renderer {
       c.beginPath(); c.arc(x, y, r - 1.4, a0, a1); c.stroke();
     };
 
-    // ---- dalle de béton (l'emprise rectangulaire, inchangée)
-    c.fillStyle = 'rgba(0,0,0,0.34)';
-    this.rr(c, -W / 2 + 4, -H / 2 + 6, W, H, 6); c.fill();
-    const padGr = c.createLinearGradient(0, -H / 2, 0, H / 2);
-    padGr.addColorStop(0, '#2b2f34');
-    padGr.addColorStop(1, '#1f2226');
-    c.fillStyle = padGr;
-    this.rr(c, -W / 2, -H / 2, W, H, 5); c.fill();
-    c.strokeStyle = 'rgba(255,255,255,0.08)';
-    c.lineWidth = 1;
-    this.rr(c, -W / 2, -H / 2, W, H, 5); c.stroke();
-    // joints de dilatation
-    c.strokeStyle = 'rgba(0,0,0,0.3)';
-    for (let k = 1; k < def.w; k++) {
-      c.beginPath(); c.moveTo(-W / 2 + k * B, -H / 2 + 3); c.lineTo(-W / 2 + k * B, H / 2 - 3); c.stroke();
+    // ---- pas de dalle rectangulaire (style Red Alert) : le bâtiment repose
+    // sur un tablier de terre/gravier organique qui épouse les structures.
+    const rngPad = mulberry32(seed * 3 + 1);
+    for (let k = 0; k < 6; k++) {
+      const ex = (rngPad() - 0.5) * W * 0.7;
+      const ey = (rngPad() - 0.5) * H * 0.7;
+      const er = W * (0.25 + rngPad() * 0.3);
+      c.fillStyle = `rgba(28,24,18,${0.16 + rngPad() * 0.1})`;
+      c.beginPath();
+      c.ellipse(ex, ey, er, er * (0.55 + rngPad() * 0.3), rngPad() * 3, 0, Math.PI * 2);
+      c.fill();
     }
-    for (let k = 1; k < def.h; k++) {
-      c.beginPath(); c.moveTo(-W / 2 + 3, -H / 2 + k * B); c.lineTo(W / 2 - 3, -H / 2 + k * B); c.stroke();
+    // gravier épars
+    c.fillStyle = 'rgba(120,110,95,0.35)';
+    for (let k = 0; k < 18; k++) {
+      c.beginPath();
+      c.arc((rngPad() - 0.5) * W * 0.95, (rngPad() - 0.5) * H * 0.95, 0.8 + rngPad() * 1.4, 0, Math.PI * 2);
+      c.fill();
     }
-    // coins de danger
-    c.fillStyle = '#caa536';
-    const hz = 7;
-    for (const [cx2, cy2] of [[-W / 2, -H / 2], [W / 2 - hz, -H / 2], [-W / 2, H / 2 - 3], [W / 2 - hz, H / 2 - 3]]) {
-      c.fillRect(cx2, cy2, hz, 3);
+    // traces de véhicules vers l'entrée (sud)
+    c.strokeStyle = 'rgba(25,20,15,0.25)';
+    c.lineWidth = 3;
+    for (const off of [-5, 5]) {
+      c.beginPath();
+      c.moveTo(off, H * 0.1);
+      c.quadraticCurveTo(off * 2, H * 0.35, off * 3, H * 0.55);
+      c.stroke();
     }
 
     // ---- structures courbes par type
@@ -1962,7 +1991,10 @@ export class Renderer {
     const cx = px + bw / 2, cy = py + bh / 2;
     const spr = this.buildingSprite(b.type, b.owner);
     const s = z / 44;
+    // en chantier : le bâtiment se matérialise progressivement
+    if (!b.built) ctx.globalAlpha = 0.4 + 0.6 * b.progress;
     ctx.drawImage(spr, cx - spr.width / 2 * s, cy - spr.height / 2 * s, spr.width * s, spr.height * s);
+    ctx.globalAlpha = 1;
 
     // ----- surcouches animées par type
     switch (b.type) {
@@ -2104,10 +2136,17 @@ export class Renderer {
       ctx.globalAlpha = 1;
     }
 
-    // ----- construction / production / réparation / sélection (inchangés)
+    // ----- construction : échafaudage + barre de progression
     if (!b.built) {
-      ctx.fillStyle = 'rgba(10,12,15,0.55)';
-      ctx.fillRect(px, py, bw, bh * (1 - b.progress));
+      ctx.strokeStyle = 'rgba(231,196,74,0.55)';
+      ctx.lineWidth = 1;
+      const step = Math.max(6, z * 0.4);
+      for (let xx = px - bw * 0.1; xx < px + bw * 1.1; xx += step) {
+        ctx.beginPath();
+        ctx.moveTo(xx, py + bh * (1 - b.progress) - bh * 0.1);
+        ctx.lineTo(xx + step, py - bh * 0.1);
+        ctx.stroke();
+      }
       ctx.fillStyle = '#15181c';
       ctx.fillRect(px, py + bh + 3, bw, 4);
       ctx.fillStyle = '#50dc78';
