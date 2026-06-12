@@ -28,6 +28,8 @@ interface DiffParams {
   upgradeAppetite: number;   // 0..1
   armyGrowth: number;        // unités cibles / minute
   techTiming: number;        // moment (s) où radar/tech/aéroport deviennent prioritaires
+  labTiming: number;         // moment (s) où le Laboratoire avancé devient prioritaire
+  counterAttack: boolean;    // riposter sur le territoire de l'agresseur
   dithers: number;           // 0..1 probabilité de "rater" un cycle de décision
   maxFactories: number;
   maxBarracks: number;
@@ -39,21 +41,24 @@ const DIFF: Record<Difficulty, DiffParams> = {
     maxRefineries: 2, defensesPerBase: 1, defPerRefinery: 0,
     attackBase: 2200, retreatRatio: 0, harass: false, harassCooldown: 90,
     protectHarvesters: false, expandSkill: 0.3, upgradeAppetite: 0.2,
-    armyGrowth: 2.4, techTiming: 420, dithers: 0.3, maxFactories: 1, maxBarracks: 1,
+    armyGrowth: 2.4, techTiming: 420, labTiming: 99999, counterAttack: false,
+    dithers: 0.3, maxFactories: 1, maxBarracks: 1,
   },
   normal: {
     thinkInterval: 2.0, reactionDelay: 1.6, harvPerRefinery: 2, maxHarvesters: 6,
     maxRefineries: 3, defensesPerBase: 2, defPerRefinery: 1,
-    attackBase: 2600, retreatRatio: 0.45, harass: true, harassCooldown: 55,
+    attackBase: 2600, retreatRatio: 0.45, harass: true, harassCooldown: 50,
     protectHarvesters: true, expandSkill: 0.7, upgradeAppetite: 0.6,
-    armyGrowth: 3.6, techTiming: 280, dithers: 0.08, maxFactories: 2, maxBarracks: 1,
+    armyGrowth: 3.8, techTiming: 280, labTiming: 430, counterAttack: true,
+    dithers: 0.08, maxFactories: 2, maxBarracks: 1,
   },
   hard: {
-    thinkInterval: 1.1, reactionDelay: 0.7, harvPerRefinery: 3, maxHarvesters: 10,
+    thinkInterval: 0.9, reactionDelay: 0.6, harvPerRefinery: 3, maxHarvesters: 10,
     maxRefineries: 6, defensesPerBase: 3, defPerRefinery: 2,
-    attackBase: 3000, retreatRatio: 0.62, harass: true, harassCooldown: 35,
+    attackBase: 3000, retreatRatio: 0.62, harass: true, harassCooldown: 28,
     protectHarvesters: true, expandSkill: 1.0, upgradeAppetite: 1.0,
-    armyGrowth: 6.0, techTiming: 200, dithers: 0, maxFactories: 2, maxBarracks: 2,
+    armyGrowth: 7.0, techTiming: 190, labTiming: 280, counterAttack: true,
+    dithers: 0, maxFactories: 3, maxBarracks: 2,
   },
 };
 
@@ -92,6 +97,11 @@ export class AIController {
   private reserve = 0; // minerai épargné pour l'objectif de construction
   private lastDefenseT = -100;
   private needAA = false;
+  // Riposte : se souvenir de qui nous a attaqués récemment.
+  private revengeOwner = -1;
+  private revengeT = -999;
+  // Alertes répétées : déclenche des défenses réactives au point chaud.
+  private alertTimes: number[] = [];
   // Mémoire de composition adverse observée (décroît avec le temps).
   private seenVehicles = 0;
   private seenInfantry = 0;
@@ -278,12 +288,19 @@ export class AIController {
     }
 
     // 4. Expansion économique : une raffinerie par gisement découvert non couvert.
+    // Quand l'heure du Laboratoire est venue, l'expansion au-delà de 3 raffineries
+    // attend : la supériorité technologique passe d'abord.
     const refs = this.myBuildings('refinery').filter(b => b.built);
-    const wantRefs = Math.min(this.p.maxRefineries, 1 + Math.floor(this.g.time / 200) + (me.ore > 1500 ? 1 : 0));
+    const labDue = this.g.time > this.p.labTiming && counts('lab') === 0;
+    const refCap = labDue ? Math.min(3, this.p.maxRefineries) : this.p.maxRefineries;
+    const wantRefs = Math.min(refCap, 1 + Math.floor(this.g.time / 200) + (me.ore > 1500 ? 1 : 0));
     if (refs.length < wantRefs && this.g.rng() < this.p.expandSkill + 0.25) {
       const node = this.pickExpansionNode(base, 999, refs);
       if (node) return at(node.x, node.y, 'refinery', 7);
     }
+
+    // 4 bis. Laboratoire avancé : investissement prioritaire dès l'heure venue.
+    if (labDue && refs.length >= 2) return at(base.x, base.y, 'lab');
 
     // 5. Défenses : QG puis chaque raffinerie (selon la difficulté).
     if (this.g.time > 140) {
@@ -296,11 +313,19 @@ export class AIController {
         }
         return n;
       };
+      // Défense réactive : attaques répétées => fortifier le point chaud.
+      if (this.alertTimes.length >= 3 && defAround(me.alertX, me.alertY) < this.p.defensesPerBase + 2) {
+        const type: BuildingTypeId = counts('turret') <= counts('atgun') ? 'turret' : 'atgun';
+        return at(me.alertX, me.alertY, type, 6);
+      }
       const spots: { x: number; y: number; want: number }[] = [
         { x: base.x, y: base.y, want: this.p.defensesPerBase },
         ...refs.map(r => {
           const c = this.g.buildingCenter(r);
-          return { x: c.x, y: c.y, want: this.p.defPerRefinery };
+          // Une raffinerie posée sur du minerai rare mérite une garde renforcée.
+          const nearRare = this.g.nodes.some(n =>
+            n.kind === 'rare' && n.amount > 100 && Math.hypot(n.tx - c.x, n.ty - c.y) < 9);
+          return { x: c.x, y: c.y, want: this.p.defPerRefinery + (nearRare ? 1 : 0) };
         }),
       ];
       for (const s of spots) {
@@ -335,7 +360,7 @@ export class AIController {
 
     // 8. Niveau 2 : le Laboratoire avancé est l'investissement de milieu de
     // partie (économie solide requise), puis la filière T2 se déploie.
-    if (this.p.upgradeAppetite >= 0.5 && refs.length >= 2 && this.g.time > 330) {
+    if (refs.length >= 2 && this.g.time > this.p.labTiming) {
       if (counts('lab') === 0) return at(base.x, base.y, 'lab');
       if (this.g.countBuildings(this.pid, 'lab') > 0) { // labo terminé
         if (counts('power2') === 0 && me.powerUse > me.powerProd * 0.6) return at(base.x, base.y, 'power2');
@@ -418,7 +443,7 @@ export class AIController {
     const factories = this.myBuildings('factory').filter(b => b.built);
 
     // File de production plus profonde quand l'économie le permet.
-    const queueDepth = spendable() > 1400 ? 2 : 1;
+    const queueDepth = spendable() > 1100 ? 2 : 1;
     for (const f of factories) {
       while (f.queue.length < queueDepth) {
         if (harvesters < wantHarv) {
@@ -534,6 +559,17 @@ export class AIController {
     const alertNearBase = Math.hypot(me.alertX - base.x, me.alertY - base.y) < 26;
     if (!alertNearBase) return;
     this.lastDefenseT = this.g.time;
+    this.alertTimes.push(this.g.time);
+    this.alertTimes = this.alertTimes.filter(t => this.g.time - t < 150);
+
+    // Identifier l'agresseur (s'il est visible) pour riposter plus tard.
+    if (this.p.counterAttack) {
+      const aggressors = this.visibleEnemiesNear(me.alertX, me.alertY, 9).filter(u => UNITS[u.type].weapon);
+      if (aggressors.length > 0) {
+        this.revengeOwner = aggressors[0].owner;
+        this.revengeT = this.g.time;
+      }
+    }
 
     // Rappeler les unités de combat proches (les vagues d'attaque continuent).
     const defenders: number[] = [];
@@ -596,7 +632,8 @@ export class AIController {
   private manageScouting() {
     const me = this.g.players[this.pid];
     const exploredFrac = me.exploredCount / (this.g.map.w * this.g.map.h);
-    if (exploredFrac > 0.85) return;
+    // Une IA compétente continue d'explorer plus longtemps (information = pouvoir).
+    if (exploredFrac > 0.76 + this.p.expandSkill * 0.16) return;
 
     // Avion radar disponible : reconnaissance large et sans risque.
     const plane = this.myUnits('scoutplane').find(u => u.airState === 'pad' && (u.rearmT ?? 0) <= 0);
@@ -781,16 +818,20 @@ export class AIController {
   }
 
   // Cible de vague : économie exposée d'abord, puis production, puis QG.
+  // Riposte : forte préférence pour le joueur qui nous a attaqués récemment.
   private pickAttackTarget(): { x: number; y: number } | null {
     const base = this.baseCenter();
     const prio: Record<string, number> = {
-      refinery: 5, power: 4, factory: 3.5, barracks: 3, airport: 3.5,
-      turret: 1.5, atgun: 1.5, aa: 2, radar: 2.5, tech: 2.5, hq: 2.8,
+      refinery: 5, refinery2: 5.5, power: 4, power2: 4.2, factory: 3.5, factory2: 3.8,
+      barracks: 3, barracks2: 3.2, airport: 3.5, lab: 3.6, depot: 3,
+      turret: 1.5, atgun: 1.5, aa: 2, radar: 2.5, radarcenter: 2.7, tech: 2.5, hq: 2.8,
     };
+    const revengeActive = this.p.counterAttack && this.g.time - this.revengeT < 120;
     let best: KnownBuilding | null = null, bestScore = -Infinity;
     for (const kb of this.known.values()) {
       const d = Math.hypot(kb.x - base.x, kb.y - base.y);
-      const score = (prio[kb.type] ?? 1) * 100 - d;
+      let score = (prio[kb.type] ?? 1) * 100 - d;
+      if (revengeActive && kb.owner === this.revengeOwner) score += 260;
       if (score > bestScore) { bestScore = score; best = kb; }
     }
     return best ? { x: best.x, y: best.y } : null;

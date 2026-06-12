@@ -110,7 +110,7 @@ export interface Projectile {
 }
 
 export interface Effect {
-  kind: 'boom' | 'flash' | 'spark' | 'dust';
+  kind: 'boom' | 'flash' | 'spark' | 'dust' | 'smoke';
   x: number; y: number;
   age: number; dur: number; r: number;
 }
@@ -1488,6 +1488,10 @@ export class Game {
       this.players[attacker].stats.valueKilled += def.cost;
     }
     this.effects.push({ kind: 'boom', x: u.x, y: u.y, age: 0, dur: 0.5, r: 0.5 + def.radius });
+    // les véhicules détruits laissent une colonne de fumée
+    if (def.armor === 'light' || def.armor === 'heavy') {
+      this.effects.push({ kind: 'smoke', x: u.x, y: u.y, age: 0, dur: 2.2, r: 0.5 });
+    }
     this.events.push({ type: 'explosion', x: u.x, y: u.y });
   }
 
@@ -1515,6 +1519,10 @@ export class Game {
       }
     const c = this.buildingCenter(b);
     this.effects.push({ kind: 'boom', x: c.x, y: c.y, age: 0, dur: 0.8, r: Math.max(b.w, b.h) * 0.8 });
+    // ruine fumante : plusieurs colonnes de fumée persistantes
+    this.effects.push({ kind: 'smoke', x: c.x, y: c.y, age: 0, dur: 3.5, r: 1.1 });
+    this.effects.push({ kind: 'smoke', x: c.x - b.w * 0.3, y: c.y + b.h * 0.2, age: 0, dur: 2.8, r: 0.7 });
+    this.effects.push({ kind: 'smoke', x: c.x + b.w * 0.3, y: c.y - b.h * 0.2, age: 0, dur: 3.1, r: 0.8 });
     this.events.push({ type: 'bigboom', x: c.x, y: c.y });
     this.recomputePower();
   }

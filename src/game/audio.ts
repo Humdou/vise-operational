@@ -1,5 +1,6 @@
 // Sons synthétisés via WebAudio : aucun fichier audio nécessaire.
-// Chaque famille d'événement a sa propre signature sonore.
+// Mixage à travers un compresseur (rendu plus dense et professionnel),
+// variations de hauteur aléatoires, couches + échos pour les détonations.
 import { GameEvent } from './engine';
 import { UNITS } from './data';
 
@@ -16,12 +17,24 @@ export class Sfx {
       const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       if (AC) {
         this.ctx = new AC();
+        // compresseur master : colle le mix et évite la saturation
+        const comp = this.ctx.createDynamicsCompressor();
+        comp.threshold.value = -18;
+        comp.knee.value = 18;
+        comp.ratio.value = 5;
+        comp.attack.value = 0.002;
+        comp.release.value = 0.18;
         this.master = this.ctx.createGain();
-        this.master.gain.value = 0.9;
-        this.master.connect(this.ctx.destination);
+        this.master.gain.value = 1.0;
+        this.master.connect(comp).connect(this.ctx.destination);
       }
     }
     if (this.ctx && this.ctx.state === 'suspended') void this.ctx.resume();
+  }
+
+  // léger désaccord aléatoire : évite l'effet "mitraillette de bips identiques"
+  private vary(f: number, amount = 0.1): number {
+    return f * (1 + (Math.random() * 2 - 1) * amount);
   }
 
   private beep(freq: number, dur: number, type: OscillatorType, vol: number, slide = 0, delay = 0) {
@@ -31,7 +44,7 @@ export class Sfx {
     const g = this.ctx.createGain();
     o.type = type;
     o.frequency.setValueAtTime(freq, t);
-    if (slide !== 0) o.frequency.exponentialRampToValueAtTime(Math.max(28, freq + slide), t + dur);
+    if (slide !== 0) o.frequency.exponentialRampToValueAtTime(Math.max(26, freq + slide), t + dur);
     g.gain.setValueAtTime(vol, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + dur);
     o.connect(g).connect(this.master);
@@ -67,42 +80,77 @@ export class Sfx {
     src.start(t);
   }
 
+  // grondement grave avec attaque franche (canons, explosions)
+  private thump(freq: number, dur: number, vol: number, delay = 0) {
+    if (!this.ctx || !this.master || this.muted) return;
+    const t = this.ctx.currentTime + delay;
+    const o = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(freq, t);
+    o.frequency.exponentialRampToValueAtTime(Math.max(24, freq * 0.4), t + dur);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(g).connect(this.master);
+    o.start(t);
+    o.stop(t + dur);
+  }
+
   // ------------------------------------------------------------- interface UI
 
-  click() { this.ensure(); this.beep(900, 0.04, 'square', 0.04); }
-  order() { this.ensure(); this.beep(620, 0.06, 'square', 0.05, 140); this.beep(840, 0.05, 'square', 0.03, 80, 0.05); }
-  error() { this.ensure(); this.beep(170, 0.16, 'sawtooth', 0.07, -60); }
+  click() { this.ensure(); this.beep(880, 0.035, 'square', 0.035); }
+  order() {
+    this.ensure();
+    this.beep(560, 0.05, 'square', 0.045, 140);
+    this.beep(900, 0.06, 'sine', 0.04, 60, 0.045);
+  }
+  error() { this.ensure(); this.beep(160, 0.14, 'sawtooth', 0.06, -50); this.beep(120, 0.12, 'sawtooth', 0.05, -40, 0.1); }
 
   // ------------------------------------------------------------- tirs par arme
 
   private shotSound(kind?: string) {
     switch (kind) {
       case 'sniper':
-        this.noise(0.07, 0.06, 3500, 900);
-        this.beep(1400, 0.05, 'square', 0.025, -800);
+        // claquement sec, fouet supersonique
+        this.noise(0.05, 0.07, 4200, 1200);
+        this.noise(0.14, 0.03, 2200, 500, 0.02, -1600);
+        this.beep(this.vary(1500), 0.04, 'square', 0.02, -900);
         break;
       case 'ap':
-        this.noise(0.1, 0.05, 1200, 200, 0, -600);
-        this.beep(220, 0.09, 'sawtooth', 0.04, -90);
+        // départ de roquette : souffle qui file
+        this.noise(0.16, 0.055, 1400, 250, 0, -900);
+        this.beep(this.vary(240), 0.1, 'sawtooth', 0.035, -110);
+        break;
+      case 'mg':
+        // rafale brève : deux impulsions rapprochées
+        this.noise(0.035, 0.035, 2800, 800);
+        this.noise(0.035, 0.03, 2600, 800, 0.05);
         break;
       case 'shell':
-        this.noise(0.12, 0.07, 900, 80);
-        this.beep(120, 0.12, 'sine', 0.07, -50);
+        // canon de char : claque + grave + écho lointain
+        this.noise(0.08, 0.08, 1600, 200);
+        this.thump(this.vary(110), 0.18, 0.09);
+        this.noise(0.25, 0.02, 500, 60, 0.12);
         break;
       case 'arty':
-        this.noise(0.22, 0.09, 500, 50);
-        this.beep(75, 0.22, 'sine', 0.09, -25);
+        // départ d'obusier : très grave, long, écho
+        this.noise(0.18, 0.09, 700, 60);
+        this.thump(this.vary(70), 0.32, 0.11);
+        this.noise(0.4, 0.025, 380, 40, 0.18);
         break;
       case 'flak':
-        this.beep(520, 0.06, 'square', 0.045, -260);
-        this.noise(0.05, 0.035, 2400, 500);
+        this.beep(this.vary(520), 0.05, 'square', 0.04, -260);
+        this.noise(0.04, 0.03, 2600, 600);
         break;
       case 'bomb':
-        this.noise(0.3, 0.06, 700, 60, 0, -500); // sifflement de chute
+        // sifflement de chute
+        this.noise(0.32, 0.05, 800, 80, 0, -560);
+        this.beep(900, 0.3, 'sine', 0.02, -500);
         break;
-      default: // bullet / mg
-        this.noise(0.045, 0.035, 2600, 700);
-        this.beep(340 + Math.random() * 160, 0.04, 'square', 0.02, -140);
+      default: // bullet
+        this.noise(0.04, 0.032, this.vary(2600, 0.2), 700);
+        this.beep(this.vary(360), 0.035, 'square', 0.018, -150);
     }
   }
 
@@ -113,82 +161,93 @@ export class Sfx {
     for (const e of events) {
       switch (e.type) {
         case 'shot':
-          if (now - this.lastShot > 0.06 && e.x !== undefined && isAudible(e.x, e.y!)) {
+          if (now - this.lastShot > 0.055 && e.x !== undefined && isAudible(e.x, e.y!)) {
             this.lastShot = now;
             this.shotSound(e.kind);
           }
           break;
         case 'explosion':
-          if (now - this.lastExplosion > 0.1 && e.x !== undefined && isAudible(e.x, e.y!)) {
+          if (now - this.lastExplosion > 0.09 && e.x !== undefined && isAudible(e.x, e.y!)) {
             this.lastExplosion = now;
-            this.noise(0.3, 0.1, 650, 40, 0, -450);
-            this.beep(95, 0.22, 'sine', 0.07, -55);
+            this.noise(0.28, 0.1, this.vary(700, 0.25), 50, 0, -480);
+            this.thump(this.vary(90), 0.24, 0.08);
           }
           break;
         case 'bigboom':
           if (e.x !== undefined && isAudible(e.x, e.y!)) {
-            this.noise(0.8, 0.2, 420, 30, 0, -320);
-            this.beep(60, 0.65, 'sine', 0.17, -28);
-            this.noise(0.4, 0.08, 1500, 300, 0.08);
+            // détonation majeure : souffle + sub + crépitement de débris + écho
+            this.noise(0.7, 0.2, 460, 30, 0, -340);
+            this.thump(58, 0.7, 0.18);
+            this.noise(0.12, 0.05, 2400, 700, 0.16);
+            this.noise(0.1, 0.04, 2000, 600, 0.3);
+            this.noise(0.55, 0.035, 300, 40, 0.34);
           }
           break;
         case 'place':
           if (e.owner === 0) {
-            this.noise(0.12, 0.09, 350, 40);
-            this.beep(140, 0.1, 'sine', 0.07, -40);
+            this.noise(0.1, 0.08, 380, 40);
+            this.thump(120, 0.12, 0.06);
+            this.beep(700, 0.05, 'square', 0.025, 0, 0.1); // servo
           }
           break;
         case 'built':
           if (e.owner === 0) {
-            this.noise(0.05, 0.05, 1800, 600);                 // coup de marteau
-            this.beep(520, 0.09, 'sine', 0.07, 0, 0.05);
-            this.beep(780, 0.14, 'sine', 0.07, 0, 0.13);
+            this.noise(0.04, 0.05, 2000, 700);              // marteau 1
+            this.noise(0.04, 0.045, 1800, 650, 0.09);       // marteau 2
+            this.beep(520, 0.09, 'sine', 0.06, 0, 0.16);
+            this.beep(784, 0.14, 'sine', 0.06, 0, 0.24);
           }
           break;
         case 'trained':
           if (e.owner === 0) {
             const def = e.unit ? UNITS[e.unit] : undefined;
             if (def?.isAir) {
-              this.noise(0.4, 0.05, 900, 300, 0, 1800);        // turbine qui monte
-              this.beep(880, 0.12, 'triangle', 0.05, 160, 0.1);
+              this.noise(0.45, 0.05, 800, 300, 0, 2200);     // turbine qui monte
+              this.beep(880, 0.1, 'triangle', 0.045, 160, 0.12);
             } else if (def && def.armor !== 'inf') {
-              this.beep(55, 0.3, 'sawtooth', 0.06, 18);        // moteur diesel
-              this.beep(660, 0.09, 'triangle', 0.06, 120, 0.12);
+              this.thump(52, 0.28, 0.06);                    // démarrage diesel
+              this.noise(0.2, 0.025, 240, 60, 0.05);
+              this.beep(660, 0.08, 'triangle', 0.05, 120, 0.18);
             } else {
-              this.beep(660, 0.08, 'triangle', 0.06, 120);     // infanterie prête
-              this.beep(880, 0.07, 'triangle', 0.04, 60, 0.07);
+              this.beep(660, 0.07, 'triangle', 0.05, 120);   // infanterie prête
+              this.beep(880, 0.06, 'triangle', 0.04, 60, 0.06);
             }
           }
           break;
         case 'takeoff':
           if (now - this.lastTakeoff > 1 && (e.owner === 0 || (e.x !== undefined && isAudible(e.x, e.y!)))) {
             this.lastTakeoff = now;
-            this.noise(0.55, 0.06, 600, 200, 0, 2400);         // réacteur au décollage
+            this.noise(0.6, 0.055, 500, 180, 0, 2600);       // réacteur au décollage
+            this.beep(160, 0.5, 'sawtooth', 0.02, 480);
           }
           break;
         case 'research':
           if (e.owner === 0) {
-            this.beep(440, 0.1, 'sine', 0.06);
-            this.beep(660, 0.1, 'sine', 0.06, 0, 0.09);
-            this.beep(880, 0.18, 'sine', 0.06, 0, 0.18);
+            this.beep(440, 0.09, 'sine', 0.05);
+            this.beep(660, 0.09, 'sine', 0.05, 0, 0.08);
+            this.beep(880, 0.16, 'sine', 0.05, 0, 0.16);
+            this.beep(1320, 0.2, 'sine', 0.03, 0, 0.24);
           }
           break;
         case 'alert':
           if (e.owner === 0) {
-            this.beep(820, 0.16, 'square', 0.09, -180);
-            this.beep(620, 0.16, 'square', 0.09, -120, 0.18);
-            this.beep(820, 0.16, 'square', 0.07, -180, 0.36);
+            // sirène montée-descente, deux cycles
+            this.beep(540, 0.3, 'square', 0.07, 320);
+            this.beep(860, 0.3, 'square', 0.07, -320, 0.3);
+            this.beep(540, 0.26, 'square', 0.05, 320, 0.6);
           }
           break;
         case 'lowpower':
           if (e.owner === 0) {
-            this.beep(180, 0.35, 'sawtooth', 0.05, -60);
-            this.beep(90, 0.35, 'sine', 0.05, -20);
+            this.beep(170, 0.4, 'sawtooth', 0.045, -55);
+            this.beep(85, 0.4, 'sine', 0.05, -18);
+            this.beep(170, 0.2, 'sawtooth', 0.03, -40, 0.45);
           }
           break;
         case 'eliminated':
-          this.noise(1.1, 0.16, 320, 25, 0, -240);
-          this.beep(160, 0.9, 'sawtooth', 0.06, -110);
+          this.noise(1.2, 0.15, 320, 25, 0, -250);
+          this.thump(50, 1.0, 0.13);
+          this.beep(220, 0.8, 'sawtooth', 0.04, -150, 0.15);
           break;
       }
     }
