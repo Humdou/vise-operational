@@ -349,7 +349,8 @@ function GameScreen({ settings, onEnd, onQuit }: {
     const mm = mmRef.current!;
     const game = new Game(settings);
     gameRef.current = game;
-    // ?demo : fait apparaître une unité de chaque type (vérification visuelle).
+    // ?demo : fait apparaître une unité de chaque type + un exemplaire de
+    // chaque bâtiment (vérification visuelle).
     if (window.location.search.includes('demo')) {
       const s = game.map.starts[0];
       ([
@@ -358,7 +359,24 @@ function GameScreen({ settings, onEnd, onQuit }: {
         'elite', 'rocketeer', 'kamikaze', 'radarvehicle',
         'heavytank', 'tankdestroyer', 'heavyarty',
       ] as UnitTypeId[])
-        .forEach((t, i) => game.spawnUnit(0, t, s.x - 10 + (i % 4) * 2.6, s.y - 5 + Math.floor(i / 4) * 2.8));
+        .forEach((t, i) => game.spawnUnit(0, t, s.x - 14 + (i % 4) * 2.6, s.y - 5 + Math.floor(i / 4) * 2.8));
+      const placeDemo = (t: BuildingTypeId, tx: number, ty: number) => {
+        game.players[0].ore = 99999;
+        if (game.place(0, t, tx, ty)) {
+          const nb = game.buildings[game.buildings.length - 1];
+          nb.built = true; nb.progress = 1; nb.hp = nb.maxHp;
+        }
+      };
+      const blds: BuildingTypeId[] = [
+        'power', 'refinery', 'depot', 'barracks', 'factory', 'radar',
+        'radarcenter', 'airport', 'tech', 'lab', 'power2', 'refinery2',
+        'barracks2', 'factory2', 'turret', 'atgun', 'aa',
+      ];
+      blds.forEach((t, i) => {
+        placeDemo(t, Math.round(s.x - 2 + (i % 5) * 4), Math.round(s.y + 4 + Math.floor(i / 5) * 4));
+      });
+      game.players[0].ore = 1000;
+      game.recomputePower();
     }
     const ais: AIController[] = [];
     for (let i = 1; i < game.players.length; i++) ais.push(new AIController(game, i, settings.difficulty));

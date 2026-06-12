@@ -446,7 +446,7 @@ export class Renderer {
       if (b.tx + b.w < tx0 || b.tx > tx1 || b.ty + b.h < ty0 || b.ty > ty1) continue;
       const ci = (b.ty + Math.floor(b.h / 2)) * mw + b.tx + Math.floor(b.w / 2);
       if (fog[ci] === 0) continue;
-      this.drawBuilding(ctx, g, b, sx, sy, z, v.selectedBuilding === b.id);
+      this.drawBuildingSprite(ctx, g, b, sx, sy, z, v.selectedBuilding === b.id);
     }
 
     // ----- unités au sol (seulement si visibles)
@@ -683,6 +683,338 @@ export class Renderer {
     ctx.beginPath();
     if (typeof ctx.roundRect === 'function') ctx.roundRect(x, y, w, h, r);
     else ctx.rect(x, y, w, h);
+  }
+
+  // -------------------------------------------- sprites de bâtiments pré-cuits
+  //
+  // L'emprise au sol reste rectangulaaire (dalle/gameplay inchangés) mais le
+  // bâtiment lui-même est un assemblage de volumes COURBES : dômes, cuves,
+  // hangars en demi-canon, tores — cuits en haute résolution.
+
+  private buildingSpriteCache = new Map<string, HTMLCanvasElement>();
+
+  private buildingSprite(type: string, owner: number): HTMLCanvasElement {
+    const key = `b:${type}:${owner}`;
+    let cv = this.buildingSpriteCache.get(key);
+    if (!cv) {
+      cv = this.bakeBuilding(type, PLAYER_COLORS[owner]);
+      this.buildingSpriteCache.set(key, cv);
+    }
+    return cv;
+  }
+
+  private bakeBuilding(type: string, col: string): HTMLCanvasElement {
+    const B = 44; // px par tuile
+    const def = BUILDINGS[type as keyof typeof BUILDINGS];
+    const W = def.w * B, H = def.h * B;
+    const cv = document.createElement('canvas');
+    cv.width = Math.ceil((def.w + 1) * B);
+    cv.height = Math.ceil((def.h + 1) * B);
+    const c = cv.getContext('2d')!;
+    c.translate(cv.width / 2, cv.height / 2);
+    const seed = type.length * 53 + 11;
+
+    // ---- dôme : volume sphérique avec spéculaire et ombre portée
+    const dome = (x: number, y: number, r: number, base: string, ring = true) => {
+      c.fillStyle = 'rgba(0,0,0,0.32)';
+      c.beginPath(); c.ellipse(x + r * 0.16, y + r * 0.2, r, r * 0.92, 0, 0, Math.PI * 2); c.fill();
+      const gr = c.createRadialGradient(x - r * 0.35, y - r * 0.35, r * 0.1, x, y, r);
+      gr.addColorStop(0, shade(base, 0.42));
+      gr.addColorStop(0.55, base);
+      gr.addColorStop(1, shade(base, -0.42));
+      c.fillStyle = gr;
+      c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
+      c.strokeStyle = 'rgba(0,0,0,0.45)';
+      c.lineWidth = 1.5;
+      c.stroke();
+      if (ring) {
+        c.strokeStyle = 'rgba(0,0,0,0.22)';
+        c.lineWidth = 1;
+        c.beginPath(); c.arc(x, y, r * 0.62, 0, Math.PI * 2); c.stroke();
+      }
+      c.fillStyle = 'rgba(255,255,255,0.5)';
+      c.beginPath(); c.ellipse(x - r * 0.4, y - r * 0.4, r * 0.16, r * 0.1, -0.7, 0, Math.PI * 2); c.fill();
+    };
+
+    // ---- capsule : hangar en demi-canon (dégradé en travers de l'axe)
+    const capsule = (x: number, y: number, len: number, wd: number, base: string, vertical = false) => {
+      c.save();
+      c.translate(x, y);
+      if (vertical) c.rotate(Math.PI / 2);
+      c.fillStyle = 'rgba(0,0,0,0.3)';
+      c.beginPath();
+      if (typeof c.roundRect === 'function') c.roundRect(-len / 2 + 3, -wd / 2 + 4, len, wd, wd / 2);
+      else c.rect(-len / 2 + 3, -wd / 2 + 4, len, wd);
+      c.fill();
+      const gr = c.createLinearGradient(0, -wd / 2, 0, wd / 2);
+      gr.addColorStop(0, shade(base, -0.25));
+      gr.addColorStop(0.28, shade(base, 0.35));
+      gr.addColorStop(0.5, shade(base, 0.1));
+      gr.addColorStop(1, shade(base, -0.45));
+      c.fillStyle = gr;
+      c.beginPath();
+      if (typeof c.roundRect === 'function') c.roundRect(-len / 2, -wd / 2, len, wd, wd / 2);
+      else c.rect(-len / 2, -wd / 2, len, wd);
+      c.fill();
+      c.strokeStyle = 'rgba(0,0,0,0.45)';
+      c.lineWidth = 1.5;
+      c.stroke();
+      // nervures du toit
+      c.strokeStyle = 'rgba(0,0,0,0.18)';
+      c.lineWidth = 1;
+      const n = Math.floor(len / 12);
+      for (let k = 1; k < n; k++) {
+        const xx = -len / 2 + (k * len) / n;
+        c.beginPath(); c.moveTo(xx, -wd / 2 + 1); c.lineTo(xx, wd / 2 - 1); c.stroke();
+      }
+      c.restore();
+    };
+
+    // ---- tuyauterie incurvée
+    const pipe = (x1: number, y1: number, x2: number, y2: number, wd: number, bend = 0) => {
+      c.strokeStyle = 'rgba(0,0,0,0.35)';
+      c.lineWidth = wd + 2;
+      c.beginPath(); c.moveTo(x1, y1); c.quadraticCurveTo((x1 + x2) / 2 + bend, (y1 + y2) / 2 - bend, x2, y2); c.stroke();
+      c.strokeStyle = '#7d8790';
+      c.lineWidth = wd;
+      c.beginPath(); c.moveTo(x1, y1); c.quadraticCurveTo((x1 + x2) / 2 + bend, (y1 + y2) / 2 - bend, x2, y2); c.stroke();
+      c.strokeStyle = 'rgba(255,255,255,0.3)';
+      c.lineWidth = Math.max(1, wd * 0.3);
+      c.beginPath(); c.moveTo(x1, y1 - wd * 0.22); c.quadraticCurveTo((x1 + x2) / 2 + bend, (y1 + y2) / 2 - bend - wd * 0.22, x2, y2 - wd * 0.22); c.stroke();
+    };
+
+    // ---- arc de couleur d'équipe autour d'une structure
+    const teamArc = (x: number, y: number, r: number, a0: number, a1: number) => {
+      c.strokeStyle = col;
+      c.lineWidth = 4;
+      c.beginPath(); c.arc(x, y, r, a0, a1); c.stroke();
+      c.strokeStyle = 'rgba(255,255,255,0.35)';
+      c.lineWidth = 1.4;
+      c.beginPath(); c.arc(x, y, r - 1.4, a0, a1); c.stroke();
+    };
+
+    // ---- dalle de béton (l'emprise rectangulaire, inchangée)
+    c.fillStyle = 'rgba(0,0,0,0.34)';
+    this.rr(c, -W / 2 + 4, -H / 2 + 6, W, H, 6); c.fill();
+    const padGr = c.createLinearGradient(0, -H / 2, 0, H / 2);
+    padGr.addColorStop(0, '#2b2f34');
+    padGr.addColorStop(1, '#1f2226');
+    c.fillStyle = padGr;
+    this.rr(c, -W / 2, -H / 2, W, H, 5); c.fill();
+    c.strokeStyle = 'rgba(255,255,255,0.08)';
+    c.lineWidth = 1;
+    this.rr(c, -W / 2, -H / 2, W, H, 5); c.stroke();
+    // joints de dilatation
+    c.strokeStyle = 'rgba(0,0,0,0.3)';
+    for (let k = 1; k < def.w; k++) {
+      c.beginPath(); c.moveTo(-W / 2 + k * B, -H / 2 + 3); c.lineTo(-W / 2 + k * B, H / 2 - 3); c.stroke();
+    }
+    for (let k = 1; k < def.h; k++) {
+      c.beginPath(); c.moveTo(-W / 2 + 3, -H / 2 + k * B); c.lineTo(W / 2 - 3, -H / 2 + k * B); c.stroke();
+    }
+    // coins de danger
+    c.fillStyle = '#caa536';
+    const hz = 7;
+    for (const [cx2, cy2] of [[-W / 2, -H / 2], [W / 2 - hz, -H / 2], [-W / 2, H / 2 - 3], [W / 2 - hz, H / 2 - 3]]) {
+      c.fillRect(cx2, cy2, hz, 3);
+    }
+
+    // ---- structures courbes par type
+    switch (type) {
+      case 'hq': {
+        capsule(-W * 0.22, H * 0.26, W * 0.5, H * 0.3, HULL_MID);
+        dome(0, -H * 0.08, W * 0.27, '#3c434b');
+        dome(W * 0.28, H * 0.22, W * 0.13, HULL_LIGHT);
+        dome(-W * 0.3, -H * 0.28, W * 0.11, HULL_LIGHT);
+        teamArc(0, -H * 0.08, W * 0.33, -2.4, -0.6);
+        teamArc(0, -H * 0.08, W * 0.33, 0.7, 2.5);
+        // hélisurface circulaire
+        c.strokeStyle = 'rgba(255,255,255,0.55)';
+        c.lineWidth = 2;
+        c.beginPath(); c.arc(W * 0.3, -H * 0.28, W * 0.12, 0, Math.PI * 2); c.stroke();
+        c.fillStyle = 'rgba(255,255,255,0.6)';
+        c.font = `bold ${W * 0.12}px sans-serif`;
+        c.textAlign = 'center'; c.textBaseline = 'middle';
+        c.fillText('H', W * 0.3, -H * 0.28);
+        // mât d'antenne
+        c.strokeStyle = '#c9d1d9';
+        c.lineWidth = 2;
+        c.beginPath(); c.moveTo(-W * 0.34, H * 0.1); c.lineTo(-W * 0.42, -H * 0.12); c.stroke();
+        break;
+      }
+      case 'power': case 'power2': {
+        const t2 = type === 'power2';
+        if (t2) {
+          // tore de réacteur
+          c.strokeStyle = 'rgba(0,0,0,0.3)';
+          c.lineWidth = W * 0.2;
+          c.beginPath(); c.arc(2, 3, W * 0.28, 0, Math.PI * 2); c.stroke();
+          const gr = c.createRadialGradient(-W * 0.1, -W * 0.1, W * 0.05, 0, 0, W * 0.4);
+          gr.addColorStop(0, shade(HULL_LIGHT, 0.3));
+          gr.addColorStop(1, shade(HULL_DARK, -0.1));
+          c.strokeStyle = '#5d676f';
+          c.lineWidth = W * 0.18;
+          c.beginPath(); c.arc(0, 0, W * 0.28, 0, Math.PI * 2); c.stroke();
+          c.strokeStyle = 'rgba(255,255,255,0.25)';
+          c.lineWidth = 2;
+          c.beginPath(); c.arc(0, 0, W * 0.36, 0, Math.PI * 2); c.stroke();
+          teamArc(0, 0, W * 0.44, 0.4, 1.4);
+          teamArc(0, 0, W * 0.44, Math.PI + 0.4, Math.PI + 1.4);
+        } else {
+          dome(-W * 0.18, -H * 0.05, W * 0.24, '#3c434b');
+          dome(W * 0.2, H * 0.1, W * 0.2, '#3c434b');
+          pipe(-W * 0.18, -H * 0.05, W * 0.2, H * 0.1, 5, 8);
+          teamArc(-W * 0.18, -H * 0.05, W * 0.3, 2.2, 3.6);
+        }
+        break;
+      }
+      case 'refinery': case 'refinery2': {
+        const t2 = type === 'refinery2';
+        dome(-W * 0.2, -H * 0.16, W * (t2 ? 0.26 : 0.22), t2 ? '#b89530' : '#8a939d');
+        dome(W * 0.18, H * 0.05, W * 0.17, '#8a939d');
+        dome(W * 0.02, -H * 0.3, W * 0.11, t2 ? '#b89530' : '#77808a');
+        pipe(-W * 0.2, -H * 0.16, W * 0.18, H * 0.05, 5, 10);
+        pipe(W * 0.18, H * 0.05, W * 0.4, -H * 0.2, 4, -8);
+        // quai d'accueil incurvé
+        c.fillStyle = '#caa536';
+        c.beginPath();
+        c.moveTo(-W * 0.3, H * 0.48);
+        c.quadraticCurveTo(0, H * 0.3, W * 0.3, H * 0.48);
+        c.lineTo(W * 0.3, H * 0.4);
+        c.quadraticCurveTo(0, H * 0.22, -W * 0.3, H * 0.4);
+        c.closePath(); c.fill();
+        teamArc(-W * 0.2, -H * 0.16, W * (t2 ? 0.32 : 0.28), -2.6, -1.0);
+        break;
+      }
+      case 'barracks': case 'barracks2': {
+        const t2 = type === 'barracks2';
+        capsule(0, -H * 0.18, W * 0.78, H * 0.32, t2 ? '#3c434b' : '#4a4f44');
+        capsule(0, H * 0.2, W * 0.62, H * 0.28, t2 ? '#33393f' : '#42473d');
+        if (t2) {
+          c.strokeStyle = '#e7c44a';
+          c.lineWidth = 2.5;
+          for (const off of [0, 7]) {
+            c.beginPath();
+            c.moveTo(-W * 0.1, -H * 0.14 + off);
+            c.lineTo(0, -H * 0.24 + off);
+            c.lineTo(W * 0.1, -H * 0.14 + off);
+            c.stroke();
+          }
+        }
+        // sacs de sable en arc
+        c.fillStyle = '#7a6f52';
+        for (let k = 0; k < 5; k++) {
+          const a = Math.PI * 0.25 + (k / 4) * Math.PI * 0.5;
+          c.beginPath();
+          c.ellipse(Math.cos(a) * W * 0.42, H * 0.3 + Math.sin(a) * H * 0.16, 5, 3, a, 0, Math.PI * 2);
+          c.fill();
+        }
+        teamArc(0, -H * 0.18, W * 0.43, -0.6, 0.6);
+        break;
+      }
+      case 'factory': case 'factory2': {
+        const t2 = type === 'factory2';
+        capsule(0, -H * 0.14, W * 0.84, H * 0.36, t2 ? '#3a4148' : '#454c54');
+        if (t2) capsule(0, H * 0.24, W * 0.68, H * 0.26, '#33393f');
+        dome(W * 0.32, H * (t2 ? -0.02 : 0.22), W * 0.12, HULL_LIGHT); // silo
+        dome(-W * 0.34, H * (t2 ? -0.02 : 0.22), W * 0.1, HULL_LIGHT);
+        // baie de sortie arrondie
+        c.fillStyle = '#15181b';
+        c.beginPath();
+        c.ellipse(0, H * 0.42, W * 0.2, H * 0.1, 0, Math.PI, 0);
+        c.fill();
+        c.fillStyle = '#caa536';
+        for (let k = -1; k <= 1; k++) c.fillRect(k * W * 0.09 - 3, H * 0.36, 6, H * 0.07);
+        teamArc(0, -H * 0.14, W * 0.46, -2.6, -2.0);
+        teamArc(0, -H * 0.14, W * 0.46, -1.2, -0.6);
+        break;
+      }
+      case 'radar': case 'radarcenter': {
+        const big = type === 'radarcenter';
+        dome(0, H * 0.12, W * 0.3, '#3c434b');
+        dome(0, H * 0.12, W * 0.16, HULL_LIGHT, false);
+        if (big) {
+          dome(-W * 0.3, -H * 0.22, W * 0.13, HULL_LIGHT);
+          dome(W * 0.3, -H * 0.22, W * 0.13, HULL_LIGHT);
+        }
+        teamArc(0, H * 0.12, W * 0.37, 0.6, 2.5);
+        break;
+      }
+      case 'airport': {
+        // piste arrondie + hangar demi-canon
+        c.fillStyle = '#26292d';
+        this.rr(c, -W * 0.42, -H * 0.18, W * 0.84, H * 0.42, H * 0.2); c.fill();
+        c.strokeStyle = 'rgba(255,255,255,0.5)';
+        c.setLineDash([6, 6]);
+        c.lineWidth = 2;
+        c.beginPath(); c.moveTo(-W * 0.36, H * 0.03); c.lineTo(W * 0.36, H * 0.03); c.stroke();
+        c.setLineDash([]);
+        capsule(-W * 0.2, H * 0.34, W * 0.4, H * 0.22, HULL_MID);
+        teamArc(W * 0.3, H * 0.32, W * 0.12, -1, 1.6);
+        break;
+      }
+      case 'turret': case 'atgun': case 'aa': {
+        // socle circulaire blindé (la tête pivotante est dessinée en direct)
+        dome(0, 0, W * 0.36, '#33383d', false);
+        c.strokeStyle = 'rgba(0,0,0,0.4)';
+        c.lineWidth = 2;
+        c.beginPath(); c.arc(0, 0, W * 0.28, 0, Math.PI * 2); c.stroke();
+        teamArc(0, 0, W * 0.42, 1.9, 2.9);
+        teamArc(0, 0, W * 0.42, -1.2, -0.2);
+        break;
+      }
+      case 'tech': {
+        dome(-W * 0.12, -H * 0.05, W * 0.27, '#3c434b');
+        // mur d'écrans incurvé
+        c.fillStyle = '#15181b';
+        c.beginPath();
+        c.moveTo(W * 0.05, H * 0.16);
+        c.quadraticCurveTo(W * 0.34, H * 0.02, W * 0.42, H * 0.34);
+        c.lineTo(W * 0.28, H * 0.42);
+        c.quadraticCurveTo(W * 0.18, H * 0.26, W * 0.02, H * 0.3);
+        c.closePath(); c.fill();
+        teamArc(-W * 0.12, -H * 0.05, W * 0.33, -2.8, -1.4);
+        break;
+      }
+      case 'lab': {
+        // grand dôme de verre
+        const r2 = W * 0.27;
+        c.fillStyle = 'rgba(0,0,0,0.3)';
+        c.beginPath(); c.ellipse(r2 * 0.12, r2 * 0.16, r2, r2 * 0.94, 0, 0, Math.PI * 2); c.fill();
+        const gr = c.createRadialGradient(-r2 * 0.35, -r2 * 0.4, r2 * 0.1, 0, 0, r2);
+        gr.addColorStop(0, 'rgba(220,240,255,0.95)');
+        gr.addColorStop(0.5, 'rgba(120,170,210,0.85)');
+        gr.addColorStop(1, 'rgba(40,70,100,0.95)');
+        c.fillStyle = gr;
+        c.beginPath(); c.arc(0, 0, r2, 0, Math.PI * 2); c.fill();
+        c.strokeStyle = 'rgba(0,0,0,0.4)';
+        c.lineWidth = 1.5; c.stroke();
+        // méridiens du dôme
+        c.strokeStyle = 'rgba(255,255,255,0.25)';
+        c.lineWidth = 1;
+        for (const k of [-0.5, 0, 0.5]) {
+          c.beginPath(); c.ellipse(0, 0, r2 * Math.abs(Math.cos(k)), r2, k, 0, Math.PI * 2); c.stroke();
+        }
+        dome(-W * 0.34, H * 0.28, W * 0.1, HULL_LIGHT);
+        dome(W * 0.34, H * 0.28, W * 0.1, HULL_LIGHT);
+        pipe(-W * 0.34, H * 0.28, -r2 * 0.5, r2 * 0.5, 4, 5);
+        pipe(W * 0.34, H * 0.28, r2 * 0.5, r2 * 0.5, 4, -5);
+        teamArc(0, 0, r2 + 6, 1.0, 2.1);
+        break;
+      }
+      case 'depot': {
+        capsule(0, -H * 0.12, W * 0.7, H * 0.34, '#5a5346');
+        // fûts empilés
+        for (const [bx, by] of [[-W * 0.22, H * 0.26], [-W * 0.02, H * 0.3], [W * 0.18, H * 0.25]]) {
+          dome(bx, by, W * 0.08, '#8a6d3f', false);
+        }
+        teamArc(0, -H * 0.12, W * 0.4, -0.5, 0.5);
+        break;
+      }
+    }
+    greebles(c, -W * 0.4, -H * 0.4, W * 0.3, H * 0.3, seed, 3);
+    weather(c, -W / 2, -H / 2, W, H, seed);
+    return cv;
   }
 
   // ----------------------------------------------- sprites d'unités pré-cuits
@@ -1618,6 +1950,202 @@ export class Renderer {
 
   // --------------------------------------------------------------- bâtiments
 
+  // Rendu via sprite courbe pré-cuit + surcouches animées.
+  private drawBuildingSprite(
+    ctx: CanvasRenderingContext2D, g: Game, b: Building,
+    sx: (x: number) => number, sy: (y: number) => number, z: number,
+    selected: boolean,
+  ) {
+    const px = sx(b.tx - 0.5), py = sy(b.ty - 0.5);
+    const bw = b.w * z, bh = b.h * z;
+    const col = PLAYER_COLORS[b.owner];
+    const cx = px + bw / 2, cy = py + bh / 2;
+    const spr = this.buildingSprite(b.type, b.owner);
+    const s = z / 44;
+    ctx.drawImage(spr, cx - spr.width / 2 * s, cy - spr.height / 2 * s, spr.width * s, spr.height * s);
+
+    // ----- surcouches animées par type
+    switch (b.type) {
+      case 'hq': {
+        ctx.fillStyle = `rgba(255,80,80,${0.5 + 0.5 * Math.sin(g.time * 4)})`;
+        ctx.beginPath(); ctx.arc(px + bw * 0.08, py + bh * 0.6, Math.max(1.2, z * 0.07), 0, Math.PI * 2); ctx.fill();
+        const ha = g.time * 2;
+        ctx.strokeStyle = 'rgba(154,208,255,0.8)';
+        ctx.lineWidth = Math.max(1.2, z * 0.07);
+        ctx.beginPath(); ctx.arc(cx, cy - bh * 0.08, z * 0.34, ha, ha + Math.PI * 0.7); ctx.stroke();
+        break;
+      }
+      case 'power': {
+        ctx.strokeStyle = 'rgba(220,230,235,0.5)';
+        ctx.lineWidth = Math.max(1, z * 0.05);
+        for (const [tx2, ty2, dir2] of [[cx - bw * 0.18, cy - bh * 0.05, 1], [cx + bw * 0.2, cy + bh * 0.1, -1]]) {
+          const ta = g.time * 2.4 * dir2;
+          for (let k = 0; k < 3; k++) {
+            const a = ta + (k / 3) * Math.PI * 2;
+            ctx.beginPath();
+            ctx.moveTo(tx2, ty2);
+            ctx.lineTo(tx2 + Math.cos(a) * z * 0.32, ty2 + Math.sin(a) * z * 0.32);
+            ctx.stroke();
+          }
+        }
+        break;
+      }
+      case 'power2': {
+        ctx.fillStyle = `rgba(154,208,255,${0.3 + 0.2 * Math.sin(g.time * 5)})`;
+        ctx.beginPath(); ctx.arc(cx, cy, z * 0.34, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#cfe8ff';
+        ctx.beginPath(); ctx.arc(cx, cy, z * 0.1, 0, Math.PI * 2); ctx.fill();
+        break;
+      }
+      case 'refinery': {
+        ctx.fillStyle = `rgba(255,${150 + Math.floor(60 * Math.sin(g.time * 9))},60,0.9)`;
+        ctx.beginPath();
+        ctx.arc(px + bw * 0.9, py + bh * 0.26, Math.max(1.5, z * 0.09 + z * 0.03 * Math.sin(g.time * 11)), 0, Math.PI * 2);
+        ctx.fill();
+        break;
+      }
+      case 'refinery2': {
+        ctx.fillStyle = `rgba(231,196,74,${0.14 + 0.1 * Math.sin(g.time * 2.5)})`;
+        ctx.beginPath(); ctx.arc(px + bw * 0.3, py + bh * 0.34, z * 0.7, 0, Math.PI * 2); ctx.fill();
+        break;
+      }
+      case 'factory': case 'factory2': {
+        ctx.fillStyle = `rgba(255,140,60,${0.35 + 0.3 * Math.sin(g.time * (b.type === 'factory2' ? 5 : 3))})`;
+        ctx.beginPath(); ctx.arc(cx, py + bh * 0.86, z * 0.12, 0, Math.PI * 2); ctx.fill();
+        break;
+      }
+      case 'radar': case 'radarcenter': {
+        const a = g.time * (b.type === 'radarcenter' ? 2.2 : 1.6);
+        ctx.strokeStyle = '#cfe8ff';
+        ctx.lineWidth = Math.max(1.6, z * 0.1);
+        ctx.beginPath(); ctx.ellipse(cx, cy + bh * 0.12, z * 0.5, z * 0.32, a, -0.6, 2.2); ctx.stroke();
+        if (b.type === 'radarcenter') {
+          ctx.beginPath(); ctx.ellipse(cx, cy + bh * 0.12, z * 0.3, z * 0.2, -a, -0.6, 2.2); ctx.stroke();
+        }
+        break;
+      }
+      case 'airport': {
+        for (let k = 0; k < 5; k++) {
+          const on = (Math.floor(g.time * 4) % 5) === k;
+          ctx.fillStyle = on ? '#ffe27a' : 'rgba(255,226,122,0.25)';
+          ctx.beginPath(); ctx.arc(px + bw * (0.16 + k * 0.17), py + bh * 0.52, Math.max(1, z * 0.05), 0, Math.PI * 2); ctx.fill();
+        }
+        break;
+      }
+      case 'turret': case 'atgun': {
+        const target = b.engageId ? g.unitById.get(b.engageId) : undefined;
+        const ang = target ? Math.atan2(target.y - (b.ty + b.h / 2), target.x - (b.tx + b.w / 2)) : g.time * 0.3 + b.id;
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(ang);
+        ctx.fillStyle = '#41484f';
+        this.rr(ctx, -z * 0.2, -z * 0.18, z * 0.4, z * 0.36, z * 0.12); ctx.fill();
+        ctx.fillStyle = col;
+        this.rr(ctx, -z * 0.12, -z * 0.1, z * 0.24, z * 0.2, z * 0.07); ctx.fill();
+        ctx.strokeStyle = b.type === 'turret' ? '#dfe5ea' : '#ffb060';
+        if (b.type === 'turret') {
+          ctx.lineWidth = Math.max(1.4, z * 0.07);
+          ctx.beginPath(); ctx.moveTo(0, -z * 0.08); ctx.lineTo(z * 0.58, -z * 0.08); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(0, z * 0.08); ctx.lineTo(z * 0.58, z * 0.08); ctx.stroke();
+        } else {
+          ctx.lineWidth = Math.max(2.2, z * 0.13);
+          ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(z * 0.7, 0); ctx.stroke();
+          ctx.lineWidth = Math.max(2.8, z * 0.2);
+          ctx.beginPath(); ctx.moveTo(z * 0.56, 0); ctx.lineTo(z * 0.7, 0); ctx.stroke();
+        }
+        ctx.restore();
+        break;
+      }
+      case 'aa': {
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(-Math.PI / 4 + 0.2 * Math.sin(g.time * 0.8));
+        ctx.fillStyle = '#41484f';
+        this.rr(ctx, -z * 0.26, -z * 0.22, z * 0.52, z * 0.44, z * 0.08); ctx.fill();
+        ctx.strokeStyle = '#cfe8ff';
+        ctx.lineWidth = Math.max(1.6, z * 0.09);
+        for (const off of [-z * 0.13, -z * 0.045, z * 0.045, z * 0.13]) {
+          ctx.beginPath(); ctx.moveTo(-z * 0.18, off); ctx.lineTo(z * 0.4, off); ctx.stroke();
+        }
+        ctx.fillStyle = '#e0344a';
+        for (const off of [-z * 0.13, -z * 0.045, z * 0.045, z * 0.13]) {
+          ctx.beginPath(); ctx.arc(z * 0.4, off, Math.max(1, z * 0.05), 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.restore();
+        break;
+      }
+      case 'tech': {
+        ctx.fillStyle = `rgba(120,210,255,${0.4 + 0.25 * Math.sin(g.time * 2.4)})`;
+        ctx.fillRect(px + bw * 0.6, py + bh * 0.62, bw * 0.16, bh * 0.08);
+        ctx.fillStyle = 'rgba(120,255,150,0.5)';
+        ctx.fillRect(px + bw * 0.6, py + bh * 0.74, bw * 0.12, bh * 0.05);
+        break;
+      }
+      case 'lab': {
+        const a3 = g.time * 1.4;
+        ctx.strokeStyle = 'rgba(154,208,255,0.8)';
+        ctx.lineWidth = Math.max(1.2, z * 0.06);
+        for (let k = 0; k < 3; k++) {
+          ctx.beginPath();
+          ctx.ellipse(cx, cy, z * 0.66, z * 0.26, a3 + (k * Math.PI) / 3, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.fillStyle = `rgba(200,235,255,${0.5 + 0.3 * Math.sin(g.time * 3)})`;
+        ctx.beginPath(); ctx.arc(cx, cy, z * 0.12, 0, Math.PI * 2); ctx.fill();
+        break;
+      }
+    }
+
+    // feu de statut pulsant à la couleur de l'équipe
+    if (b.built) {
+      ctx.globalAlpha = 0.45 + 0.4 * Math.sin(g.time * 3 + b.id);
+      ctx.fillStyle = col;
+      ctx.beginPath(); ctx.arc(px + bw - z * 0.18, py + bh - z * 0.18, Math.max(2, z * 0.1), 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    // ----- construction / production / réparation / sélection (inchangés)
+    if (!b.built) {
+      ctx.fillStyle = 'rgba(10,12,15,0.55)';
+      ctx.fillRect(px, py, bw, bh * (1 - b.progress));
+      ctx.fillStyle = '#15181c';
+      ctx.fillRect(px, py + bh + 3, bw, 4);
+      ctx.fillStyle = '#50dc78';
+      ctx.fillRect(px, py + bh + 3, bw * b.progress, 4);
+    }
+    if (b.built && b.queue.length > 0) {
+      const q = b.queue[0];
+      ctx.fillStyle = '#15181c';
+      ctx.fillRect(px, py + bh + 3, bw, 4);
+      ctx.fillStyle = '#6db7ff';
+      ctx.fillRect(px, py + bh + 3, bw * Math.min(1, q.t / q.time), 4);
+    }
+    if (b.repairOn) {
+      ctx.fillStyle = '#ffe070';
+      ctx.font = `bold ${Math.max(9, z * 0.6)}px sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('🔧', px + bw - z * 0.4, py + z * 0.4);
+    }
+    if (selected) {
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(px - 2, py - 2, bw + 4, bh + 4);
+      ctx.setLineDash([]);
+      if (b.rally) {
+        const rx = sx(b.rally.x), ry = sy(b.rally.y);
+        ctx.strokeStyle = 'rgba(120,255,150,0.8)';
+        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(rx, ry); ctx.stroke();
+        ctx.fillStyle = '#78ff96';
+        ctx.beginPath(); ctx.moveTo(rx, ry); ctx.lineTo(rx, ry - 10); ctx.lineTo(rx + 7, ry - 7); ctx.closePath(); ctx.fill();
+      }
+    }
+    if (selected || b.hp < b.maxHp) {
+      this.healthBar(ctx, cx, py - 5, bw * 0.85, b.hp / b.maxHp, selected);
+    }
+  }
+
+  // (ancien rendu vectoriel direct des bâtiments, conservé en secours)
   private drawBuilding(
     ctx: CanvasRenderingContext2D, g: Game, b: Building,
     sx: (x: number) => number, sy: (y: number) => number, z: number,
