@@ -11,3 +11,6 @@ next-env.d.ts
 # variables locales (clés Supabase) — jamais committées
 .env*.local
 .env
+
+# config locale Claude Code (permissions de l'agent) — pas dans le dépôt
+settings.local.json
