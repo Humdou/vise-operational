@@ -7,6 +7,7 @@ import {
   LOW_POWER_FACTOR, BUILD_RADIUS, FORWARD_BUILD_RADIUS, BOMBER_AMMO, BOMBER_REARM_TIME,
   SCOUT_REARM_TIME, RARE_ORE_MULT, DEPOT_RADIUS, DEPOT_INCOME_BONUS, DEPOT_UNLOAD_FACTOR,
   REFINERY2_INCOME_BONUS, REFINERY2_UNLOAD_FACTOR, KAMIKAZE_DMG, KAMIKAZE_SPLASH,
+  ECON_RESCUE_CAP, ECON_RESCUE_PER_SEC,
   SpecialMapId, WeaponDef,
 } from './data';
 import { generateMap, GameMap, OreKind, mulberry32, T_GRASS, T_ROUGH, T_WATER, T_ROCK } from './map';
@@ -215,6 +216,8 @@ export class Game {
   nextId = 1;
   rng: () => number;
   private fogTimer = 0;
+  private fogPhase = 0;
+  private rescueTimer = 0;
   private winTimer = 0;
   private hash = new Map<number, number[]>();
   private pathBudget = 0;
@@ -791,8 +794,15 @@ export class Game {
     this.fogTimer -= dt;
     if (this.fogTimer <= 0) {
       this.fogTimer = FOG_INTERVAL;
+      // Brouillard d'un humain rafraîchi à chaque cycle (réactivité) ; celui des
+      // IA un cycle sur deux, réparti par parité d'id, pour diviser par ~2 le coût
+      // plein écran quand il y a beaucoup d'IA sur de grandes cartes.
+      this.fogPhase ^= 1;
       prof.wrap('sim.fog', () => {
-        for (const p of this.players) if (!p.defeated) this.updateFog(p);
+        for (const p of this.players) {
+          if (p.defeated) continue;
+          if (p.isHuman || (p.id & 1) === this.fogPhase) this.updateFog(p);
+        }
       });
     }
 
@@ -1709,6 +1719,31 @@ export class Game {
         n.amount = Math.min(n.max, n.amount + this.oreRegenPerSec * dt);
       }
     }
+    this.updateEconomicRescue(dt);
+  }
+
+  // Secours économique des IA (anti-mort) : empêche une IA de rester morte
+  // économiquement toute la partie (récolteurs perdus + minerai insuffisant pour
+  // repartir). Strictement borné : ne s'applique QU'aux IA, seulement quand elles
+  // n'ont AUCUN récolteur, et plafonné (ECON_RESCUE_CAP) — assez pour reconstruire
+  // une raffinerie/un récolteur, jamais assez pour financer une armée. Dès qu'un
+  // récolteur existe, le secours cesse : n'avantage donc jamais une IA en vie.
+  private updateEconomicRescue(dt: number) {
+    this.rescueTimer -= dt;
+    if (this.rescueTimer > 0) return;
+    const step = 1; // vérifié 1×/s (peu coûteux)
+    this.rescueTimer = step;
+    let anyAI = false;
+    for (const p of this.players) if (!p.defeated && !p.isHuman) { anyAI = true; break; }
+    if (!anyAI) return;
+    const harv = new Array(this.players.length).fill(0);
+    for (const u of this.units) if (!u.dead && u.type === 'harvester') harv[u.owner]++;
+    for (const p of this.players) {
+      if (p.defeated || p.isHuman) continue;
+      if (harv[p.id] === 0 && p.ore < ECON_RESCUE_CAP) {
+        p.ore = Math.min(ECON_RESCUE_CAP, p.ore + ECON_RESCUE_PER_SEC * step);
+      }
+    }
   }
 
   private updateEffects(dt: number) {
@@ -1749,6 +1784,10 @@ export class Game {
     const unitMult = hasCenter ? 1.15 : 1;
     const opticsMult = p.upgrades.optics ? 1.25 : 1;
 
+    // exploredCount mis à jour de façon incrémentale (une tuile 0→visible n'est
+    // comptée qu'une fois) : supprime un second balayage plein écran par joueur à
+    // chaque rafraîchissement — gain net sur les grandes cartes.
+    let explored = p.exploredCount;
     const stamp = (cx: number, cy: number, r: number) => {
       const r2 = r * r;
       const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(w - 1, Math.ceil(cx + r));
@@ -1756,7 +1795,11 @@ export class Game {
       for (let y = y0; y <= y1; y++)
         for (let x = x0; x <= x1; x++) {
           const dx = x - cx, dy = y - cy;
-          if (dx * dx + dy * dy <= r2) fog[y * w + x] = 2;
+          if (dx * dx + dy * dy <= r2) {
+            const i = y * w + x;
+            if (fog[i] === 0) explored++;
+            fog[i] = 2;
+          }
         }
     };
 
@@ -1769,9 +1812,7 @@ export class Game {
       const c = this.buildingCenter(b);
       stamp(c.x, c.y, BUILDINGS[b.type].vision * radarMult * opticsMult * (b.built ? 1 : 0.6));
     }
-    let count = 0;
-    for (let i = 0; i < fog.length; i++) if (fog[i] > 0) count++;
-    p.exploredCount = count;
+    p.exploredCount = explored;
   }
 
   // ---------------------------------------------------------------- victoire

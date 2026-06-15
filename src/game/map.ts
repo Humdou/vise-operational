@@ -92,23 +92,55 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
   const oreScale = MAP_SIZES[sizeId].oreScale;
   const terrain = new Uint8Array(n * n);
   const shade = new Float32Array(n * n);
-  const noise1 = makeNoise(rng, 16);
-  const noise2 = makeNoise(rng, 16);
+  // Trois octaves : continents (basse fréquence) + collines + détail. Donne un
+  // relief plus lisible et varié qu'un simple bruit à deux octaves.
+  const noiseLow = makeNoise(rng, 16);
+  const noiseMid = makeNoise(rng, 16);
+  const noiseHi = makeNoise(rng, 16);
+  const moisture = makeNoise(rng, 16);   // pilote la part de terrain accidenté
+  const detail = makeNoise(rng, 16);     // micro-variation de teinte
 
   // Relief de base : eau (bas), plaine, terrain accidenté, montagne (haut).
   // Le thème tropical a plus de lagunes, en archipel.
-  const waterLevel = theme === 'tropical' ? 0.3 : 0.24;
+  const waterLevel = theme === 'tropical' ? 0.30 : 0.23;
+  const fL = 4.2 / n, fM = 9 / n, fH = 19 / n;
   for (let y = 0; y < n; y++) {
     for (let x = 0; x < n; x++) {
-      const f = 7 / n;
-      const e = noise1(x * f, y * f) * 0.65 + noise2(x * f * 3.1, y * f * 3.1) * 0.35;
+      const e =
+        noiseLow(x * fL, y * fL) * 0.58 +
+        noiseMid(x * fM, y * fM) * 0.30 +
+        noiseHi(x * fH, y * fH) * 0.12;
+      const m = moisture(x * fM * 0.6, y * fM * 0.6);
       let t = T_GRASS;
       if (e < waterLevel) t = T_WATER;
-      else if (e > 0.78) t = T_ROCK;
-      else if (e > 0.66) t = T_ROUGH;
+      else if (e > 0.80) t = T_ROCK;
+      else if (e > 0.62 + (m - 0.5) * 0.12) t = T_ROUGH;  // accidenté plus étendu là où c'est « sec »
       terrain[y * n + x] = t;
-      shade[y * n + x] = (noise2(x * 0.7, y * 0.7) - 0.5) * 0.14;
+      // Teinte : micro-grain + assombrissement léger des hauteurs (lecture du relief).
+      shade[y * n + x] = (detail(x * 0.7, y * 0.7) - 0.5) * 0.13 + (e - 0.5) * 0.12;
     }
+  }
+
+  // Helpers de modelage (utilisés pour lacs, massifs, clairières).
+  const blob = (x0: number, y0: number, r: number, fill: number, jitter = 0.35) => {
+    const ri = Math.ceil(r);
+    for (let y = Math.max(1, y0 - ri); y <= Math.min(n - 2, y0 + ri); y++)
+      for (let x = Math.max(1, x0 - ri); x <= Math.min(n - 2, x0 + ri); x++) {
+        const d = Math.hypot(x - x0, y - y0);
+        if (d <= r * (1 - jitter + jitter * noiseMid(x * 0.5, y * 0.5) * 2)) terrain[y * n + x] = fill;
+      }
+  };
+
+  // Lacs intérieurs : quelques plans d'eau aux contours irréguliers, plus
+  // nombreux sur les grandes cartes (repères visuels + obstacles tactiques).
+  const lakeCount = 1 + Math.floor(n / 90) + (theme === 'tropical' ? 2 : 0);
+  for (let i = 0; i < lakeCount; i++) {
+    blob(Math.floor(n * (0.2 + rng() * 0.6)), Math.floor(n * (0.2 + rng() * 0.6)), 4 + rng() * (n * 0.04), T_WATER);
+  }
+  // Massifs rocheux : barrières naturelles qui structurent les couloirs.
+  const ridgeCount = 2 + Math.floor(n / 75);
+  for (let i = 0; i < ridgeCount; i++) {
+    blob(Math.floor(n * (0.15 + rng() * 0.7)), Math.floor(n * (0.15 + rng() * 0.7)), 3 + rng() * (n * 0.03), T_ROCK, 0.5);
   }
 
   // Bordure rocheuse.
@@ -120,34 +152,50 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
   // Positions de départ sur un cercle autour du centre.
   const starts: { x: number; y: number }[] = [];
   const cx = n / 2, cy = n / 2;
-  const rad = n * 0.36;
+  const rad = n * 0.37;
   const baseAngle = rng() * Math.PI * 2;
   for (let i = 0; i < playerCount; i++) {
-    const a = baseAngle + (i / playerCount) * Math.PI * 2 + (rng() - 0.5) * 0.25;
+    const a = baseAngle + (i / playerCount) * Math.PI * 2 + (rng() - 0.5) * 0.22;
     starts.push({
       x: Math.round(cx + Math.cos(a) * rad),
       y: Math.round(cy + Math.sin(a) * rad),
     });
   }
 
-  // Dégager une zone plate autour de chaque départ.
+  // Dégager une zone plate autour de chaque départ (légèrement plus large sur
+  // les grandes cartes pour laisser respirer une grosse base).
   const clear = (x0: number, y0: number, r: number) => {
     for (let y = Math.max(1, y0 - r); y <= Math.min(n - 2, y0 + r); y++)
       for (let x = Math.max(1, x0 - r); x <= Math.min(n - 2, x0 + r); x++)
         if ((x - x0) ** 2 + (y - y0) ** 2 <= r * r) terrain[y * n + x] = T_GRASS;
   };
-  for (const s of starts) clear(s.x, s.y, 9);
-  clear(Math.round(cx), Math.round(cy), 6);
+  const startClearR = Math.round(9 + n / 130);
+  for (const s of starts) clear(s.x, s.y, startClearR);
 
-  // Corridors garantis entre chaque départ et le centre (pas de base enfermée).
+  // Clairière centrale + clairières stratégiques à mi-distance : zones ouvertes
+  // pour les grands affrontements (et accueil de gros gisements contestés).
+  const openZones: { x: number; y: number }[] = [{ x: Math.round(cx), y: Math.round(cy) }];
+  clear(Math.round(cx), Math.round(cy), Math.round(7 + n / 90));
+  const midRingCount = Math.min(8, 2 + Math.floor(playerCount / 2));
+  for (let i = 0; i < midRingCount; i++) {
+    const a = baseAngle + (i / midRingCount) * Math.PI * 2 + 0.4;
+    const zx = Math.round(cx + Math.cos(a) * n * 0.2);
+    const zy = Math.round(cy + Math.sin(a) * n * 0.2);
+    clear(zx, zy, Math.round(5 + n / 130));
+    openZones.push({ x: zx, y: zy });
+  }
+
+  // Corridors garantis (largeur croissante avec la taille de carte → flux fluide
+  // des armées massives). Tracés APRÈS les lacs/massifs : aucune base enfermée.
+  const cwidth = n > 230 ? 2 : 1;
   const carve = (x0: number, y0: number, x1: number, y1: number) => {
     let x = x0, y = y0;
     while (x !== x1 || y !== y1) {
       if (rng() < 0.5 && x !== x1) x += Math.sign(x1 - x);
       else if (y !== y1) y += Math.sign(y1 - y);
       else if (x !== x1) x += Math.sign(x1 - x);
-      for (let dy = -1; dy <= 1; dy++)
-        for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -cwidth; dy <= cwidth; dy++)
+        for (let dx = -cwidth; dx <= cwidth; dx++) {
           const xx = x + dx, yy = y + dy;
           if (xx > 0 && yy > 0 && xx < n - 1 && yy < n - 1) terrain[yy * n + xx] = T_GRASS;
         }
@@ -191,17 +239,19 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
       7, 900 * oreScale,
     );
   }
-  // 2) Gros gisements stratégiques contestés (centre / milieu de carte).
-  // ~15 % des gisements sont du minerai rare (valeur triple) : zones de conflit.
-  // Le nombre de gisements grandit avec le nombre de joueurs (8/16 joueurs).
+  // 2) Gros gisements stratégiques contestés, ancrés dans les clairières
+  // ouvertes (centre + anneau médian) : les zones ouvertes deviennent ainsi de
+  // véritables enjeux. ~18 % de minerai rare (valeur triple).
+  // Le nombre de gisements grandit avec oreScale et le nombre de joueurs.
   const bigCount = 2 + Math.floor(oreScale) + Math.floor(playerCount / 4);
   for (let i = 0; i < bigCount; i++) {
+    const z = openZones[i % openZones.length];
     const a = rng() * Math.PI * 2;
-    const d = rng() * n * 0.2;
+    const d = rng() * (n * 0.05);
     const rare = rng() < 0.18;
     addCluster(
-      Math.round(cx + Math.cos(a) * d),
-      Math.round(cy + Math.sin(a) * d),
+      Math.round(z.x + Math.cos(a) * d),
+      Math.round(z.y + Math.sin(a) * d),
       rare ? 6 : 10, (rare ? 800 : 1800) * oreScale, rare ? 'rare' : 'gold',
     );
   }

@@ -21,7 +21,7 @@ export type WeaponKind = 'bullet' | 'mg' | 'ap' | 'sniper' | 'shell' | 'arty' | 
 export type Armor = 'inf' | 'light' | 'heavy' | 'building' | 'air';
 export type Difficulty = 'easy' | 'normal' | 'hard';
 export type ThemeId = 'temperate' | 'snow' | 'desert' | 'mist' | 'badlands' | 'tropical';
-export type MapSizeId = 'small' | 'medium' | 'large' | 'xlarge';
+export type MapSizeId = 'small' | 'medium' | 'large' | 'xlarge' | 'giant';
 
 export interface WeaponDef {
   kind: WeaponKind;
@@ -270,13 +270,14 @@ export const BUILD_ORDER_UI: BuildingTypeId[] = [
 ];
 
 export const MAP_SIZES: Record<MapSizeId, { name: string; tiles: number; oreScale: number; duration: string; maxPlayers: number }> = {
-  small:  { name: 'Petite', tiles: 104, oreScale: 1.4, duration: '5–10 min', maxPlayers: 4 },
-  medium: { name: 'Moyenne', tiles: 132, oreScale: 2.1, duration: '10–20 min', maxPlayers: 8 },
-  large:  { name: 'Grande', tiles: 168, oreScale: 3.0, duration: '20–30 min', maxPlayers: 8 },
-  xlarge: { name: 'Très grande', tiles: 200, oreScale: 4.2, duration: '30–45 min', maxPlayers: 16 },
+  small:  { name: 'Petite', tiles: 120, oreScale: 1.6, duration: '5–12 min', maxPlayers: 4 },
+  medium: { name: 'Moyenne', tiles: 160, oreScale: 2.5, duration: '12–22 min', maxPlayers: 8 },
+  large:  { name: 'Grande', tiles: 212, oreScale: 3.6, duration: '22–35 min', maxPlayers: 12 },
+  xlarge: { name: 'Très grande', tiles: 264, oreScale: 4.8, duration: '35–50 min', maxPlayers: 16 },
+  giant:  { name: 'Géante', tiles: 360, oreScale: 7.2, duration: '50–90 min', maxPlayers: 32 },
 };
 
-export const PLAYER_COUNT_CHOICES = [2, 3, 4, 8, 16];
+export const PLAYER_COUNT_CHOICES = [2, 3, 4, 8, 16, 24, 32];
 
 export const THEMES: Record<ThemeId, {
   name: string;
@@ -314,12 +315,21 @@ export const PLAYER_COLORS = [
   '#4fc97a', '#e08b3c', '#56cfc6', '#e36fa7',
   '#93a14e', '#6f7fe0', '#b65a38', '#7fd05a',
   '#c45f95', '#5a93d0', '#cfc25a', '#9c7050',
+  // 16 couleurs supplémentaires (parties jusqu'à 32 équipes, carte Géante)
+  '#46c0d8', '#d85ab0', '#7ed06a', '#d0894a',
+  '#6a6fd8', '#c0d04a', '#d04a6a', '#4ad0a0',
+  '#a04ad0', '#5ad0c0', '#d0b84a', '#8ad04a',
+  '#d04a9a', '#4a8ad0', '#b6d04a', '#d06a4a',
 ];
 export const PLAYER_NAMES = [
   'Joueur', 'Rouge', 'Or', 'Violet',
   'Vert', 'Orange', 'Cyan', 'Rose',
   'Olive', 'Indigo', 'Rouille', 'Lime',
   'Magenta', 'Azur', 'Sable', 'Brun',
+  'Émeraude', 'Fuchsia', 'Jade', 'Cuivre',
+  'Cobalt', 'Citron', 'Grenat', 'Menthe',
+  'Améthyste', 'Turquoise', 'Ambre', 'Mousse',
+  'Pourpre', 'Saphir', 'Tilleul', 'Brique',
 ];
 
 export const START_ORE = 1000;
@@ -347,3 +357,9 @@ export const REFINERY2_INCOME_BONUS = 1.3;  // revenus des livraisons en raffine
 export const REFINERY2_UNLOAD_FACTOR = 0.5; // déchargement bien plus rapide
 export const KAMIKAZE_DMG = 240;
 export const KAMIKAZE_SPLASH = 2.2;
+
+// Secours économique des IA (anti-mort) : une IA sans aucun récolteur reçoit un
+// filet de minerai très lent, plafonné — juste de quoi reconstruire une
+// raffinerie/un récolteur, jamais de quoi financer une armée. Voir Game.updateEconomicRescue.
+export const ECON_RESCUE_CAP = 700;       // plafond du minerai « secouru »
+export const ECON_RESCUE_PER_SEC = 18;    // débit du filet (≈ 40 s pour repartir de 0)

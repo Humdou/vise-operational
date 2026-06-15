@@ -51,6 +51,30 @@ class Heap {
   }
 }
 
+// Buffers réutilisés entre tous les appels : sur une grande carte, allouer et
+// remettre à zéro w×h flottants à chaque findPath (jusqu'à 20×/tick) était le
+// principal goulot CPU/GC. On garde des tableaux persistants et un compteur de
+// « génération » : une case n'est valide que si son tampon == génération
+// courante, ce qui évite tout effacement O(n) par appel.
+let pw = 0, ph = 0;
+let sG = new Float32Array(0);      // coût g connu (valide si sStamp == gen)
+let sFrom = new Int32Array(0);     // prédécesseur
+let sStamp = new Int32Array(0);    // génération où la case a été découverte
+let sClosed = new Int32Array(0);   // génération où la case a été fermée
+let gen = 0;
+const sharedHeap = new Heap();
+
+function ensureBuffers(w: number, h: number) {
+  if (w === pw && h === ph) return;
+  pw = w; ph = h;
+  const n = w * h;
+  sG = new Float32Array(n);
+  sFrom = new Int32Array(n);
+  sStamp = new Int32Array(n);   // 0 ≠ gen initial (gen démarre à 1)
+  sClosed = new Int32Array(n);
+  gen = 0;
+}
+
 export function findPath(
   grid: NavGrid, sx: number, sy: number, tx: number, ty: number, maxExpand = 9000,
 ): { x: number; y: number }[] | null {
@@ -78,20 +102,24 @@ export function findPath(
   }
   if (sx === tx && sy === ty) return [{ x: tx, y: ty }];
 
+  ensureBuffers(w, h);
+  gen++;
+  if (gen >= 0x7fffffff) { sStamp.fill(0); sClosed.fill(0); gen = 1; }
+  const G = sG, FROM = sFrom, STAMP = sStamp, CLOSED = sClosed, CUR_GEN = gen;
+  const gOf = (i: number) => (STAMP[i] === CUR_GEN ? G[i] : Infinity);
+
   const startI = sy * w + sx, targetI = ty * w + tx;
-  const g = new Float32Array(w * h).fill(Infinity);
-  const from = new Int32Array(w * h).fill(-1);
-  const closed = new Uint8Array(w * h);
-  const heap = new Heap();
-  g[startI] = 0;
+  const heap = sharedHeap;
+  heap.size = 0;
+  G[startI] = 0; STAMP[startI] = CUR_GEN; FROM[startI] = -1;
   heap.push(startI, 0);
   let expanded = 0;
   let bestNode = startI, bestH = Math.hypot(tx - sx, ty - sy);
 
   while (heap.size > 0 && expanded < maxExpand) {
     const cur = heap.pop();
-    if (closed[cur]) continue;
-    closed[cur] = 1;
+    if (CLOSED[cur] === CUR_GEN) continue;
+    CLOSED[cur] = CUR_GEN;
     expanded++;
     if (cur === targetI) { bestNode = cur; break; }
     const cx = cur % w, cy = (cur / w) | 0;
@@ -102,21 +130,23 @@ export function findPath(
       const nx = cx + DIRS[d][0], ny = cy + DIRS[d][1];
       if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
       const ni = ny * w + nx;
-      if (!pass[ni] || closed[ni]) continue;
+      if (!pass[ni] || CLOSED[ni] === CUR_GEN) continue;
       // Pas de coupe de coin en diagonale.
       if (d >= 4 && (!pass[cy * w + nx] || !pass[ny * w + cx])) continue;
       const step = (d >= 4 ? 1.4142 : 1) * cost[ni];
-      const ng = g[cur] + step;
-      if (ng < g[ni]) {
-        g[ni] = ng;
-        from[ni] = cur;
+      const ng = G[cur] + step;
+      if (ng < gOf(ni)) {
+        G[ni] = ng;
+        STAMP[ni] = CUR_GEN;
+        FROM[ni] = cur;
         heap.push(ni, ng + Math.hypot(tx - nx, ty - ny) * 1.001);
       }
     }
   }
 
   // Reconstituer le chemin (vers la meilleure approche si cible inatteignable).
-  const end = closed[targetI] ? targetI : bestNode;
+  const from = FROM;
+  const end = CLOSED[targetI] === CUR_GEN ? targetI : bestNode;
   if (end === startI) return null;
   const path: { x: number; y: number }[] = [];
   let cur = end;

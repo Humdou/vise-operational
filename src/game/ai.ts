@@ -33,32 +33,39 @@ interface DiffParams {
   dithers: number;           // 0..1 probabilité de "rater" un cycle de décision
   maxFactories: number;
   maxBarracks: number;
+  earlyPeace: number;        // (s) phase initiale : priorité au développement, peu d'agression
 }
 
+// Trois profils nettement différenciés :
+//  FACILE  : lente, peu agressive, économie médiocre, longue phase pacifique,
+//            erreurs fréquentes (dithers élevé, expandSkill faible) — laisse respirer.
+//  MOYEN   : équilibrée, joue correctement, peut battre un joueur moyen.
+//  DIFFICILE : expansion rapide, économie optimisée, pression quasi permanente,
+//            réactions immédiates, aucune erreur.
 const DIFF: Record<Difficulty, DiffParams> = {
   easy: {
-    thinkInterval: 3.2, reactionDelay: 3.5, harvPerRefinery: 1.5, maxHarvesters: 4,
+    thinkInterval: 3.8, reactionDelay: 5.0, harvPerRefinery: 1.3, maxHarvesters: 3,
     maxRefineries: 2, defensesPerBase: 1, defPerRefinery: 0,
-    attackBase: 2200, retreatRatio: 0, harass: false, harassCooldown: 90,
-    protectHarvesters: false, expandSkill: 0.3, upgradeAppetite: 0.2,
-    armyGrowth: 2.4, techTiming: 420, labTiming: 99999, counterAttack: false,
-    dithers: 0.3, maxFactories: 1, maxBarracks: 1,
+    attackBase: 2700, retreatRatio: 0, harass: false, harassCooldown: 110,
+    protectHarvesters: false, expandSkill: 0.22, upgradeAppetite: 0.12,
+    armyGrowth: 1.9, techTiming: 520, labTiming: 99999, counterAttack: false,
+    dithers: 0.42, maxFactories: 1, maxBarracks: 1, earlyPeace: 300,
   },
   normal: {
-    thinkInterval: 1.8, reactionDelay: 1.5, harvPerRefinery: 2.2, maxHarvesters: 7,
+    thinkInterval: 1.7, reactionDelay: 1.4, harvPerRefinery: 2.3, maxHarvesters: 8,
     maxRefineries: 4, defensesPerBase: 2, defPerRefinery: 1,
-    attackBase: 2450, retreatRatio: 0.48, harass: true, harassCooldown: 44,
-    protectHarvesters: true, expandSkill: 0.7, upgradeAppetite: 0.6,
-    armyGrowth: 4.4, techTiming: 250, labTiming: 390, counterAttack: true,
-    dithers: 0.08, maxFactories: 2, maxBarracks: 1,
+    attackBase: 2350, retreatRatio: 0.5, harass: true, harassCooldown: 42,
+    protectHarvesters: true, expandSkill: 0.72, upgradeAppetite: 0.62,
+    armyGrowth: 4.8, techTiming: 240, labTiming: 380, counterAttack: true,
+    dithers: 0.07, maxFactories: 2, maxBarracks: 1, earlyPeace: 165,
   },
   hard: {
-    thinkInterval: 0.75, reactionDelay: 0.55, harvPerRefinery: 3.2, maxHarvesters: 12,
-    maxRefineries: 7, defensesPerBase: 3, defPerRefinery: 2,
-    attackBase: 2550, retreatRatio: 0.66, harass: true, harassCooldown: 22,
+    thinkInterval: 0.6, reactionDelay: 0.4, harvPerRefinery: 3.4, maxHarvesters: 14,
+    maxRefineries: 8, defensesPerBase: 3, defPerRefinery: 2,
+    attackBase: 2250, retreatRatio: 0.72, harass: true, harassCooldown: 17,
     protectHarvesters: true, expandSkill: 1.0, upgradeAppetite: 1.0,
-    armyGrowth: 8.2, techTiming: 165, labTiming: 245, counterAttack: true,
-    dithers: 0, maxFactories: 4, maxBarracks: 2,
+    armyGrowth: 9.6, techTiming: 145, labTiming: 225, counterAttack: true,
+    dithers: 0, maxFactories: 4, maxBarracks: 2, earlyPeace: 70,
   },
 };
 
@@ -555,6 +562,21 @@ export class AIController {
     );
     const factories = this.myBuildings('factory').filter(b => b.built);
 
+    // URGENCE ÉCO : plus aucun récolteur. On en remet un en chantier d'office,
+    // même si l'usine produit déjà (sinon une usine occupée par un char laissait
+    // l'IA sans revenu à vie). Le secours minerai de l'engine garantit le coût.
+    if (harvesters === 0 && factories.length > 0) {
+      for (const f of factories) {
+        if (f.queue.some(q => q.unit === 'harvester')) { harvesters = -1; break; }
+      }
+      if (harvesters === 0 && me.ore >= UNITS.harvester.cost) {
+        const f = factories.reduce((a, b) => (a.queue.length <= b.queue.length ? a : b));
+        if (this.g.queueUnit(f.id, 'harvester')) harvesters = 1;
+      }
+      // tant qu'aucun récolteur n'existe, ne pas gaspiller en armée ce cycle
+      return;
+    }
+
     // File de production plus profonde quand l'économie le permet.
     const queueDepth = spendable() > 1700 && refs.length >= 3 ? 3 : spendable() > 900 ? 2 : 1;
     for (const f of factories) {
@@ -888,10 +910,15 @@ export class AIController {
 
   private manageAttack() {
     const me = this.g.players[this.pid];
+    // Phase de paix initiale : pendant earlyPeace, l'IA privilégie le
+    // développement (économie, base) et n'engage quasiment pas l'offensive.
+    // Durée différenciée : facile reste passive longtemps, difficile très peu.
+    const early = this.g.time < this.p.earlyPeace;
 
     // Harcèlement : petits groupes rapides contre récolteurs/économie connus.
+    // Suspendu durant la première moitié de la phase de paix.
     this.harassT -= this.p.thinkInterval;
-    if (this.p.harass && this.harassT <= 0) {
+    if (this.p.harass && this.g.time >= this.p.earlyPeace * 0.5 && this.harassT <= 0) {
       this.harassIds = this.harassIds.filter(id => this.g.unitById.get(id) && !this.g.unitById.get(id)!.dead);
       if (this.harassIds.length === 0) {
         const raiders = this.myUnits().filter(u =>
@@ -974,8 +1001,11 @@ export class AIController {
     const value = this.armyValue(idle);
     // En fin de partie, l'IA force la décision au lieu de camper.
     const lateGame = this.g.time > 480 ? 0.5 : 1;
+    // Phase de paix : seuil d'attaque fortement relevé → l'IA accumule et se
+    // développe au lieu d'attaquer trop tôt avec une armée famélique.
+    const earlyMult = early ? 2.6 : 1;
     this.attackThreshold = Math.min(this.attackThreshold, this.p.attackBase * 2.5);
-    const threshold = this.attackThreshold * (1 + this.g.time / 1500) * lateGame;
+    const threshold = this.attackThreshold * (1 + this.g.time / 1500) * lateGame * earlyMult;
     // Sans cible connue, partir en reconnaissance en force dès la moitié du seuil.
     if (this.known.size === 0 && value >= threshold * 0.5 && idle.length >= 4) {
       const { w, h } = this.g.map;
