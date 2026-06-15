@@ -1,5 +1,6 @@
 // Contrôles : caméra, sélection, ordres. Souris/clavier PC et tactile mobile.
 import { Game } from './engine';
+import { applyCommand, CommandSink } from './commands';
 import { UNITS, BUILDINGS, BuildingTypeId } from './data';
 import { Camera, ViewState } from './render';
 import { Sfx } from './audio';
@@ -37,15 +38,28 @@ export class Controls {
   private lastEmptyTap = { x: 0, y: 0 };
   private mmDragging = false;
   private orderMarkers: OrderMarker[] = [];
+  // feedback optimiste : builds demandés localement, en attente de confirmation
+  // réseau (le round qui crée le vrai bâtiment). Purgés à l'apparition du
+  // bâtiment ou après expiration (commande rejetée / perdue).
+  private pendingBuilds: { type: BuildingTypeId; tx: number; ty: number; t: number }[] = [];
   private detachFns: (() => void)[] = [];
+  /** index du joueur local (0 en solo, slot attribué en multijoueur) */
+  readonly pov: number;
+  /** émetteur de commandes : solo = application directe, multi = lockstep */
+  readonly issue: CommandSink;
 
-  constructor(game: Game, sfx: Sfx, canvas: HTMLCanvasElement, minimap: HTMLCanvasElement, onChange: () => void) {
+  constructor(
+    game: Game, sfx: Sfx, canvas: HTMLCanvasElement, minimap: HTMLCanvasElement, onChange: () => void,
+    pov = 0, issue?: CommandSink,
+  ) {
     this.g = game;
     this.sfx = sfx;
     this.canvas = canvas;
     this.minimap = minimap;
     this.onChange = onChange;
-    const start = game.map.starts[0];
+    this.pov = pov;
+    this.issue = issue ?? (c => applyCommand(this.g, this.pov, c));
+    const start = game.map.starts[this.pov];
     this.cam.x = start.x;
     this.cam.y = start.y;
     this.attach();
@@ -170,6 +184,15 @@ export class Controls {
       } else if (this.boxSelectMode) {
         this.boxStart = { x: e.clientX, y: e.clientY };
         this.boxNow = null;
+      } else if (this.isEmptyDoubleTapStart(e.clientX, e.clientY)) {
+        this.boxSelectMode = true;
+        this.selectedBuilding = 0;
+        this.selectedUnits = [];
+        this.boxStart = { x: e.clientX, y: e.clientY };
+        this.boxNow = null;
+        this.panLast = null;
+        this.lastEmptyTapT = 0;
+        this.onChange();
       }
     }
   }
@@ -261,11 +284,18 @@ export class Controls {
     if (!info) return;
     const moved = Math.hypot(info.x - info.sx, info.y - info.sy);
     const dur = performance.now() - info.t;
-    if (this.boxSelectMode && this.boxNow && this.boxStart) {
-      this.selectBox(this.boxStart, this.boxNow, false);
-      this.boxSelectMode = false;
+    if (this.boxSelectMode && this.boxStart) {
+      if (this.boxNow) {
+        this.selectBox(this.boxStart, this.boxNow, false);
+        this.boxSelectMode = false;
+        this.boxStart = null;
+        this.boxNow = null;
+        this.onChange();
+        return;
+      }
       this.boxStart = null;
       this.boxNow = null;
+      this.panLast = null;
       this.onChange();
       return;
     }
@@ -273,6 +303,14 @@ export class Controls {
     this.boxNow = null;
     this.panLast = null;
     if (moved < 10 && dur < 600) this.tap(info.sx, info.sy);
+  }
+
+  private isEmptyDoubleTapStart(px: number, py: number) {
+    const now = performance.now();
+    if (now - this.lastEmptyTapT >= 360) return false;
+    if (Math.hypot(px - this.lastEmptyTap.x, py - this.lastEmptyTap.y) >= 42) return false;
+    const w = this.toWorld(px, py);
+    return !this.pickUnit(w.x, w.y) && !this.pickBuilding(w.x, w.y);
   }
 
   private wheel(e: WheelEvent) {
@@ -322,8 +360,8 @@ export class Controls {
       this.lastEmptyTap = { x: px, y: py };
     }
 
-    if (unit && unit.owner === 0) { this.selectUnits([unit.id]); return; }
-    if (building && building.owner === 0 && this.selectedUnits.length === 0) {
+    if (unit && unit.owner === this.pov) { this.selectUnits([unit.id]); return; }
+    if (building && building.owner === this.pov && this.selectedUnits.length === 0) {
       this.selectedBuilding = building.id;
       this.selectedUnits = [];
       this.sfx.click();
@@ -331,7 +369,7 @@ export class Controls {
       return;
     }
     if (this.selectedUnits.length > 0) { this.contextOrder(w.x, w.y); return; }
-    if (building && building.owner === 0) {
+    if (building && building.owner === this.pov) {
       this.selectedBuilding = building.id;
       this.sfx.click();
       this.onChange();
@@ -348,8 +386,8 @@ export class Controls {
     let best = null, bestD = 0.75;
     for (const u of this.g.units) {
       if (u.dead) continue;
-      if (ownOnly && u.owner !== 0) continue;
-      if (u.owner !== 0 && !this.g.isVisibleTo(0, u.x, u.y)) continue;
+      if (ownOnly && u.owner !== this.pov) continue;
+      if (u.owner !== this.pov && !this.g.isVisibleTo(this.pov, u.x, u.y)) continue;
       const d = Math.hypot(u.x - wx, u.y - wy);
       if (d < bestD + UNITS[u.type].radius) { bestD = d; best = u; }
     }
@@ -363,14 +401,14 @@ export class Controls {
     if (!id) return null;
     const b = this.g.buildingById.get(id);
     if (!b || b.dead) return null;
-    if (b.owner !== 0 && !this.g.buildingVisibleTo(0, b)) return null;
+    if (b.owner !== this.pov && !this.g.buildingVisibleTo(this.pov, b)) return null;
     return b;
   }
 
   private pickNode(wx: number, wy: number) {
     for (const n of this.g.nodes) {
       if (n.amount < 15) continue;
-      if (Math.hypot(n.tx - wx, n.ty - wy) < 0.8 && this.g.isExploredBy(0, n.tx, n.ty)) return n;
+      if (Math.hypot(n.tx - wx, n.ty - wy) < 0.8 && this.g.isExploredBy(this.pov, n.tx, n.ty)) return n;
     }
     return null;
   }
@@ -393,7 +431,7 @@ export class Controls {
         const ids: number[] = [];
         const vw = this.canvas.width / this.cam.zoom / 2, vh = this.canvas.height / this.cam.zoom / 2;
         for (const u of this.g.units) {
-          if (u.dead || u.owner !== 0 || u.type !== unit.type) continue;
+          if (u.dead || u.owner !== this.pov || u.type !== unit.type) continue;
           if (Math.abs(u.x - this.cam.x) < vw && Math.abs(u.y - this.cam.y) < vh) ids.push(u.id);
         }
         this.selectUnits(ids);
@@ -411,7 +449,7 @@ export class Controls {
     }
 
     const building = this.pickBuilding(w.x, w.y);
-    if (building && building.owner === 0) {
+    if (building && building.owner === this.pov) {
       this.selectedBuilding = building.id;
       this.selectedUnits = [];
       this.sfx.click();
@@ -430,7 +468,7 @@ export class Controls {
     const w1 = this.toWorld(Math.max(a.x, b.x), Math.max(a.y, b.y));
     const ids: number[] = additive ? [...this.selectedUnits] : [];
     for (const u of this.g.units) {
-      if (u.dead || u.owner !== 0) continue;
+      if (u.dead || u.owner !== this.pov) continue;
       if (u.x >= w0.x && u.x <= w1.x && u.y >= w0.y && u.y <= w1.y && !ids.includes(u.id)) ids.push(u.id);
     }
     // priorité aux unités de combat dans une sélection mixte
@@ -458,7 +496,7 @@ export class Controls {
       if (this.selectedBuilding) {
         const b = this.g.buildingById.get(this.selectedBuilding);
         if (b && (b.type === 'barracks' || b.type === 'factory' || b.type === 'airport')) {
-          this.g.setRally(b.id, wx, wy);
+          this.issue({ k: 'rally', bId: b.id, x: wx, y: wy });
           this.addOrderMarker('rally', wx, wy);
           this.sfx.order();
         }
@@ -468,19 +506,19 @@ export class Controls {
 
     const enemyUnit = (() => {
       const u = this.pickUnit(wx, wy);
-      return u && u.owner !== 0 ? u : null;
+      return u && u.owner !== this.pov ? u : null;
     })();
     const building = this.pickBuilding(wx, wy);
     const node = this.pickNode(wx, wy);
 
     if (enemyUnit) {
-      this.g.cmdAttack(sel, enemyUnit.id, false);
+      this.issue({ k: 'attack', ids: sel, t: enemyUnit.id, b: false });
       this.addOrderMarker('attack', enemyUnit.x, enemyUnit.y);
       this.sfx.order();
       return;
     }
-    if (building && building.owner !== 0) {
-      this.g.cmdAttack(sel, building.id, true);
+    if (building && building.owner !== this.pov) {
+      this.issue({ k: 'attack', ids: sel, t: building.id, b: true });
       this.addOrderMarker('attack', wx, wy);
       this.sfx.order();
       return;
@@ -488,18 +526,18 @@ export class Controls {
     if (node) {
       const harvesters = sel.filter(id => this.g.unitById.get(id)?.type === 'harvester');
       const rest = sel.filter(id => !harvesters.includes(id));
-      if (harvesters.length > 0) this.g.cmdHarvest(harvesters, node.id);
-      if (rest.length > 0) this.g.cmdMove(rest, wx, wy);
+      if (harvesters.length > 0) this.issue({ k: 'harvest', ids: harvesters, n: node.id });
+      if (rest.length > 0) this.issue({ k: 'move', ids: rest, x: wx, y: wy, am: false });
       this.addOrderMarker('harvest', node.tx, node.ty);
       this.sfx.order();
       return;
     }
-    if (building && building.owner === 0) {
+    if (building && building.owner === this.pov) {
       const engineers = sel.filter(id => this.g.unitById.get(id)?.type === 'engineer');
       if (engineers.length > 0 && building.hp < building.maxHp) {
-        this.g.cmdRepairTarget(engineers, building.id, true);
+        this.issue({ k: 'repairT', ids: engineers, t: building.id, b: true });
         const rest = sel.filter(id => !engineers.includes(id));
-        if (rest.length > 0) this.g.cmdMove(rest, wx, wy);
+        if (rest.length > 0) this.issue({ k: 'move', ids: rest, x: wx, y: wy, am: false });
         this.addOrderMarker('move', wx, wy);
         this.sfx.order();
         return;
@@ -512,16 +550,16 @@ export class Controls {
       const others = sel.filter(id => !engineers.includes(id));
       let acted = false;
       if (engineers.length > 0 && ownUnit.hp < ownUnit.maxHp && UNITS[ownUnit.type].armor !== 'inf') {
-        this.g.cmdRepairTarget(engineers, ownUnit.id, false);
+        this.issue({ k: 'repairT', ids: engineers, t: ownUnit.id, b: false });
         acted = true;
       }
       if (others.length > 0 && !UNITS[ownUnit.type].isAir) {
-        this.g.cmdEscort(others, ownUnit.id);
+        this.issue({ k: 'escort', ids: others, t: ownUnit.id });
         acted = true;
       }
       if (acted) { this.sfx.order(); return; }
     }
-    this.g.cmdMove(sel, wx, wy, false);
+    this.issue({ k: 'move', ids: sel, x: wx, y: wy, am: false });
     this.addOrderMarker('move', wx, wy);
     this.sfx.order();
   }
@@ -531,7 +569,7 @@ export class Controls {
     if (sel.length === 0) return;
     const target = this.pickUnit(wx, wy, true);
     if (target && !sel.includes(target.id) && !UNITS[target.type].isAir) {
-      this.g.cmdEscort(sel, target.id);
+      this.issue({ k: 'escort', ids: sel, t: target.id });
       this.addOrderMarker('move', target.x, target.y);
       this.sfx.order();
     } else {
@@ -542,7 +580,7 @@ export class Controls {
   private issueAttackMove(wx: number, wy: number) {
     const sel = this.aliveSelection();
     if (sel.length === 0) return;
-    this.g.cmdMove(sel, wx, wy, true);
+    this.issue({ k: 'move', ids: sel, x: wx, y: wy, am: true });
     this.addOrderMarker('attack', wx, wy);
     this.sfx.order();
   }
@@ -558,10 +596,10 @@ export class Controls {
     const w = this.toWorld(this.mouse.x, this.mouse.y);
     const unit = this.pickUnit(w.x, w.y);
     const building = this.pickBuilding(w.x, w.y);
-    if ((unit && unit.owner !== 0) || (building && building.owner !== 0)) return 'enemy';
+    if ((unit && unit.owner !== this.pov) || (building && building.owner !== this.pov)) return 'enemy';
     const node = this.pickNode(w.x, w.y);
     if (node) return 'ore';
-    if ((unit && unit.owner === 0) || (building && building.owner === 0)) return 'ally';
+    if ((unit && unit.owner === this.pov) || (building && building.owner === this.pov)) return 'ally';
     if (this.attackMoveMode) return 'attack';
     if (this.selectedUnits.length > 0 || this.selectedBuilding) return 'move';
     return 'default';
@@ -572,11 +610,11 @@ export class Controls {
     const w = this.toWorld(this.mouse.x, this.mouse.y);
     const def = BUILDINGS[this.placing];
     const tx = Math.round(w.x - def.w / 2), ty = Math.round(w.y - def.h / 2);
-    return this.g.canPlace(0, this.placing, tx, ty) && this.g.canBuild(0, this.placing).ok;
+    return this.g.canPlace(this.pov, this.placing, tx, ty) && this.g.canBuild(this.pov, this.placing).ok;
   }
 
   stopSelection() {
-    this.g.cmdStop(this.aliveSelection());
+    this.issue({ k: 'stop', ids: this.aliveSelection() });
     this.sfx.order();
   }
 
@@ -593,7 +631,10 @@ export class Controls {
     const w = this.toWorld(px, py);
     const def = BUILDINGS[this.placing];
     const tx = Math.round(w.x - def.w / 2), ty = Math.round(w.y - def.h / 2);
-    if (this.g.place(0, this.placing, tx, ty)) {
+    if (this.g.canPlace(this.pov, this.placing, tx, ty) && this.g.canBuild(this.pov, this.placing).ok) {
+      this.issue({ k: 'place', t: this.placing, tx, ty });
+      // feedback optimiste : fantôme immédiat en attendant le round réseau
+      this.pendingBuilds.push({ type: this.placing, tx, ty, t: this.g.time });
       this.sfx.order();
       this.placing = null;
       this.onChange();
@@ -639,7 +680,7 @@ export class Controls {
       }
     } else if (k === ' ') {
       e.preventDefault();
-      const p = this.g.players[0];
+      const p = this.g.players[this.pov];
       if (this.g.time - p.alertT < 30) this.centerOn(p.alertX, p.alertY);
     }
   }
@@ -669,7 +710,7 @@ export class Controls {
       const def = BUILDINGS[this.placing];
       placeTx = Math.round(w.x - def.w / 2);
       placeTy = Math.round(w.y - def.h / 2);
-      placeValid = this.g.canPlace(0, this.placing, placeTx, placeTy) && this.g.canBuild(0, this.placing).ok;
+      placeValid = this.g.canPlace(this.pov, this.placing, placeTx, placeTy) && this.g.canBuild(this.pov, this.placing).ok;
     }
     let box: ViewState['box'] = null;
     if (this.boxStart && this.boxNow) {
@@ -679,6 +720,19 @@ export class Controls {
       };
     }
     this.orderMarkers = this.orderMarkers.filter(m => this.g.time - m.t < 0.85);
+    // purge les fantômes : confirmés (un bâtiment du joueur occupe la case) ou
+    // expirés (commande perdue/rejetée — 6 s de garde).
+    if (this.pendingBuilds.length) {
+      this.pendingBuilds = this.pendingBuilds.filter(pb => {
+        if (this.g.time - pb.t > 6) return false;
+        const occupied = this.g.buildGrid[pb.ty * this.g.map.w + pb.tx];
+        if (occupied) {
+          const b = this.g.buildingById.get(occupied);
+          if (b && b.owner === this.pov && b.type === pb.type) return false;
+        }
+        return true;
+      });
+    }
     return {
       cam: this.cam,
       selectedUnits: this.selectedUnits,
@@ -694,6 +748,7 @@ export class Controls {
         kind: this.cursorKind(),
       },
       orderMarkers: [...this.orderMarkers],
+      pendingBuilds: this.pendingBuilds.map(pb => ({ type: pb.type, tx: pb.tx, ty: pb.ty })),
     };
   }
 }

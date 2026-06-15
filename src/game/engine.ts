@@ -11,6 +11,8 @@ import {
 } from './data';
 import { generateMap, GameMap, OreKind, mulberry32, T_GRASS, T_ROUGH, T_WATER, T_ROCK } from './map';
 import { NavGrid, findPath, fireLineClear } from './path';
+import { prof } from './profiler';
+import { mpDebug, mpDebugEconomy } from '../net/debug';
 
 export interface GameSettings {
   sizeId: MapSizeId;
@@ -20,6 +22,9 @@ export interface GameSettings {
   dayNight: boolean;
   special?: SpecialMapId | null; // carte spéciale (France, Italie…)
   seed?: number;
+  // ---- multijoueur (facultatif ; n'altère en rien le mode solo)
+  playerNames?: string[];    // noms affichés par slot (pseudos + IA)
+  humanSlots?: number[];     // index des joueurs humains (défaut : [0])
 }
 
 export type OrderKind = 'idle' | 'move' | 'attackmove' | 'attack' | 'harvest' | 'repair' | 'escort';
@@ -69,6 +74,23 @@ export interface QueueItem {
   t: number;
   time: number;
   cost: number;
+}
+
+// Snapshot d'état autoritatif (host-authoritative). Champs courts pour limiter
+// la taille réseau. Sérialise uniquement le gameplay (pas projectiles/effets/fog).
+export interface Snapshot {
+  t: number; nextId: number; over: boolean; winner: number;
+  players: { ore: number; up: Partial<Record<UpgradeId, boolean>>; def: boolean }[];
+  units: {
+    i: number; o: number; ty: UnitTypeId; x: number; y: number; d: number; h: number;
+    or: Order; cg: number; cv: number; ul: number; cd: number; ei: number; eb: boolean;
+    as?: 'pad' | 'fly' | 'return'; pb?: number; am?: number; rt?: number;
+  }[];
+  buildings: {
+    i: number; o: number; ty: BuildingTypeId; tx: number; ty2: number; h: number;
+    bu: boolean; pr: number; q: QueueItem[]; ra: { x: number; y: number } | null; rp: boolean; cd: number; ei: number;
+  }[];
+  nodes: { i: number; a: number }[];
 }
 
 export interface Building {
@@ -227,12 +249,13 @@ export class Game {
       this.nodeById.set(node.id, node);
     }
 
+    const humanSlots = new Set(settings.humanSlots ?? [0]);
     for (let i = 0; i < count; i++) {
       this.players.push({
         id: i,
-        name: i === 0 ? PLAYER_NAMES[0] : `IA ${PLAYER_NAMES[i]}`,
+        name: settings.playerNames?.[i] ?? (i === 0 ? PLAYER_NAMES[0] : `IA ${PLAYER_NAMES[i]}`),
         color: PLAYER_COLORS[i],
-        isHuman: i === 0,
+        isHuman: humanSlots.has(i),
         difficulty: settings.difficulty,
         defeated: false,
         ore: START_ORE,
@@ -247,6 +270,16 @@ export class Game {
       const def = BUILDINGS.hq;
       this.createBuilding(i, 'hq', s.x - Math.floor(def.w / 2), s.y - Math.floor(def.h / 2), true);
     }
+    mpDebug('game.players.created', {
+      players: this.players.map(p => ({
+        playerId: p.id,
+        owner: p.id,
+        name: p.name,
+        isHuman: p.isHuman,
+        ore: p.ore,
+      })),
+      humanSlots: [...humanSlots],
+    });
     for (const p of this.players) this.updateFog(p);
     this.recomputePower();
   }
@@ -289,6 +322,85 @@ export class Game {
     this.unitById.set(u.id, u);
     p.stats.unitsProduced++;
     return u;
+  }
+
+  // ---------------------------------------------- snapshot réseau (autoritatif)
+  //
+  // L'hôte sérialise l'état de jeu autoritatif ; les clients l'appliquent pour
+  // se corriger (modèle host-authoritative + prédiction locale). On ne
+  // sérialise QUE l'état de gameplay : projectiles/effets/brouillard sont
+  // cosmétiques et régénérés. Le brouillard et l'énergie sont recalculés.
+  serialize(): Snapshot {
+    return {
+      t: this.time, nextId: this.nextId, over: this.over, winner: this.winner,
+      players: this.players.map(p => ({ ore: p.ore, up: { ...p.upgrades }, def: p.defeated })),
+      units: this.units.filter(u => !u.dead).map(u => ({
+        i: u.id, o: u.owner, ty: u.type, x: u.x, y: u.y, d: u.dir, h: u.hp,
+        or: u.order, cg: u.cargo, cv: u.cargoValue, ul: u.unloadT, cd: u.cd,
+        ei: u.engageId, eb: u.engageIsBuilding,
+        as: u.airState, pb: u.padBuildingId, am: u.ammo, rt: u.rearmT,
+      })),
+      buildings: this.buildings.filter(b => !b.dead).map(b => ({
+        i: b.id, o: b.owner, ty: b.type, tx: b.tx, ty2: b.ty, h: b.hp,
+        bu: b.built, pr: b.progress, q: b.queue, ra: b.rally, rp: b.repairOn, cd: b.cd, ei: b.engageId,
+      })),
+      nodes: this.nodes.map(n => ({ i: n.id, a: n.amount })),
+    };
+  }
+
+  applySnapshot(s: Snapshot) {
+    this.time = s.t; this.nextId = s.nextId; this.over = s.over; this.winner = s.winner;
+    for (let i = 0; i < this.players.length; i++) {
+      const ps = s.players[i]; if (!ps) continue;
+      const p = this.players[i];
+      p.ore = ps.ore; p.upgrades = ps.up; p.defeated = ps.def;
+    }
+    for (const ns of s.nodes) { const n = this.nodeById.get(ns.i); if (n) n.amount = ns.a; }
+
+    // unités : reconstruire liste + index
+    this.units = []; this.unitById.clear();
+    for (const us of s.units) {
+      const def = UNITS[us.ty];
+      let maxHp = def.hp;
+      if (this.players[us.o]?.upgrades.armor && (def.armor === 'light' || def.armor === 'heavy') && !def.isAir) maxHp *= 1.1;
+      const u: Unit = {
+        id: us.i, owner: us.o, type: us.ty, x: us.x, y: us.y, dir: us.d,
+        hp: us.h, maxHp,
+        order: us.or, path: null, pathI: 0, repathT: 0, stuckT: 0,
+        cd: us.cd, engageId: us.ei, engageIsBuilding: us.eb,
+        cargo: us.cg, cargoValue: us.cv, unloadT: us.ul, dead: false,
+        airState: us.as, padBuildingId: us.pb, ammo: us.am, rearmT: us.rt,
+      };
+      this.units.push(u); this.unitById.set(u.id, u);
+    }
+
+    // bâtiments : reconstruire liste + index + grille d'occupation + navigation
+    const { w, h, terrain } = this.map;
+    for (let i = 0; i < w * h; i++) {
+      const t = terrain[i];
+      this.nav.pass[i] = t === T_GRASS || t === T_ROUGH ? 1 : 0;
+      this.nav.fireBlock[i] = t === T_ROCK ? 1 : 0;
+    }
+    this.buildGrid.fill(0);
+    this.buildings = []; this.buildingById.clear();
+    for (const bs of s.buildings) {
+      const def = BUILDINGS[bs.ty];
+      const b: Building = {
+        id: bs.i, owner: bs.o, type: bs.ty, tx: bs.tx, ty: bs.ty2, w: def.w, h: def.h,
+        hp: bs.h, maxHp: def.hp, built: bs.bu, progress: bs.pr,
+        queue: bs.q, rally: bs.ra, repairOn: bs.rp, cd: bs.cd, engageId: bs.ei, dead: false,
+      };
+      this.buildings.push(b); this.buildingById.set(b.id, b);
+      for (let y = b.ty; y < b.ty + def.h; y++)
+        for (let x = b.tx; x < b.tx + def.w; x++) {
+          const i = y * w + x;
+          this.buildGrid[i] = b.id; this.nav.pass[i] = 0; this.nav.fireBlock[i] = 1;
+        }
+    }
+
+    this.projectiles = []; this.effects = [];
+    this.recomputePower();
+    for (const p of this.players) if (!p.defeated) this.updateFog(p);
   }
 
   // --------------------------------------------------------------- requêtes
@@ -389,7 +501,17 @@ export class Game {
 
   place(owner: number, type: BuildingTypeId, tx: number, ty: number): boolean {
     if (!this.canBuild(owner, type).ok || !this.canPlace(owner, type, tx, ty)) return false;
-    this.players[owner].ore -= BUILDINGS[type].cost;
+    const oreBefore = this.players[owner].ore;
+    const cost = BUILDINGS[type].cost;
+    this.players[owner].ore -= cost;
+    mpDebugEconomy({
+      action: 'place',
+      owner,
+      oreBefore,
+      cost,
+      oreAfter: this.players[owner].ore,
+      subject: type,
+    });
     this.createBuilding(owner, type, tx, ty);
     this.events.push({ type: 'place', owner, x: tx, y: ty });
     return true;
@@ -418,7 +540,16 @@ export class Game {
     if (!chk.ok) return false;
     const b = this.buildingById.get(buildingId)!;
     const def = UNITS[type];
+    const oreBefore = this.players[b.owner].ore;
     this.players[b.owner].ore -= def.cost;
+    mpDebugEconomy({
+      action: 'queueUnit',
+      owner: b.owner,
+      oreBefore,
+      cost: def.cost,
+      oreAfter: this.players[b.owner].ore,
+      subject: type,
+    });
     b.queue.push({ kind: 'unit', unit: type, t: 0, time: def.time, cost: def.cost });
     return true;
   }
@@ -644,19 +775,25 @@ export class Game {
     this.time += dt;
     this.pathBudget = 20;
 
-    this.rebuildHash();
-    this.updateProduction(dt);
-    this.updateUnits(dt);
-    this.updateBuildingWeapons(dt);
-    this.updateProjectiles(dt);
-    this.updateRepairs(dt);
-    this.updateOre(dt);
-    this.updateEffects(dt);
+    prof.wrap('sim.hash', () => this.rebuildHash());
+    prof.wrap('sim.production', () => this.updateProduction(dt));
+    prof.wrap('sim.units', () => this.updateUnits(dt));
+    prof.wrap('sim.buildingWeapons', () => this.updateBuildingWeapons(dt));
+    prof.wrap('sim.projectiles', () => this.updateProjectiles(dt));
+    prof.wrap('sim.repairs', () => this.updateRepairs(dt));
+    prof.wrap('sim.ore', () => this.updateOre(dt));
+    prof.wrap('sim.effects', () => this.updateEffects(dt));
+    prof.count('sim.ticks', 1);
+    let alive = 0;
+    for (const u of this.units) if (!u.dead) alive++;
+    prof.count('sim.unitsSum', alive);
 
     this.fogTimer -= dt;
     if (this.fogTimer <= 0) {
       this.fogTimer = FOG_INTERVAL;
-      for (const p of this.players) if (!p.defeated) this.updateFog(p);
+      prof.wrap('sim.fog', () => {
+        for (const p of this.players) if (!p.defeated) this.updateFog(p);
+      });
     }
 
     this.winTimer -= dt;
@@ -1083,7 +1220,9 @@ export class Game {
       if (u.repathT > 0) { u.repathT -= dt; return; }
       if (this.pathBudget <= 0) { u.repathT = 0.15; return; }
       this.pathBudget--;
+      const _ps = prof.enabled ? performance.now() : 0;
       const path = findPath(this.nav, u.x, u.y, tx, ty);
+      if (prof.enabled) prof.add('sim.pathfind', performance.now() - _ps);
       if (!path || path.length === 0) { u.repathT = 1.2; onArrive(); return; }
       u.path = path;
       u.pathI = 0;
@@ -1167,7 +1306,16 @@ export class Game {
             * (p.upgrades.refining ? 1.15 : 1)
             * (hasDepot ? DEPOT_INCOME_BONUS : 1)
             * (isT2 ? REFINERY2_INCOME_BONUS : 1);
+          const oreBefore = p.ore;
           p.ore += credit;
+          mpDebugEconomy({
+            action: 'harvest',
+            owner: u.owner,
+            oreBefore,
+            cost: -credit,
+            oreAfter: p.ore,
+            subject: ref.type,
+          });
           p.stats.oreHarvested += credit;
           u.cargo = 0;
           u.cargoValue = 0;

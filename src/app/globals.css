@@ -66,16 +66,23 @@ button { font-family: inherit; cursor: pointer; }
   width: min(1180px, 96vw);
   max-height: 96dvh;
   overflow-y: auto;
-  display: grid;
-  grid-template-columns: 360px 1fr;
-  gap: 34px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
   background: linear-gradient(180deg, rgba(15,15,18,0.9), rgba(9,9,11,0.93));
   border: 1px solid #2b2d33;
   border-radius: 8px;
-  padding: 34px 38px;
+  padding: 26px 38px 34px;
   box-shadow: 0 30px 80px rgba(0,0,0,0.75), 0 0 60px rgba(143,20,36,0.12);
   backdrop-filter: blur(7px);
   animation: menu-card-in 0.5s ease-out both;
+}
+/* corps solo : logo + CTA à gauche, options + théâtres à droite */
+.menu-body {
+  display: grid;
+  grid-template-columns: 360px 1fr;
+  gap: 34px;
+  align-items: start;
 }
 .menu-shell::before {
   content: '';
@@ -752,8 +759,144 @@ button { font-family: inherit; cursor: pointer; }
 
 /* menu : passage en une colonne sur écrans étroits */
 @media (max-width: 980px) {
-  .menu-shell { grid-template-columns: 1fr; gap: 20px; padding: 22px 18px; }
+  .menu-shell { gap: 18px; padding: 20px 18px 26px; }
+  .menu-body { grid-template-columns: 1fr; gap: 20px; }
   .menu-grid2 { grid-template-columns: 1fr; gap: 14px; }
   .env-grid { grid-template-columns: repeat(3, 1fr); }
   .menu-root .menu-title { font-size: clamp(28px, 8vw, 40px); }
 }
+
+/* ====================================================== multijoueur */
+/* sélecteur de mode : rangée centrée en tête du panneau, symétrique */
+.mode-tabs {
+  display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;
+  padding-bottom: 18px; border-bottom: 1px solid #23252b;
+}
+.mode-tab {
+  flex: 0 1 260px; min-width: 0; white-space: nowrap;
+  padding: 11px 20px; border-radius: 9px; cursor: pointer;
+  background: #12161c; color: #8fa0ad; border: 1px solid #27313a;
+  font-weight: 800; font-size: 12px; letter-spacing: 0.06em;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.mode-tab:hover { color: #c5d2dc; border-color: #344554; }
+.mode-tab.on {
+  background: linear-gradient(180deg, #243140, #1a2531);
+  color: #f0f5f8; border-color: #3d5266;
+  box-shadow: 0 0 0 1px rgba(120,160,200,0.12), 0 6px 18px rgba(0,0,0,0.35);
+}
+.menu-multi {
+  display: flex; justify-content: center;
+  min-height: 0;
+}
+.mp-wrap { width: min(880px, 100%); display: flex; flex-direction: column; gap: 12px; }
+.mp-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 760px) { .mp-cols { grid-template-columns: 1fr; } }
+.mp-card {
+  background: rgba(13, 17, 22, 0.94); border: 1px solid #27313a; border-radius: 10px;
+  padding: 14px 16px; color: #c9d4dc;
+}
+.mp-card h3 { margin: 0 0 10px; color: #e8eef2; font-size: 14px; letter-spacing: 0.04em; }
+.mp-card input, .mp-card select {
+  background: #0d1116; border: 1px solid #2c3742; color: #e8eef2;
+  border-radius: 6px; padding: 8px 10px; font-size: 13px; min-width: 0;
+}
+.mp-card input { width: 100%; margin-bottom: 8px; }
+.mp-row { display: flex; gap: 8px; align-items: center; }
+.mp-row input { margin-bottom: 0; flex: 1; }
+.mp-row button { white-space: nowrap; }
+.mp-profile { justify-content: space-between; flex-wrap: wrap; }
+.mp-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+.mp-tabs button {
+  flex: 1; padding: 8px; background: #0d1116; color: #8fa0ad;
+  border: 1px solid #2c3742; border-radius: 6px; cursor: pointer; font-weight: 700;
+}
+.mp-tabs button.on { background: #1c2733; color: #e8eef2; }
+.mp-hint { color: #75858f; font-size: 12px; line-height: 1.5; }
+.mp-hint code { color: #c8b06a; }
+.mp-error {
+  background: #2a1316; border: 1px solid #5c2a30; color: #f0a0a8;
+  border-radius: 6px; padding: 8px 10px; font-size: 12px; margin-top: 8px;
+}
+.mp-link {
+  background: none; border: none; color: #7fb0d8; cursor: pointer;
+  font-size: 12px; padding: 4px 6px; text-decoration: underline;
+}
+.mp-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.mp-listing {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  background: #11161c; border: 1px solid #232d36; border-radius: 6px; padding: 8px 10px;
+}
+.mp-code { letter-spacing: 0.25em; color: #e7c44a; }
+.mp-members { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.mp-member { display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: #11161c; border-radius: 6px; }
+.mp-member.empty { opacity: 0.55; }
+.mp-dot { width: 9px; height: 9px; border-radius: 50%; background: #4a5560; }
+.mp-dot.ok { background: #50dc78; }
+.mp-dot.ai { background: #c8a23e; }
+.mp-tag {
+  background: #2a3744; color: #aac6dd; font-size: 10px; font-weight: 800;
+  padding: 2px 7px; border-radius: 8px; letter-spacing: 0.06em;
+}
+.mp-settings { display: flex; flex-direction: column; gap: 8px; }
+.mp-settings label { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 13px; }
+.mp-settings select { flex: 0 0 56%; }
+.mp-check { justify-content: flex-start !important; }
+.ready-on { filter: hue-rotate(80deg); }
+
+/* ------------------------------------------------------------- chat */
+.chat-panel {
+  background: rgba(13, 17, 22, 0.94); border: 1px solid #27313a; border-radius: 10px;
+  display: flex; flex-direction: column; color: #c9d4dc; min-height: 180px;
+}
+.chat-panel.ingame {
+  position: absolute; left: 12px; bottom: 96px; width: min(360px, 70vw); height: 250px;
+  z-index: 40; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+}
+.chat-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 12px; border-bottom: 1px solid #232d36; font-size: 12px; letter-spacing: 0.05em;
+}
+.chat-min { background: none; border: none; color: #8fa0ad; cursor: pointer; font-size: 14px; }
+.chat-list { flex: 1; overflow-y: auto; padding: 8px 12px; font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
+.chat-msg { line-height: 1.45; word-break: break-word; }
+.chat-msg.pm { color: #d8b65c; }
+.chat-when { color: #5a6a74; margin-right: 6px; font-size: 10px; }
+.chat-input { display: flex; gap: 6px; padding: 8px; border-top: 1px solid #232d36; }
+.chat-input input { flex: 1; background: #0d1116; border: 1px solid #2c3742; color: #e8eef2; border-radius: 6px; padding: 7px 9px; font-size: 12px; }
+.chat-input select { background: #0d1116; border: 1px solid #2c3742; color: #aac6dd; border-radius: 6px; font-size: 11px; max-width: 92px; }
+.chat-input button {
+  background: #1c2733; border: 1px solid #3d5266; color: #e8eef2;
+  border-radius: 6px; padding: 0 12px; cursor: pointer; font-size: 12px;
+}
+.chat-toggle {
+  position: absolute; left: 12px; bottom: 96px; z-index: 40;
+  width: 44px; height: 44px; border-radius: 10px; cursor: pointer; font-size: 19px;
+  background: rgba(13, 17, 22, 0.92); border: 1px solid #27313a;
+}
+.chat-badge {
+  position: absolute; top: -6px; right: -6px; min-width: 18px; height: 18px;
+  background: #c8443c; color: #fff; border-radius: 9px; font-size: 10px; font-weight: 800;
+  display: flex; align-items: center; justify-content: center; padding: 0 4px;
+}
+.chat-badge.pm { background: #d8a23c; }
+.net-note {
+  position: absolute; top: 52px; left: 50%; transform: translateX(-50%); z-index: 45;
+  background: rgba(20, 26, 33, 0.95); border: 1px solid #3d5266; color: #cfe0ee;
+  padding: 8px 16px; border-radius: 8px; font-size: 12px;
+}
+
+/* ============================================ overlay de performance (debug) */
+.perf-overlay {
+  position: absolute; top: 52px; left: 10px; z-index: 60;
+  background: rgba(8,10,14,0.86); border: 1px solid #2a3540; border-radius: 8px;
+  padding: 8px 10px; color: #cfe0ee; font: 11px/1.5 ui-monospace, Menlo, monospace;
+  pointer-events: none; max-width: 340px;
+}
+.perf-row { white-space: nowrap; }
+.perf-row.head { color: #7fb0d8; font-weight: 800; letter-spacing: 0.06em; margin-bottom: 2px; }
+.perf-row b { color: #fff; }
+.perf-row.warn b { color: #e7c44a; }
+.perf-row.bad { color: #f0a0a8; }
+.perf-row.bad b { color: #ff6b78; }
+.perf-sep { color: #5a6a74; margin-top: 5px; border-top: 1px solid #1c2530; padding-top: 3px; }

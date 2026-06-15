@@ -3,6 +3,7 @@
 import { Game, Unit, Building } from './engine';
 import { UNITS, BUILDINGS, THEMES, PLAYER_COLORS } from './data';
 import { T_GRASS, T_ROUGH, T_WATER, T_ROCK, mulberry32 } from './map';
+import { prof } from './profiler';
 
 export interface Camera {
   x: number;   // centre, en tuiles
@@ -27,6 +28,9 @@ export interface ViewState {
     kind: 'default' | 'ore' | 'ally' | 'enemy' | 'attack' | 'move' | 'place-ok' | 'place-bad';
   };
   orderMarkers: { x: number; y: number; t: number; kind: 'move' | 'attack' | 'harvest' | 'rally' }[];
+  // feedback optimiste : bâtiments demandés localement, en attente de
+  // confirmation réseau (dessinés en fantôme « en construction »).
+  pendingBuilds: { type: string; tx: number; ty: number }[];
 }
 
 const TPX = 12; // pixels par tuile du terrain pré-rendu
@@ -183,9 +187,17 @@ function weather(c: CanvasRenderingContext2D, x: number, y: number, w: number, h
 }
 
 export class Renderer {
+  /** index du joueur dont on rend le point de vue (brouillard, alliés) */
+  pov = 0;
   private ctx: CanvasRenderingContext2D;
   private mmCtx: CanvasRenderingContext2D;
   private mmTerrain: HTMLCanvasElement | null = null;
+  private mmFog: HTMLCanvasElement | null = null;   // overlay brouillard (résolution carte)
+  private mmFogImg: ImageData | null = null;
+  private mmBase: HTMLCanvasElement | null = null;  // contenu mini-carte mis en cache
+  private mmBaseCtx: CanvasRenderingContext2D | null = null;
+  private mmAccum = 0;                                // throttle du rafraîchissement
+  private mmDrawn = false;
   private terrain: HTMLCanvasElement | null = null;
   private fogCanvas: HTMLCanvasElement | null = null;
   private fogCtx: CanvasRenderingContext2D | null = null;
@@ -411,7 +423,7 @@ export class Renderer {
     const { cam } = v;
     const z = cam.zoom;
     const theme = THEMES[g.map.theme];
-    const fog = g.players[0].fog;
+    const fog = g.players[this.pov].fog;
     const mw = g.map.w;
 
     const sx = (wx: number) => (wx - cam.x) * z + W / 2;
@@ -426,11 +438,13 @@ export class Renderer {
     const left = cam.x - viewW / 2, top = cam.y - viewH / 2;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'medium';
+    const _rt = prof.enabled ? performance.now() : 0;
     this.drawImageClamped(
       ctx, this.terrain!,
       (left + 0.5) * TPX, (top + 0.5) * TPX, viewW * TPX, viewH * TPX,
       W, H,
     );
+    if (prof.enabled) prof.add('render.terrain', performance.now() - _rt);
 
     const tx0 = Math.max(0, Math.floor(left) - 1);
     const tx1 = Math.min(mw - 1, Math.ceil(left + viewW) + 1);
@@ -496,7 +510,7 @@ export class Renderer {
       const t = (g.time - u.exitFx.t0) / dur;
       if (t < 0 || t >= 1) continue;
       if (u.x < tx0 - 2 || u.x > tx1 + 2 || u.y < ty0 - 2 || u.y > ty1 + 2) continue;
-      if (u.owner !== 0 && !g.isVisibleTo(0, u.x, u.y)) continue;
+      if (u.owner !== this.pov && !g.isVisibleTo(this.pov, u.x, u.y)) continue;
       const k = t * t * (3 - 2 * t); // lissage : démarre doucement, sort franchement
       exiting.add(u.id);
       // le centre DESSINÉ du bâtiment est décalé d'une demi-tuile (convention
@@ -520,11 +534,13 @@ export class Renderer {
     for (const u of g.units) {
       if (u.airState || exiting.has(u.id)) continue;
       if (u.x < tx0 - 1 || u.x > tx1 + 1 || u.y < ty0 - 1 || u.y > ty1 + 1) continue;
-      if (u.owner !== 0 && !g.isVisibleTo(0, u.x, u.y)) continue;
+      if (u.owner !== this.pov && !g.isVisibleTo(this.pov, u.x, u.y)) continue;
       depthUnits.push(u);
     }
     depthBuildings.sort((a, b2) => (a.ty + a.h) - (b2.ty + b2.h));
     depthUnits.sort((a, b2) => a.y - b2.y);
+    if (prof.enabled) { prof.count('render.entCount', depthBuildings.length + depthUnits.length); prof.count('render.entFrames'); }
+    const _re = prof.enabled ? performance.now() : 0;
     let ui = 0;
     for (const b of depthBuildings) {
       const base = b.ty + b.h - 0.5; // ligne de sol du bâtiment dessiné
@@ -538,12 +554,13 @@ export class Renderer {
       const u = depthUnits[ui++];
       this.drawUnitSprite(ctx, g, u, sx, sy, z, v.selectedUnits.includes(u.id));
     }
+    if (prof.enabled) prof.add('render.entities', performance.now() - _re);
 
     // ----- projectiles
     for (const p of g.projectiles) {
       const px = sx(p.x), py = sy(p.y);
       if (px < -20 || px > W + 20 || py < -20 || py > H + 20) continue;
-      if (!g.isVisibleTo(0, p.x, p.y)) continue;
+      if (!g.isVisibleTo(this.pov, p.x, p.y)) continue;
       let arcY = 0;
       if (p.indirect) arcY = Math.sin(p.t * Math.PI) * p.dist * 0.22 * z;
       if (p.kind === 'bullet' || p.kind === 'mg' || p.kind === 'sniper') {
@@ -578,7 +595,7 @@ export class Renderer {
 
     // ----- effets
     for (const e of g.effects) {
-      if (!g.isVisibleTo(0, e.x, e.y)) continue;
+      if (!g.isVisibleTo(this.pov, e.x, e.y)) continue;
       const px = sx(e.x), py = sy(e.y);
       const f = e.age / e.dur;
       if (e.kind === 'boom') {
@@ -640,7 +657,7 @@ export class Renderer {
     // ----- unités aériennes (au-dessus de tout)
     for (const u of g.units) {
       if (!u.airState) continue;
-      if (u.owner !== 0 && !g.isVisibleTo(0, u.x, u.y)) continue;
+      if (u.owner !== this.pov && !g.isVisibleTo(this.pov, u.x, u.y)) continue;
       const flying = u.airState !== 'pad';
       const px = sx(u.x), py = sy(u.y);
       // ombre très détachée en vol : l'altitude se lit immédiatement
@@ -682,7 +699,25 @@ export class Renderer {
     }
 
     // ----- brouillard : image alpha 1 px/tuile, mise à l'échelle adoucie
+    const _rf = prof.enabled ? performance.now() : 0;
     this.drawFog(g, ctx, left, top, viewW, viewH, W, H);
+    if (prof.enabled) prof.add('render.fog', performance.now() - _rf);
+
+    // ----- builds en attente (feedback optimiste réseau) : fantôme « chantier »
+    // affiché dès le clic, avant que le round réseau ne crée le vrai bâtiment.
+    for (const pb of v.pendingBuilds) {
+      const def = BUILDINGS[pb.type as keyof typeof BUILDINGS];
+      if (!def) continue;
+      const px = sx(pb.tx - 0.5), py = sy(pb.ty - 0.5);
+      const pulse = 0.28 + 0.14 * Math.sin(g.time * 5);
+      ctx.fillStyle = `rgba(231,196,74,${pulse})`;
+      ctx.fillRect(px, py, def.w * z, def.h * z);
+      ctx.strokeStyle = 'rgba(231,196,74,0.85)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 4]);
+      ctx.strokeRect(px, py, def.w * z, def.h * z);
+      ctx.setLineDash([]);
+    }
 
     // ----- fantôme de placement
     if (v.placing) {
@@ -736,7 +771,9 @@ export class Renderer {
     this.drawOrderMarkers(ctx, g, v, sx, sy, z);
     this.drawCommandCursor(ctx, g, v);
 
+    const _rm = prof.enabled ? performance.now() : 0;
     this.drawMinimap(g, v, dtFrame);
+    if (prof.enabled) prof.add('render.minimap', performance.now() - _rm);
   }
 
   private drawOrderMarkers(
@@ -888,7 +925,7 @@ export class Renderer {
       const d = this.fogImg.data;
       for (let i = 0; i < w * h; i++) { d[i * 4] = 8; d[i * 4 + 1] = 10; d[i * 4 + 2] = 14; }
     }
-    const fog = g.players[0].fog;
+    const fog = g.players[this.pov].fog;
     const d = this.fogImg!.data;
     for (let i = 0; i < w * h; i++) {
       d[i * 4 + 3] = fog[i] === 2 ? 0 : fog[i] === 1 ? 118 : 255;
@@ -3783,13 +3820,30 @@ export class Renderer {
   // --------------------------------------------------------------- mini-carte
 
   private drawMinimap(g: Game, v: ViewState, dt: number) {
-    const ctx = this.mmCtx;
+    // La mini-carte n'a pas besoin de suivre le framerate : l'état (brouillard,
+    // positions) évolue lentement. On la rafraîchit à ~12 Hz et on laisse le
+    // dernier rendu affiché entre deux mises à jour (le canvas n'est pas effacé
+    // ailleurs). Le viewport bouge plus souvent : il est tracé par-dessus le
+    // cache à chaque frame, en bas de méthode.
+    this.mmAccum += dt;
+    const due = !this.mmDrawn || this.mmAccum >= 0.083;
+
     const S = this.minimap.width;
     const mw = g.map.w, mh = g.map.h;
+    // canvas offscreen du contenu (terrain + brouillard + entités), rebâti à ~12 Hz
+    if (!this.mmBase) {
+      this.mmBase = document.createElement('canvas');
+      this.mmBase.width = S; this.mmBase.height = S;
+      this.mmBaseCtx = this.mmBase.getContext('2d')!;
+    }
+    if (!due) { this.blitMinimap(g, v); return; }
+    this.mmAccum = 0;
+    this.mmDrawn = true;
+    const ctx = this.mmBaseCtx!;
     // Letterbox : les cartes spéciales (Italie…) ne sont pas carrées.
     const k = S / Math.max(mw, mh);
     const ox = (S - mw * k) / 2, oy = (S - mh * k) / 2;
-    const fog = g.players[0].fog;
+    const fog = g.players[this.pov].fog;
     const theme = THEMES[g.map.theme];
     const radar = g.hasRadar(0);
 
@@ -3814,18 +3868,25 @@ export class Renderer {
     ctx.fillRect(0, 0, S, S);
     ctx.drawImage(this.mmTerrain, ox, oy, mw * k, mh * k);
 
-    // brouillard
-    ctx.fillStyle = '#06080a';
-    const step = Math.max(1, Math.floor(mw / 96));
-    for (let y = 0; y < mh; y += step)
-      for (let x = 0; x < mw; x += step) {
-        if (fog[y * mw + x] === 0) ctx.fillRect(ox + x * k, oy + y * k, k * step + 0.5, k * step + 0.5);
-        else if (fog[y * mw + x] === 1) {
-          ctx.fillStyle = 'rgba(6,8,10,0.45)';
-          ctx.fillRect(ox + x * k, oy + y * k, k * step + 0.5, k * step + 0.5);
-          ctx.fillStyle = '#06080a';
-        }
-      }
+    // brouillard : un seul ImageData (résolution carte) mis à l'échelle —
+    // remplace des dizaines de milliers de fillRect par tuile.
+    if (!this.mmFog || this.mmFog.width !== mw || this.mmFog.height !== mh) {
+      this.mmFog = document.createElement('canvas');
+      this.mmFog.width = mw; this.mmFog.height = mh;
+      this.mmFogImg = this.mmFog.getContext('2d')!.createImageData(mw, mh);
+    }
+    const fimg = this.mmFogImg!;
+    const fd = fimg.data;
+    for (let i = 0; i < mw * mh; i++) {
+      const f = fog[i];
+      const a = f === 0 ? 255 : f === 1 ? 115 : 0;
+      const o = i * 4;
+      fd[o] = 6; fd[o + 1] = 8; fd[o + 2] = 10; fd[o + 3] = a;
+    }
+    const fctx = this.mmFog.getContext('2d')!;
+    fctx.putImageData(fimg, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(this.mmFog, ox, oy, mw * k, mh * k);
 
     // minerai découvert (le rare ressort en rouge vif)
     for (const n of g.nodes) {
@@ -3837,10 +3898,10 @@ export class Renderer {
     // bâtiments
     for (const b of g.buildings) {
       const ci = (b.ty + 1) * mw + b.tx + 1;
-      const own = b.owner === 0;
+      const own = b.owner === this.pov;
       if (!own) {
         if (fog[Math.min(ci, fog.length - 1)] === 0) continue;
-        if (!radar && !g.buildingVisibleTo(0, b)) continue;
+        if (!radar && !g.buildingVisibleTo(this.pov, b)) continue;
       }
       ctx.fillStyle = PLAYER_COLORS[b.owner];
       ctx.fillRect(ox + b.tx * k, oy + b.ty * k, Math.max(2, b.w * k), Math.max(2, b.h * k));
@@ -3848,8 +3909,8 @@ export class Renderer {
 
     // unités
     for (const u of g.units) {
-      const own = u.owner === 0;
-      if (!own && (!radar || !g.isVisibleTo(0, u.x, u.y))) continue;
+      const own = u.owner === this.pov;
+      if (!own && (!radar || !g.isVisibleTo(this.pov, u.x, u.y))) continue;
       ctx.fillStyle = own ? '#9fe0ff' : PLAYER_COLORS[u.owner];
       ctx.fillRect(ox + u.x * k - 1, oy + u.y * k - 1, 2.2, 2.2);
     }
@@ -3864,7 +3925,19 @@ export class Renderer {
       ctx.stroke();
     }
 
-    // cadre caméra
+    // le contenu est prêt dans mmBase : on l'affiche + le viewport par-dessus
+    this.blitMinimap(g, v);
+  }
+
+  // Affiche le contenu mis en cache puis trace le cadre caméra (chaque frame,
+  // pour un viewport fluide même si le contenu n'est rafraîchi qu'à 12 Hz).
+  private blitMinimap(g: Game, v: ViewState) {
+    const ctx = this.mmCtx;
+    const S = this.minimap.width;
+    const mw = g.map.w, mh = g.map.h;
+    const k = S / Math.max(mw, mh);
+    const ox = (S - mw * k) / 2, oy = (S - mh * k) / 2;
+    if (this.mmBase) ctx.drawImage(this.mmBase, 0, 0);
     const cw = (this.canvas.width / v.cam.zoom) * k;
     const ch = (this.canvas.height / v.cam.zoom) * k;
     ctx.strokeStyle = 'rgba(255,255,255,0.85)';

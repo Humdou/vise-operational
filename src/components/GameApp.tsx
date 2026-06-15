@@ -13,6 +13,12 @@ import {
   UnitTypeId, BuildingTypeId, UpgradeId, MapSizeId, ThemeId, Difficulty, SpecialMapId,
 } from '../game/data';
 import { SPECIAL_MAPS } from '../game/map';
+import { MultiplayerPanel, ChatPanel, MpRun } from './Multiplayer';
+import { NetGame, SIM_DT } from '../net/netgame';
+import { prof } from '../game/profiler';
+import { PerfOverlay } from './PerfOverlay';
+import type { ChatMessage } from '../net/types';
+import { mpDebug as mpDebugLog, mpDebugSetPlayerContext } from '../net/debug';
 
 type Screen = 'menu' | 'game' | 'end';
 type InfoKind = 'building' | 'unit' | 'upgrade';
@@ -20,6 +26,7 @@ type InfoOrigin = 'bottom' | 'right';
 type InfoTarget = { kind: InfoKind; id: string; origin: InfoOrigin };
 
 const DIFF_LABELS: Record<Difficulty, string> = { easy: 'Facile', normal: 'Moyen', hard: 'Difficile' };
+const lastTopbarOreByPov = new Map<number, number>();
 
 export default function GameApp() {
   // ?autostart : lance directement une partie (pratique pour les tests).
@@ -36,30 +43,59 @@ export default function GameApp() {
     return { sizeId: 'medium', theme: 'temperate', opponents: 1, difficulty: 'normal', dayNight: true, special, seed };
   });
   const [endedGame, setEndedGame] = useState<Game | null>(null);
+  const [mp, setMp] = useState<MpRun | null>(null);
 
   const launch = useCallback((s: GameSettings) => {
     setSettings(s);
     setScreen('game');
   }, []);
 
-  if (screen === 'menu') return <MainMenu initial={settings} onLaunch={launch} />;
+  // lancement multijoueur : la charge utile de l'hôte décrit une simulation
+  // identique pour tous (seed, slots humains + IA, paramètres)
+  const launchMp = useCallback((run: MpRun) => {
+    const pl = run.payload;
+    mpDebugLog('launch.received', {
+      source: 'GameApp.launchMp',
+      self: run.lobby.transport.self,
+      me: run.lobby.me,
+      localPlayer: run.localPlayer,
+      slots: pl.slots,
+    });
+    setMp(run);
+    setSettings({
+      sizeId: pl.sizeId, theme: pl.theme, opponents: pl.slots.length - 1,
+      difficulty: pl.difficulty, dayNight: pl.dayNight, special: null, seed: pl.seed,
+      playerNames: pl.slots.map(sl => sl.pseudo),
+      humanSlots: pl.slots.filter(sl => sl.kind === 'human').map(sl => sl.player),
+    });
+    setScreen('game');
+  }, []);
+
+  const leaveMp = useCallback(() => {
+    if (mp) { mp.lobby.transport.leave(); setMp(null); }
+  }, [mp]);
+
+  if (screen === 'menu') return <MainMenu initial={settings} onLaunch={launch} onLaunchMp={launchMp} />;
   if (screen === 'game') {
     return (
       <GameScreen
         settings={settings}
+        mp={mp}
         onEnd={(g) => { setEndedGame(g); setScreen('end'); }}
-        onQuit={() => setScreen('menu')}
+        onQuit={() => { leaveMp(); setScreen('menu'); }}
       />
     );
   }
   return (
     <EndScreen
       game={endedGame!}
+      pov={mp ? mp.localPlayer : 0}
+      canReplay={!mp}
       onReplay={() => {
         setSettings(s => ({ ...s, seed: Math.floor(Math.random() * 1e9) }));
         setScreen('game');
       }}
-      onMenu={() => setScreen('menu')}
+      onMenu={() => { leaveMp(); setScreen('menu'); }}
     />
   );
 }
@@ -172,8 +208,15 @@ function EnvPreview({ t }: { t: ThemeId }) {
   );
 }
 
-function MainMenu({ initial, onLaunch }: { initial: GameSettings; onLaunch: (s: GameSettings) => void }) {
+function MainMenu({ initial, onLaunch, onLaunchMp }: {
+  initial: GameSettings;
+  onLaunch: (s: GameSettings) => void;
+  onLaunchMp: (run: MpRun) => void;
+}) {
   const [s, setS] = useState<GameSettings>(initial);
+  // ?join=CODE ou ?net=local ouvrent directement l'onglet multijoueur
+  const [mode, setMode] = useState<'solo' | 'multi'>(() =>
+    typeof window !== 'undefined' && /[?&](join|net)=/.test(window.location.search) ? 'multi' : 'solo');
   const maxPlayers = s.special ? SPECIAL_MAPS[s.special].maxPlayers : MAP_SIZES[s.sizeId].maxPlayers;
   const players = s.opponents + 1;
 
@@ -196,7 +239,21 @@ function MainMenu({ initial, onLaunch }: { initial: GameSettings; onLaunch: (s: 
     <div className="menu-root">
       <MenuBackdrop />
       <div className="menu-shell">
+        <div className="mode-tabs">
+          <button className={`mode-tab ${mode === 'solo' ? 'on' : ''}`} onClick={() => setMode('solo')}>
+            🛡 JOUER HORS LIGNE
+          </button>
+          <button className={`mode-tab ${mode === 'multi' ? 'on' : ''}`} onClick={() => setMode('multi')}>
+            🌐 MULTIJOUEUR EN LIGNE
+          </button>
+        </div>
 
+        {mode === 'multi' ? (
+          <div className="menu-multi">
+            <MultiplayerPanel onLaunch={onLaunchMp} />
+          </div>
+        ) : (
+        <div className="menu-body">
         <div className="menu-left">
           <div className="menu-emblem">▲</div>
           <div className="menu-title">VISE<br /><span>OPERATIONAL</span></div>
@@ -328,6 +385,8 @@ function MainMenu({ initial, onLaunch }: { initial: GameSettings; onLaunch: (s: 
             </div>
           </div>
         </div>
+        </div>
+        )}
 
       </div>
     </div>
@@ -336,11 +395,16 @@ function MainMenu({ initial, onLaunch }: { initial: GameSettings; onLaunch: (s: 
 
 // =============================================================== JEU
 
-function GameScreen({ settings, onEnd, onQuit }: {
+function GameScreen({ settings, mp, onEnd, onQuit }: {
   settings: GameSettings;
+  mp?: MpRun | null;
   onEnd: (g: Game) => void;
   onQuit: () => void;
 }) {
+  const pov = mp ? mp.localPlayer : 0;
+  // outillage de test : expose l'état + trace les empreintes (jamais en prod normale)
+  const mpDebugActive = typeof window !== 'undefined' && /[?&](net=local|mpdebug)/.test(window.location.search);
+  if (prof.enabled) prof.count('react.GameScreen');
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const mmRef = useRef<HTMLCanvasElement>(null);
   const gameRef = useRef<Game | null>(null);
@@ -354,15 +418,33 @@ function GameScreen({ settings, onEnd, onQuit }: {
   const [musicVolume, setMusicVolume] = useState(0.52);
   const [effectsVolume, setEffectsVolume] = useState(0.9);
   const [infoTarget, setInfoTarget] = useState<InfoTarget | null>(null);
+  const [netNote, setNetNote] = useState<string | null>(null);
+  const [chatMsgs, setChatMsgs] = useState<ChatMessage[]>([]);
 
   useEffect(() => {
+    mpDebugLog('gamescreen.effect.start', {
+      source: 'GameScreen.useEffect.start',
+      hasMp: Boolean(mp),
+      localPlayer: pov,
+      uid: mp?.lobby.me.id ?? null,
+    });
+    if (typeof window !== 'undefined' && /[?&](prof|perf)/.test(window.location.search)) {
+      prof.enabled = true;
+      prof.reset();
+    }
     const canvas = canvasRef.current!;
     const mm = mmRef.current!;
     const game = new Game(settings);
     gameRef.current = game;
+    mpDebugLog('gamescreen.game.created', {
+      source: 'new Game(settings)',
+      hasMp: Boolean(mp),
+      localPlayer: pov,
+      players: game.players.map(p => ({ playerId: p.id, name: p.name, isHuman: p.isHuman, ore: p.ore })),
+    });
     // ?demo : fait apparaître une unité de chaque type + un exemplaire de
     // chaque bâtiment (vérification visuelle).
-    if (window.location.search.includes('demo')) {
+    if (!mp && window.location.search.includes('demo')) {
       const s = game.map.starts[0];
       ([
         'rifle', 'bazooka', 'sniper', 'engineer',
@@ -389,16 +471,61 @@ function GameScreen({ settings, onEnd, onQuit }: {
       game.players[0].ore = 1000;
       game.recomputePower();
     }
+    // L'IA ne tourne QUE sur l'hôte (autoritatif). En solo, sur la machine
+    // unique. Le client NE crée PAS de contrôleurs IA : il prédit les unités
+    // adverses en continuant leurs ordres, corrigé par les snapshots de l'hôte.
     const ais: AIController[] = [];
-    for (let i = 1; i < game.players.length; i++) ais.push(new AIController(game, i, settings.difficulty));
+    const aiOwned = new Set<number>();
+    const runsAI = !mp || mp.lobby.isHost;
+    if (mp) {
+      if (runsAI) {
+        for (const sl of mp.payload.slots) {
+          if (sl.kind === 'ai') { ais.push(new AIController(game, sl.player, settings.difficulty)); aiOwned.add(sl.player); }
+        }
+      }
+    } else {
+      for (let i = 1; i < game.players.length; i++) ais.push(new AIController(game, i, settings.difficulty));
+    }
+    // synchronisation réseau : host-authoritative + prédiction client (NetGame)
+    const sync = mp ? new NetGame(game, mp.lobby.transport, mp.lobby.isHost, mp.localPlayer, mp.payload.slots) : null;
+    if (mp) mpDebugSetPlayerContext(mp.localPlayer, mp.payload.slots);
+    if (sync) {
+      // hôte : un joueur déconnecté est repris par une IA (host-side)
+      sync.onPeerLost = player => {
+        if (!aiOwned.has(player)) {
+          aiOwned.add(player);
+          ais.push(new AIController(game, player, settings.difficulty));
+          game.players[player].name += ' (IA)';
+          setNetNote(`${game.players[player].name} : joueur déconnecté, une IA reprend sa base.`);
+          window.setTimeout(() => setNetNote(null), 6000);
+        }
+      };
+    }
+    // chat de partie : on continue d'utiliser le canal du salon
+    let restoreChat: (() => void) | null = null;
+    if (mp) {
+      const lobby = mp.lobby;
+      const prevChat = lobby.onChat;
+      lobby.onChat = m => { prevChat?.(m); setChatMsgs([...lobby.chat]); };
+      setChatMsgs([...lobby.chat]);
+      restoreChat = () => { lobby.onChat = prevChat; };
+    }
     const sfx = new Sfx();
     sfx.setVolume(volume);
     sfx.setMusicVolume(musicVolume);
     sfx.setEffectsVolume(effectsVolume);
     sfxRef.current = sfx;
-    const controls = new Controls(game, sfx, canvas, mm, () => setTick(t => t + 1));
+    const controls = new Controls(
+      game, sfx, canvas, mm, () => setTick(t => t + 1),
+      pov, sync ? (c => sync.issue(c)) : undefined,
+    );
     controlsRef.current = controls;
     const renderer = new Renderer(canvas, mm);
+    renderer.pov = pov;
+    // banc de test : accès à l'état pour l'outillage (?net=local, ?mpdebug, ?prof)
+    if (mpDebugActive || prof.enabled) {
+      (window as unknown as Record<string, unknown>).__vo = { game, sync, controls };
+    }
 
     const dpr = Math.min(1.5, window.devicePixelRatio || 1);
     controls.dpr = dpr;
@@ -413,30 +540,67 @@ function GameScreen({ settings, onEnd, onQuit }: {
     let raf = 0;
     let last = performance.now();
     let endScheduled = false;
-    const frame = (now: number) => {
-      const dt = Math.max(0, Math.min(0.08, (now - last) / 1000));
-      last = now;
-      if (!pausedRef.current && !game.over) {
-        game.update(dt);
-        for (const ai of ais) ai.update(dt);
+    let acc = 0;
+    // Host-authoritative + prédiction client : hôte ET client font tourner la
+    // simulation à pas fixe à chaque frame (fluide, jamais bloqué). L'hôte
+    // diffuse des snapshots ; le client se cale dessus à réception (NetGame).
+    const simStep = (now: number, dt: number) => {
+      if (!game.over && (!pausedRef.current || sync)) {
+        if (sync) sync.pump(now);               // hôte : diffuse l'état si dû
+        acc = Math.min(acc + dt, 0.25);          // rattrapage borné, jamais de gel
+        let advanced = 0;
+        while (acc >= SIM_DT) {
+          prof.wrap('sim.update', () => game.update(SIM_DT));
+          // l'IA ne tourne que là où elle est autoritative (hôte / solo)
+          if (ais.length) prof.wrap('sim.ai', () => { for (const ai of ais) ai.update(SIM_DT); });
+          advanced++;
+          acc -= SIM_DT;
+        }
+        if (advanced > 0) prof.simAdvanced();
+        // bannière UNIQUEMENT sur vraie coupure : aucun snapshot depuis >3 s
+        if (sync && !sync.isHost) {
+          if (sync.msSinceSnapshot(now) > 3000) setNetNote('Connexion interrompue avec l’hôte…');
+          else setNetNote(prev => prev === 'Connexion interrompue avec l’hôte…' ? null : prev);
+        }
       }
-      controls.update(dt);
-      const events = game.events.splice(0, game.events.length);
-      sfx.handle(events, game.time, (x, y) => game.isVisibleTo(0, x, y));
-      sfx.updateRuntime(game, dt);
-      renderer.draw(game, controls.getViewState(), dt);
       if (game.over && !endScheduled) {
         endScheduled = true;
         setTimeout(() => onEnd(game), 2400);
       }
+    };
+    const frame = (now: number) => {
+      const frameStart = performance.now();
+      const dt = Math.max(0, Math.min(0.08, (now - last) / 1000));
+      last = now;
+      prof.wrap('loop.sim', () => simStep(now, dt));
+      prof.wrap('loop.input', () => controls.update(dt));
+      const events = game.events.splice(0, game.events.length);
+      prof.wrap('loop.audio', () => { sfx.handle(events, game.time, (x, y) => game.isVisibleTo(pov, x, y)); sfx.updateRuntime(game, dt); });
+      prof.wrap('loop.render', () => renderer.draw(game, controls.getViewState(), dt));
+      const ft = performance.now() - frameStart;
+      prof.add('loop.frame', ft);
+      prof.frame(ft);
+      prof.count('loop.fps', 1);
       raf = requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);
+    // onglet caché : rAF est gelé, on continue la simulation (multijoueur
+    // surtout : l'hôte doit sceller ET avancer ; les événements sonores
+    // sont purgés pour ne pas s'accumuler).
+    const bgTimer = window.setInterval(() => {
+      if (!document.hidden) return;
+      const now = performance.now();
+      const dt = Math.max(0, Math.min(0.2, (now - last) / 1000));
+      last = now;
+      simStep(now, dt);
+      game.events.length = 0;
+    }, 100);
 
     const hudTimer = setInterval(() => setTick(t => t + 1), 180);
 
     // Touche P : bascule pause / reprise.
     const keyPause = (e: KeyboardEvent) => {
+      if (mp) return; // multijoueur : le temps est partagé, pas de pause locale
       if (e.key.toLowerCase() === 'p') {
         pausedRef.current = !pausedRef.current;
         setPaused(pausedRef.current);
@@ -447,9 +611,12 @@ function GameScreen({ settings, onEnd, onQuit }: {
     return () => {
       cancelAnimationFrame(raf);
       clearInterval(hudTimer);
+      clearInterval(bgTimer);
       window.removeEventListener('resize', resize);
       window.removeEventListener('keydown', keyPause);
       controls.detach();
+      sync?.dispose();
+      restoreChat?.();
       sfx.dispose();
       if (sfxRef.current === sfx) sfxRef.current = null;
     };
@@ -513,9 +680,23 @@ function GameScreen({ settings, onEnd, onQuit }: {
       }}
     >
       <canvas ref={canvasRef} className="game-canvas" />
+      {prof.enabled && <PerfOverlay />}
+      {netNote && <div className="net-note">{netNote}</div>}
+      {mp && (
+        <ChatPanel
+          inGame
+          messages={chatMsgs}
+          me={{ id: mp.lobby.me.id, pseudo: mp.lobby.me.pseudo }}
+          members={mp.payload.slots
+            .filter(sl => sl.kind === 'human' && sl.uid)
+            .map(sl => ({ id: sl.uid!, pseudo: sl.pseudo }))}
+          onSend={(t, to) => mp.lobby.sendChat(t, to)}
+        />
+      )}
       {game && controls && (
         <TopBar
           game={game}
+          pov={pov}
           paused={paused}
           muted={muted}
           volume={volume}
@@ -530,9 +711,10 @@ function GameScreen({ settings, onEnd, onQuit }: {
         />
       )}
       <div className="minimap-wrap"><canvas ref={mmRef} /></div>
-      {game && (
+      {game && controls && (
         <ProductionSidebar
           game={game}
+          controls={controls}
           refresh={() => setTick(t => t + 1)}
           infoTarget={infoTarget}
           setInfoTarget={setInfoTarget}
@@ -577,20 +759,32 @@ function GameScreen({ settings, onEnd, onQuit }: {
 
 function TopBar({
   game, paused, muted, volume, musicVolume, effectsVolume,
-  onVolume, onMusicVolume, onEffectsVolume, onPause, onMute, onQuit,
+  pov, onVolume, onMusicVolume, onEffectsVolume, onPause, onMute, onQuit,
 }: {
-  game: Game; paused: boolean; muted: boolean; volume: number; musicVolume: number; effectsVolume: number;
+  game: Game; pov: number; paused: boolean; muted: boolean; volume: number; musicVolume: number; effectsVolume: number;
   onVolume: (value: number) => void;
   onMusicVolume: (value: number) => void;
   onEffectsVolume: (value: number) => void;
   onPause: () => void; onMute: () => void; onQuit: () => void;
 }) {
-  const p = game.players[0];
+  // pov = joueur LOCAL : en multijoueur chaque client n'affiche que SON économie
+  const p = game.players[pov];
+  const lastOre = lastTopbarOreByPov.get(pov);
+  if (lastOre !== p.ore) {
+    lastTopbarOreByPov.set(pov, p.ore);
+    mpDebugLog('ui.topbar.ore', {
+      source: 'TopBar.render',
+      pov,
+      playerId: p.id,
+      displayedOre: Math.round(p.ore),
+      allOre: game.players.map(pl => ({ playerId: pl.id, ore: Math.round(pl.ore) })),
+    });
+  }
   const mins = Math.floor(game.time / 60);
   const secs = Math.floor(game.time % 60);
   const lowPower = p.powerUse > p.powerProd;
   const underAttack = game.time - p.alertT < 5;
-  const unitCount = game.units.reduce((n, u) => n + (u.owner === 0 && !u.dead ? 1 : 0), 0);
+  const unitCount = game.units.reduce((n, u) => n + (u.owner === pov && !u.dead ? 1 : 0), 0);
 
   return (
     <div className="topbar">
@@ -767,10 +961,10 @@ const PRODUCTION_CATEGORIES: { id: ProductionCategoryId; label: string; sub: str
   { id: 'air', label: 'Aéroport', sub: 'Aérien', producers: ['airport'] },
 ];
 
-function findBestProducer(game: Game, type: UnitTypeId): { building: Building | null; reason: string } {
+function findBestProducer(game: Game, type: UnitTypeId, pov: number): { building: Building | null; reason: string } {
   const unit = UNITS[type];
   const producers = game.buildings
-    .filter(b => b.owner === 0 && !b.dead && b.built && b.type === unit.builtAt)
+    .filter(b => b.owner === pov && !b.dead && b.built && b.type === unit.builtAt)
     .sort((a, b) => a.queue.length - b.queue.length || a.id - b.id);
 
   if (producers.length === 0) {
@@ -788,13 +982,15 @@ function findBestProducer(game: Game, type: UnitTypeId): { building: Building | 
 }
 
 function ProductionSidebar({
-  game, refresh, infoTarget, setInfoTarget,
+  game, controls, refresh, infoTarget, setInfoTarget,
 }: {
   game: Game;
+  controls: Controls;
   refresh: () => void;
   infoTarget: InfoTarget | null;
   setInfoTarget: (target: InfoTarget | null) => void;
 }) {
+  if (prof.enabled) prof.count('react.ProductionSidebar');
   const [active, setActive] = useState<ProductionCategoryId>('infantry');
   const cat = PRODUCTION_CATEGORIES.find(c => c.id === active) ?? PRODUCTION_CATEGORIES[0];
   const units = (Object.keys(UNITS) as UnitTypeId[])
@@ -821,7 +1017,7 @@ function ProductionSidebar({
       <div className="prod-list">
         {units.map(t => {
           const unit = UNITS[t];
-          const { building, reason } = findBestProducer(game, t);
+          const { building, reason } = findBestProducer(game, t, controls.pov);
           const queueLabel = building ? `${building.queue.length}/5` : '—';
           return (
             <InfoTile
@@ -836,7 +1032,7 @@ function ProductionSidebar({
                 disabled={!building}
                 title={unit.desc}
                 onClick={() => {
-                  if (building && game.queueUnit(building.id, t)) refresh();
+                  if (building) { controls.issue({ k: 'qunit', bId: building.id, t }); refresh(); }
                 }}
               >
                 <span className="prod-unit-main">
@@ -865,6 +1061,7 @@ function BottomBar({
   infoTarget: InfoTarget | null;
   setInfoTarget: (target: InfoTarget | null) => void;
 }) {
+  if (prof.enabled) prof.count('react.BottomBar');
   const [mobileOpen, setMobileOpen] = useState(false);
   const selB = controls.selectedBuilding ? game.buildingById.get(controls.selectedBuilding) : undefined;
   const selUnits = controls.selectedUnits
@@ -903,7 +1100,7 @@ function ConstructionPanel({
       <div className="cmd-row">
         {BUILD_ORDER_UI.map(id => {
           const def = BUILDINGS[id];
-          const chk = game.canBuild(0, id);
+          const chk = game.canBuild(controls.pov, id);
           return (
             <InfoTile
               key={id}
@@ -944,7 +1141,7 @@ function BuildingPanel({
   const producible = (Object.keys(UNITS) as UnitTypeId[]).filter(t => UNITS[t].builtAt === b.type);
   const isProd = producible.length > 0;
   const isTech = b.type === 'tech';
-  const p = game.players[0];
+  const p = game.players[controls.pov];
 
   return (
     <div className={`bottombar ${mobileOpen ? 'mobile-open' : 'mobile-closed'}`}>
@@ -974,7 +1171,7 @@ function BuildingPanel({
                 className="build-btn"
                 disabled={!chk.ok}
                 title={u.desc}
-                onClick={() => { if (game.queueUnit(b.id, t)) refresh(); }}
+                onClick={() => { controls.issue({ k: 'qunit', bId: b.id, t }); refresh(); }}
               >
                 <span className="bname">{u.name}</span>
                 <span className="bcost">◆ {u.cost}</span>
@@ -998,7 +1195,7 @@ function BuildingPanel({
                 className={`build-btn ${owned ? 'researched' : ''}`}
                 disabled={owned || queued || p.ore < up.cost}
                 title={up.desc}
-                onClick={() => { if (game.queueUpgrade(b.id, id)) refresh(); }}
+                onClick={() => { controls.issue({ k: 'qup', bId: b.id, up: id }); refresh(); }}
               >
                 <span className="bname">{owned ? '✓ ' : ''}{up.name}</span>
                 <span className="bcost">{owned ? 'Acquis' : `◆ ${up.cost}`}</span>
@@ -1011,7 +1208,7 @@ function BuildingPanel({
             key={i}
             className="queue-chip"
             title="Cliquer pour annuler (remboursé)"
-            onClick={() => { game.cancelQueue(b.id, i); refresh(); }}
+            onClick={() => { controls.issue({ k: 'qcancel', bId: b.id, i }); refresh(); }}
           >
             <div className="qprog" style={{ width: `${i === 0 ? Math.min(100, (q.t / q.time) * 100) : 0}%` }} />
             <span>{q.kind === 'unit' ? UNITS[q.unit!].name : UPGRADES[q.up!].name} ✕</span>
@@ -1020,7 +1217,7 @@ function BuildingPanel({
         {b.built && b.hp < b.maxHp && (
           <button
             className={`action-btn ${b.repairOn ? 'on' : ''}`}
-            onClick={() => { game.setRepair(b.id, !b.repairOn); refresh(); }}
+            onClick={() => { controls.issue({ k: 'repairOn', bId: b.id, on: !b.repairOn }); refresh(); }}
           >
             🔧 Réparer {b.repairOn ? '(en cours)' : ''}
           </button>
@@ -1095,9 +1292,11 @@ function UnitPanel({
 
 // =============================================================== FIN
 
-function EndScreen({ game, onReplay, onMenu }: { game: Game; onReplay: () => void; onMenu: () => void }) {
-  const human = game.players[0];
-  const won = game.winner === 0;
+function EndScreen({ game, onReplay, onMenu, pov = 0, canReplay = true }: {
+  game: Game; onReplay: () => void; onMenu: () => void; pov?: number; canReplay?: boolean;
+}) {
+  const human = game.players[pov];
+  const won = game.winner === pov;
   const mins = Math.floor(game.time / 60);
   const secs = Math.floor(game.time % 60);
   const mapTiles = game.map.w * game.map.h;
