@@ -18,6 +18,9 @@ export class Controls {
   unloadMode = false;        // prochain clic/tap = largage des transports sélectionnés
   boxSelectMode = false;     // mobile : le glisser devient une sélection
   dpr = 1;
+  // fournisseur d'icônes du menu de construction (miniatures = vrai sprite du
+  // bâtiment). Branché par l'écran de jeu sur l'instance Renderer.
+  iconProvider: { buildingIcon(type: string, owner: number): string } | null = null;
 
   private g: Game;
   private sfx: Sfx;

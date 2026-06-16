@@ -1491,6 +1491,40 @@ export class Renderer {
     return cv;
   }
 
+  // Miniature pour le menu de construction : généré à partir du SPRITE RÉEL du
+  // bâtiment (recadré sur son contenu, mis à l'échelle dans un carré) → l'icône
+  // est exactement l'apparence en jeu. Renvoie un data-URL PNG, mis en cache.
+  private iconCache = new Map<string, string>();
+  buildingIcon(type: string, owner: number): string {
+    const key = `${type}:${owner}`;
+    const hit = this.iconCache.get(key);
+    if (hit) return hit;
+    const src = this.buildingSprite(type, owner);
+    const sw = src.width, sh = src.height;
+    const sc = src.getContext('2d')!;
+    const data = sc.getImageData(0, 0, sw, sh).data;
+    let minX = sw, minY = sh, maxX = 0, maxY = 0;
+    for (let y = 0; y < sh; y++)
+      for (let x = 0; x < sw; x++)
+        if (data[(y * sw + x) * 4 + 3] > 12) {
+          if (x < minX) minX = x; if (x > maxX) maxX = x;
+          if (y < minY) minY = y; if (y > maxY) maxY = y;
+        }
+    if (maxX < minX) { minX = 0; minY = 0; maxX = sw - 1; maxY = sh - 1; }
+    const cw = maxX - minX + 1, ch = maxY - minY + 1;
+    const S = 96, pad = 7;
+    const scale = Math.min((S - pad * 2) / cw, (S - pad * 2) / ch);
+    const dw = cw * scale, dh = ch * scale;
+    const out = document.createElement('canvas');
+    out.width = S; out.height = S;
+    const oc = out.getContext('2d')!;
+    oc.imageSmoothingEnabled = true; oc.imageSmoothingQuality = 'high';
+    oc.drawImage(src, minX, minY, cw, ch, (S - dw) / 2, (S - dh) / 2 + 2, dw, dh);
+    const url = out.toDataURL('image/png');
+    this.iconCache.set(key, url);
+    return url;
+  }
+
   private bakeBuilding(type: string, col: string): HTMLCanvasElement {
     const B = 44; // px par tuile
     const def = BUILDINGS[type as keyof typeof BUILDINGS];

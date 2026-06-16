@@ -606,7 +606,7 @@ button { font-family: inherit; cursor: pointer; }
 .cmd-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: flex-start; }
 
 .build-btn {
-  width: 96px; padding: 6px 6px 5px;
+  width: 96px; padding: 5px 6px 5px;
   min-height: 56px;
   background:
     linear-gradient(135deg, rgba(255,255,255,0.04), transparent 42%),
@@ -615,6 +615,13 @@ button { font-family: inherit; cursor: pointer; }
   color: #d5dde3; text-align: left;
   display: flex; flex-direction: column; gap: 2px;
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 4px 12px rgba(0,0,0,0.18);
+}
+.build-btn .bicon {
+  width: 100%; height: 46px; object-fit: contain; display: block;
+  margin-bottom: 2px; pointer-events: none;
+  filter: drop-shadow(0 2px 3px rgba(0,0,0,0.55));
+  background: radial-gradient(ellipse at 50% 78%, rgba(120,150,170,0.16), transparent 70%);
+  border-radius: 5px;
 }
 .build-btn:hover:not(:disabled) { background: linear-gradient(180deg, #2a3a45, #16222a); border-color: #6a8496; transform: translateY(-1px); box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 8px 18px rgba(0,0,0,0.28); }
 .build-btn:disabled { opacity: 0.5; filter: grayscale(0.6); cursor: default; background: linear-gradient(180deg, #1a2128, #10151a); border-color: #24303a; }

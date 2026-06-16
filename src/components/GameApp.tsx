@@ -522,6 +522,7 @@ function GameScreen({ settings, mp, onEnd, onQuit }: {
     controlsRef.current = controls;
     const renderer = new Renderer(canvas, mm);
     renderer.pov = pov;
+    controls.iconProvider = renderer;   // miniatures du menu = vrais sprites des bâtiments
     // banc de test : accès à l'état pour l'outillage (?net=local, ?mpdebug, ?prof)
     if (mpDebugActive || prof.enabled) {
       (window as unknown as Record<string, unknown>).__vo = { game, sync, controls };
@@ -1122,6 +1123,9 @@ function ConstructionPanel({
                 disabled={!chk.ok}
                 onClick={() => { controls.startPlacement(id); refresh(); }}
               >
+                {controls.iconProvider && (
+                  <img className="bicon" src={controls.iconProvider.buildingIcon(id, controls.pov)} alt="" draggable={false} />
+                )}
                 <span className="bname">{def.name}</span>
                 <span className="bcost">◆ {def.cost}</span>
                 {!chk.ok && <span className="breason">{chk.reason}</span>}
