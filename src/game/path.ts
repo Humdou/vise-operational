@@ -7,6 +7,7 @@ export interface NavGrid {
   pass: Uint8Array;      // 1 = praticable
   cost: Float32Array;    // coût du terrain (>= 1)
   fireBlock: Uint8Array; // 1 = bloque les tirs directs (rochers, bâtiments)
+  visBlock: Uint8Array;  // 1 = bloque la LIGNE DE VUE (montagnes/falaises ; pas les bâtiments)
 }
 
 const DIRS = [

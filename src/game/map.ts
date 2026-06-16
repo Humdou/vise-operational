@@ -248,6 +248,29 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
     blob(Math.floor(n * (0.15 + rng() * 0.7)), Math.floor(n * (0.15 + rng() * 0.7)), 3 + rng() * (n * 0.03), T_ROCK, 0.5);
   }
 
+  // CHAÎNES MONTAGNEUSES : longues crêtes rocheuses infranchissables qui
+  // découpent la carte en vallées. Elles serpentent sur une grande distance et
+  // sont assez épaisses pour ne pas être contournables ; les corridors tracés
+  // plus bas y percent les rares PASSAGES → vrais goulots stratégiques.
+  const rangeCount = 1 + Math.floor(n / 150);
+  const rangeThick = 2 + Math.floor(n / 170);
+  for (let i = 0; i < rangeCount; i++) {
+    let rx = n * (0.18 + rng() * 0.64), ry = n * (0.18 + rng() * 0.64);
+    let ang = rng() * Math.PI * 2;
+    const len = Math.floor(n * (0.55 + rng() * 0.5));
+    for (let s = 0; s < len; s++) {
+      ang += (noiseMid(rx * 0.06, ry * 0.06) - 0.5) * 0.45;       // méandre naturel
+      const tw = rangeThick + Math.round((noiseHi(rx * 0.25, ry * 0.25) - 0.5) * 2.2);
+      const px2 = Math.cos(ang + Math.PI / 2), py2 = Math.sin(ang + Math.PI / 2);
+      for (let wph = -tw; wph <= tw; wph++) {
+        const mx = Math.round(rx + px2 * wph), my = Math.round(ry + py2 * wph);
+        if (mx > 1 && my > 1 && mx < n - 1 && my < n - 1) terrain[my * n + mx] = T_ROCK;
+      }
+      rx += Math.cos(ang); ry += Math.sin(ang);
+      if (rx < 2 || ry < 2 || rx > n - 2 || ry > n - 2) break;
+    }
+  }
+
   // Bordure rocheuse.
   for (let i = 0; i < n; i++) {
     terrain[i] = T_ROCK; terrain[(n - 1) * n + i] = T_ROCK;

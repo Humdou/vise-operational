@@ -222,6 +222,14 @@ export class Game {
   private fogPhase = 0;
   private rescueTimer = 0;
   private winTimer = 0;
+  // Vision par relief : grille grossière indiquant où se trouvent des bloqueurs
+  // (montagnes), pour n'activer l'occlusion coûteuse que près du relief.
+  private visCoarse = new Uint8Array(0);
+  private visCoarseW = 0;
+  private static readonly VIS_CO = 8;   // taille de cellule de la grille grossière
+  // état transitoire pendant un stamp de vision (évite des allocations)
+  private _vfog: Uint8Array = new Uint8Array(0);
+  private _vexpl = 0;
   private hash = new Map<number, number[]>();
   private pathBudget = 0;        // chemins/tick partagés (IA + débordement humain)
   private pathBudgetHuman = 0;   // réserve garantie aux unités humaines (anti-famine des ordres)
@@ -247,13 +255,16 @@ export class Game {
     const pass = new Uint8Array(w * h);
     const cost = new Float32Array(w * h);
     const fireBlock = new Uint8Array(w * h);
+    const visBlock = new Uint8Array(w * h);
     for (let i = 0; i < w * h; i++) {
       const t = terrain[i];
       pass[i] = t === T_GRASS || t === T_ROUGH ? 1 : 0;
       cost[i] = t === T_ROUGH ? 1.6 : 1;
       fireBlock[i] = t === T_ROCK ? 1 : 0;
+      visBlock[i] = t === T_ROCK ? 1 : 0;   // montagnes/falaises bloquent la vue
     }
-    this.nav = { w, h, pass, cost, fireBlock };
+    this.nav = { w, h, pass, cost, fireBlock, visBlock };
+    this.buildVisCoarse();   // grille grossière de bloqueurs (early-out vision)
 
     for (const n of this.map.nodes) {
       const node: OreNode = { id: this.nextId++, tx: n.tx, ty: n.ty, amount: n.amount, max: n.max, kind: n.kind };
@@ -1925,8 +1936,99 @@ export class Game {
 
   // -------------------------------------------------------------- brouillard
 
-  private updateFog(p: Player) {
+  // Grille grossière : 1 si la cellule VIS_CO×VIS_CO contient un bloqueur de vue.
+  private buildVisCoarse() {
     const { w, h } = this.map;
+    const CO = Game.VIS_CO;
+    const cw = Math.ceil(w / CO), ch = Math.ceil(h / CO);
+    this.visCoarseW = cw;
+    this.visCoarse = new Uint8Array(cw * ch);
+    const vb = this.nav.visBlock;
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++)
+        if (vb[y * w + x]) this.visCoarse[Math.floor(y / CO) * cw + Math.floor(x / CO)] = 1;
+  }
+
+  // Y a-t-il un bloqueur de vue dans le rayon (via la grille grossière) ?
+  private blockerNear(cx: number, cy: number, r: number): boolean {
+    const CO = Game.VIS_CO, cw = this.visCoarseW;
+    const ch = this.visCoarse.length / cw;
+    const x0 = Math.max(0, Math.floor((cx - r) / CO)), x1 = Math.min(cw - 1, Math.floor((cx + r) / CO));
+    const y0 = Math.max(0, Math.floor((cy - r) / CO)), y1 = Math.min(ch - 1, Math.floor((cy + r) / CO));
+    for (let y = y0; y <= y1; y++)
+      for (let x = x0; x <= x1; x++)
+        if (this.visCoarse[y * cw + x]) return true;
+    return false;
+  }
+
+  // Marque une tuile visible (état 2) et compte l'exploration.
+  private setVis(x: number, y: number) {
+    const w = this.map.w, h = this.map.h;
+    if (x < 0 || y < 0 || x >= w || y >= h) return;
+    const i = y * w + x;
+    if (this._vfog[i] === 0) this._vexpl++;
+    this._vfog[i] = 2;
+  }
+  private isOpaqueVis(x: number, y: number): boolean {
+    const w = this.map.w, h = this.map.h;
+    if (x < 0 || y < 0 || x >= w || y >= h) return true;
+    return this.nav.visBlock[y * w + x] === 1;
+  }
+
+  // Cercle plein (terrain dégagé : aucun relief à occulter → rapide).
+  private stampCircle(cx: number, cy: number, r: number) {
+    const w = this.map.w, h = this.map.h, r2 = r * r;
+    const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(w - 1, Math.ceil(cx + r));
+    const y0 = Math.max(0, Math.floor(cy - r)), y1 = Math.min(h - 1, Math.ceil(cy + r));
+    for (let y = y0; y <= y1; y++)
+      for (let x = x0; x <= x1; x++) {
+        const dx = x - cx, dy = y - cy;
+        if (dx * dx + dy * dy <= r2) this.setVis(x, y);
+      }
+  }
+
+  // Vision occultée par le relief : shadowcasting récursif 8 octants. Les
+  // montagnes/falaises (visBlock) arrêtent la ligne de vue → zones d'ombre
+  // derrière elles (lues comme « explorées mais non visibles »).
+  private static readonly OCT = [
+    [1, 0, 0, 1], [0, 1, 1, 0], [0, -1, 1, 0], [-1, 0, 0, 1],
+    [-1, 0, 0, -1], [0, -1, -1, 0], [0, 1, -1, 0], [1, 0, 0, -1],
+  ];
+  private stampVision(cx: number, cy: number, r: number) {
+    if (r <= 0) return;
+    if (!this.blockerNear(cx, cy, r)) { this.stampCircle(cx, cy, r); return; }
+    const sx = Math.round(cx), sy = Math.round(cy);
+    this.setVis(sx, sy);
+    for (const o of Game.OCT) this.castLight(sx, sy, 1, 1.0, 0.0, r, o[0], o[1], o[2], o[3]);
+  }
+  private castLight(cx: number, cy: number, row: number, start: number, end: number,
+    radius: number, xx: number, xy: number, yx: number, yy: number) {
+    if (start < end) return;
+    const r2 = radius * radius;
+    let newStart = 0;
+    for (let i = row; i <= radius; i++) {
+      let dx = -i - 1, dy = -i, blocked = false;
+      while (dx <= 0) {
+        dx++;
+        const X = cx + dx * xx + dy * xy, Y = cy + dx * yx + dy * yy;
+        const lSlope = (dx - 0.5) / (dy + 0.5), rSlope = (dx + 0.5) / (dy - 0.5);
+        if (start < rSlope) continue;
+        else if (end > lSlope) break;
+        if (dx * dx + dy * dy <= r2) this.setVis(X, Y);
+        if (blocked) {
+          if (this.isOpaqueVis(X, Y)) { newStart = rSlope; continue; }
+          blocked = false; start = newStart;
+        } else if (this.isOpaqueVis(X, Y) && i < radius) {
+          blocked = true;
+          this.castLight(cx, cy, i + 1, start, lSlope, radius, xx, xy, yx, yy);
+          newStart = rSlope;
+        }
+      }
+      if (blocked) break;
+    }
+  }
+
+  private updateFog(p: Player) {
     const fog = p.fog;
     for (let i = 0; i < fog.length; i++) if (fog[i] === 2) fog[i] = 1;
 
@@ -1940,34 +2042,22 @@ export class Game {
     // exploredCount mis à jour de façon incrémentale (une tuile 0→visible n'est
     // comptée qu'une fois) : supprime un second balayage plein écran par joueur à
     // chaque rafraîchissement — gain net sur les grandes cartes.
-    let explored = p.exploredCount;
-    const stamp = (cx: number, cy: number, r: number) => {
-      const r2 = r * r;
-      const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(w - 1, Math.ceil(cx + r));
-      const y0 = Math.max(0, Math.floor(cy - r)), y1 = Math.min(h - 1, Math.ceil(cy + r));
-      for (let y = y0; y <= y1; y++)
-        for (let x = x0; x <= x1; x++) {
-          const dx = x - cx, dy = y - cy;
-          if (dx * dx + dy * dy <= r2) {
-            const i = y * w + x;
-            if (fog[i] === 0) explored++;
-            fog[i] = 2;
-          }
-        }
-    };
-
+    // La vision tient compte du RELIEF : les montagnes/falaises bloquent la
+    // ligne de vue (stampVision = shadowcasting, avec repli cercle si dégagé).
+    this._vfog = fog;
+    this._vexpl = p.exploredCount;
     for (const u of this.units) {
       if (u.dead || u.owner !== p.id) continue;
       const minVision = sabotaged ? 2.4 : 0;
-      stamp(u.x, u.y, Math.max(minVision, UNITS[u.type].vision * unitMult));
+      this.stampVision(u.x, u.y, Math.max(minVision, UNITS[u.type].vision * unitMult));
     }
     for (const b of this.buildings) {
       if (b.dead || b.owner !== p.id) continue;
       const c = this.buildingCenter(b);
       const minVision = sabotaged ? 1.8 : 0;
-      stamp(c.x, c.y, Math.max(minVision, BUILDINGS[b.type].vision * radarMult * opticsMult * (b.built ? 1 : 0.6)));
+      this.stampVision(c.x, c.y, Math.max(minVision, BUILDINGS[b.type].vision * radarMult * opticsMult * (b.built ? 1 : 0.6)));
     }
-    p.exploredCount = explored;
+    p.exploredCount = this._vexpl;
   }
 
   revealAllFor(owner: number) {
