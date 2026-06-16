@@ -182,7 +182,7 @@ export class AIController {
   }
 
   private myUnits(type?: UnitTypeId): Unit[] {
-    return this.g.units.filter(u => !u.dead && u.owner === this.pid && (!type || u.type === type));
+    return this.g.units.filter(u => !u.dead && !u.transportedBy && u.owner === this.pid && (!type || u.type === type));
   }
 
   private hq(): Building | null {
@@ -389,10 +389,11 @@ export class AIController {
     }
     if (this.needAA && counts('aa') < 2) return at(base.x, base.y, 'aa', 9);
 
-    // 6. Technologie : radar → centre tactique → aéroport → bâtiments avancés.
+    // 6. Technologie : radar → centre tactique → héliport/aéroport → bâtiments avancés.
     const t = this.p.techTiming;
     if (counts('radar') === 0 && this.g.time > t) return at(base.x, base.y, 'radar');
     if (counts('tech') === 0 && this.g.time > t * 1.4 && this.p.upgradeAppetite > 0.3) return at(base.x, base.y, 'tech');
+    if (counts('helipad') === 0 && this.g.map.w >= 160 && this.g.time > t * 1.65 && this.p.expandSkill >= 0.8) return at(base.x, base.y, 'helipad');
     if (counts('airport') === 0 && this.g.time > t * 1.8 && this.p.upgradeAppetite > 0.5) return at(base.x, base.y, 'airport');
 
     // 7. Dépôt logistique près des raffineries, centre radar avancé.
@@ -534,7 +535,7 @@ export class AIController {
       score += type.endsWith('2') ? Math.max(0, 80 - Math.hypot(cx - base.x, cy - base.y) * 6) : 0;
     } else if (type === 'power' || type === 'power2' || type === 'tech' || type === 'lab') {
       score += Math.max(0, 140 - Math.hypot(cx - backX, cy - backY) * 12);
-    } else if (type === 'radar' || type === 'radarcenter' || type === 'airport') {
+    } else if (type === 'radar' || type === 'radarcenter' || type === 'airport' || type === 'helipad') {
       score += Math.max(0, 120 - Math.hypot(cx - base.x, cy - base.y) * 8);
     } else {
       score += Math.max(0, 100 - Math.hypot(cx - base.x, cy - base.y) * 7);
@@ -638,6 +639,15 @@ export class AIController {
         if (this.g.queueUnit(a.id, 'scoutplane')) continue;
       }
       if (spendable() > UNITS.bomber.cost + 300) this.g.queueUnit(a.id, 'bomber');
+    }
+    for (const h of this.myBuildings('helipad').filter(b => b.built)) {
+      if (h.queue.length > 0) continue;
+      if (this.myUnits('transportheli').length < 1 && spendable() > UNITS.transportheli.cost + 300) {
+        if (this.g.queueUnit(h.id, 'transportheli')) continue;
+      }
+      if (this.g.map.w >= 200 && this.myUnits('cargoheli').length < 1 && spendable() > UNITS.cargoheli.cost + 500) {
+        this.g.queueUnit(h.id, 'cargoheli');
+      }
     }
 
     // Points de ralliement vers l'avant de la base.
@@ -810,13 +820,41 @@ export class AIController {
       }
     }
 
+    if (this.p.expandSkill >= 1 && this.g.map.w >= 160) {
+      const scoutHeli = this.myUnits('transportheli').find(u =>
+        (u.passengers?.length ?? 0) === 0 && (u.order.kind === 'idle' || u.airState === 'pad'));
+      if (scoutHeli) {
+        let best: { x: number; y: number; score: number } | null = null;
+        for (const n of this.g.nodes) {
+          if (n.amount < 350 || this.g.isExploredBy(this.pid, n.tx, n.ty)) continue;
+          const score = n.amount * (n.kind === 'rare' ? 3 : 1) - Math.hypot(n.tx - base.x, n.ty - base.y) * 4;
+          if (!best || score > best.score) best = { x: n.tx, y: n.ty, score };
+        }
+        if (best) this.g.cmdMove([scoutHeli.id], best.x, best.y);
+      }
+    }
+
     for (const cmd of this.myUnits('mobilecmd')) {
+      if (cmd.transportedBy) continue;
       if (this.g.countBuildings(this.pid, 'hq') >= 2) break;
       const far = Math.hypot(cmd.x - base.x, cmd.y - base.y) > Math.min(70, this.g.map.w * 0.22);
       if (far) this.g.deployMobileCommanders([cmd.id]);
       else if (cmd.order.kind === 'idle') {
         const node = this.pickExpansionNode(base, 999, this.econBuildings());
         if (node) this.g.cmdMove([cmd.id], node.x, node.y);
+      }
+    }
+
+    if (this.p.expandSkill >= 1 && this.g.map.w >= 200 && this.g.countBuildings(this.pid, 'hq') < 2) {
+      const cargo = this.myUnits('cargoheli').find(u => !u.transportedBy && (u.passengers?.length ?? 0) === 0 && (u.order.kind === 'idle' || u.airState === 'pad'));
+      const cmd = this.myUnits('mobilecmd').find(u => !u.transportedBy && u.order.kind === 'idle');
+      if (cargo && cmd && Math.hypot(cmd.x - base.x, cmd.y - base.y) < this.g.map.w * 0.28) {
+        this.g.cmdPickup([cargo.id], cmd.id);
+      }
+      const loadedCargo = this.myUnits('cargoheli').find(u => (u.passengers?.length ?? 0) > 0 && u.order.kind === 'idle');
+      if (loadedCargo) {
+        const node = this.pickExpansionNode(base, 999, this.econBuildings());
+        if (node) this.g.cmdUnload([loadedCargo.id], node.x, node.y);
       }
     }
 
@@ -1139,7 +1177,7 @@ export class AIController {
     const base = this.baseCenter();
     const prio: Record<string, number> = {
       refinery: 6.2, refinery2: 7.0, power: 4.6, power2: 4.8, factory: 4.4, factory2: 5.1,
-      barracks: 3.2, barracks2: 3.9, airport: 4.2, lab: 5.4, depot: 4.8,
+      barracks: 3.2, barracks2: 3.9, airport: 4.2, helipad: 4.3, lab: 5.4, depot: 4.8,
       turret: 1.2, atgun: 1.3, aa: 1.8, radar: 3.0, radarcenter: 3.2, tech: 3.8, hq: 3.6,
     };
     const revengeActive = this.p.counterAttack && this.g.time - this.revengeT < 120;
@@ -1159,7 +1197,7 @@ export class AIController {
     const me = this.g.players[this.pid];
     const prio: Record<string, number> = {
       hq: 10, refinery: 8, power: 7, factory: 6, barracks: 5,
-      airport: 5, radar: 4, tech: 4, turret: 3, atgun: 3, aa: 3,
+      airport: 5, helipad: 5, radar: 4, tech: 4, turret: 3, atgun: 3, aa: 3,
     };
     const damaged = this.myBuildings()
       .filter(b => b.built && b.hp < b.maxHp * 0.75)

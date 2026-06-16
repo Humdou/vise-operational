@@ -29,7 +29,7 @@ export interface GameSettings {
   humanSlots?: number[];     // index des joueurs humains (défaut : [0])
 }
 
-export type OrderKind = 'idle' | 'move' | 'attackmove' | 'attack' | 'harvest' | 'repair' | 'escort' | 'infiltrate';
+export type OrderKind = 'idle' | 'move' | 'attackmove' | 'attack' | 'harvest' | 'repair' | 'escort' | 'infiltrate' | 'load' | 'pickup' | 'unload';
 
 export interface Order {
   kind: OrderKind;
@@ -60,6 +60,8 @@ export interface Unit {
   cargoValue: number; // valeur de la cargaison (minerai rare = ×3)
   unloadT: number;
   infiltrateT?: number;
+  passengers?: number[];
+  transportedBy?: number;
   // animation de sortie de bâtiment — purement visuel, jamais lu par le gameplay
   exitFx?: { x: number; y: number; t0: number };
   // aviation
@@ -87,7 +89,7 @@ export interface Snapshot {
   units: {
     i: number; o: number; ty: UnitTypeId; x: number; y: number; d: number; h: number;
     or: Order; cg: number; cv: number; ul: number; cd: number; ei: number; eb: boolean;
-    as?: 'pad' | 'fly' | 'return'; pb?: number; am?: number; rt?: number;
+    as?: 'pad' | 'fly' | 'return'; pb?: number; am?: number; rt?: number; ps?: number[]; tb?: number;
   }[];
   buildings: {
     i: number; o: number; ty: BuildingTypeId; tx: number; ty2: number; h: number;
@@ -363,6 +365,8 @@ export class Game {
         or: u.order, cg: u.cargo, cv: u.cargoValue, ul: u.unloadT, cd: u.cd,
         ei: u.engageId, eb: u.engageIsBuilding,
         as: u.airState, pb: u.padBuildingId, am: u.ammo, rt: u.rearmT,
+        ps: u.passengers && u.passengers.length ? [...u.passengers] : undefined,
+        tb: u.transportedBy,
       })),
       buildings: this.buildings.filter(b => !b.dead).map(b => ({
         i: b.id, o: b.owner, ty: b.type, tx: b.tx, ty2: b.ty, h: b.hp,
@@ -394,6 +398,8 @@ export class Game {
         cd: us.cd, engageId: us.ei, engageIsBuilding: us.eb,
         cargo: us.cg, cargoValue: us.cv, unloadT: us.ul, dead: false,
         airState: us.as, padBuildingId: us.pb, ammo: us.am, rearmT: us.rt,
+        passengers: us.ps ? [...us.ps] : undefined,
+        transportedBy: us.tb,
       };
       this.units.push(u); this.unitById.set(u.id, u);
     }
@@ -503,7 +509,7 @@ export class Game {
       if (n.amount > 1 && n.tx >= tx - 1 && n.tx < tx + def.w + 1 && n.ty >= ty - 1 && n.ty < ty + def.h + 1) return false;
     // Pas d'unité au sol sur l'emprise.
     for (const u of this.units) {
-      if (u.dead || UNITS[u.type].isAir) continue;
+      if (u.dead || u.transportedBy || UNITS[u.type].isAir) continue;
       if (u.x > tx - 0.5 && u.x < tx + def.w + 0.5 && u.y > ty - 0.5 && u.y < ty + def.h + 0.5) return false;
     }
     // Proximité : près d'un bâtiment allié, ou d'une unité alliée (avant-poste).
@@ -516,7 +522,7 @@ export class Game {
     }
     if (!near) {
       for (const u of this.units) {
-        if (u.dead || u.owner !== owner || UNITS[u.type].isAir) continue;
+        if (u.dead || u.transportedBy || u.owner !== owner || UNITS[u.type].isAir) continue;
         if (Math.hypot(u.x - cx, u.y - cy) <= FORWARD_BUILD_RADIUS) { near = true; break; }
       }
     }
@@ -556,6 +562,12 @@ export class Game {
       for (const u of this.units) if (!u.dead && u.owner === b.owner && u.type === type && u.padBuildingId === b.id) count++;
       for (const q of b.queue) if (q.unit === type) count++;
       if (count >= 1) return { ok: false, reason: type === 'bomber' ? 'Un bombardier par aéroport' : 'Un avion radar par aéroport' };
+    }
+    if (type === 'transportheli' || type === 'cargoheli') {
+      let count = 0;
+      for (const u of this.units) if (!u.dead && u.owner === b.owner && u.type === type && u.padBuildingId === b.id) count++;
+      for (const q of b.queue) if (q.unit === type) count++;
+      if (count >= 1) return { ok: false, reason: type === 'transportheli' ? 'Un transport de troupes par héliport' : 'Un cargo par héliport' };
     }
     return { ok: true, reason: '' };
   }
@@ -617,6 +629,7 @@ export class Game {
       const u = this.unitById.get(id);
       if (!u || u.dead) continue;
       const s = spots[Math.min(i++, spots.length - 1)];
+      if (u.transportedBy) continue;
       if (u.airState) { this.airOrder(u, { kind: attackMove ? 'attackmove' : 'move', x: s.x, y: s.y }); continue; }
       if (u.type === 'harvester' && attackMove) continue;
       const canFight = !!UNITS[u.type].weapon || u.type === 'kamikaze';
@@ -631,6 +644,7 @@ export class Game {
     for (const id of ids) {
       const u = this.unitById.get(id);
       if (!u || u.dead) continue;
+      if (u.transportedBy) continue;
       if (u.type === 'spy') {
         if (!targetIsBuilding) continue;
         const b = this.buildingById.get(targetId);
@@ -655,6 +669,7 @@ export class Game {
     for (const id of ids) {
       const u = this.unitById.get(id);
       if (!u || u.dead || u.type !== 'harvester') continue;
+      if (u.transportedBy) continue;
       u.order = { kind: 'harvest', nodeId };
       u.path = null;
       u.unloadT = 0;
@@ -665,6 +680,7 @@ export class Game {
     for (const id of ids) {
       const u = this.unitById.get(id);
       if (!u || u.dead || u.type !== 'engineer') continue;
+      if (u.transportedBy) continue;
       u.order = { kind: 'repair', targetId, targetIsBuilding };
       u.path = null;
     }
@@ -678,6 +694,7 @@ export class Game {
       if (id === targetId) continue;
       const u = this.unitById.get(id);
       if (!u || u.dead || u.airState) continue;
+      if (u.transportedBy) continue;
       if (u.owner !== target.owner) continue;
       u.order = { kind: 'escort', targetId };
       u.engageId = 0;
@@ -689,12 +706,100 @@ export class Game {
     for (const id of ids) {
       const u = this.unitById.get(id);
       if (!u || u.dead) continue;
+      if (u.transportedBy) continue;
       if (u.airState && u.airState !== 'pad') { this.airOrder(u, { kind: 'move' }); continue; }
       u.order = { kind: 'idle' };
       u.path = null;
       u.engageId = 0;
       u.infiltrateT = 0;
     }
+  }
+
+  cmdLoadInto(ids: number[], carrierId: number) {
+    const carrier = this.unitById.get(carrierId);
+    if (!carrier || carrier.dead || !this.isTransportCarrier(carrier)) return;
+    for (const id of ids) {
+      const u = this.unitById.get(id);
+      if (!u || u.dead || u.id === carrier.id || u.owner !== carrier.owner || u.transportedBy) continue;
+      if (!this.canCarryUnit(carrier, u)) continue;
+      u.order = { kind: 'load', targetId: carrier.id };
+      u.path = null;
+      u.engageId = 0;
+    }
+  }
+
+  cmdPickup(ids: number[], targetId: number) {
+    const target = this.unitById.get(targetId);
+    if (!target || target.dead || target.transportedBy) return;
+    for (const id of ids) {
+      const carrier = this.unitById.get(id);
+      if (!carrier || carrier.dead || carrier.owner !== target.owner || !this.isTransportCarrier(carrier)) continue;
+      if (!this.canCarryUnit(carrier, target)) continue;
+      carrier.order = { kind: 'pickup', targetId: target.id };
+      carrier.engageId = 0;
+      if (carrier.airState === 'pad') this.events.push({ type: 'takeoff', owner: carrier.owner, x: carrier.x, y: carrier.y });
+      carrier.airState = 'fly';
+    }
+  }
+
+  cmdUnload(ids: number[], x: number, y: number) {
+    for (const id of ids) {
+      const carrier = this.unitById.get(id);
+      if (!carrier || carrier.dead || carrier.transportedBy || !this.isTransportCarrier(carrier)) continue;
+      if (!carrier.passengers || carrier.passengers.length === 0) continue;
+      carrier.order = { kind: 'unload', x, y };
+      if (carrier.airState === 'pad') this.events.push({ type: 'takeoff', owner: carrier.owner, x: carrier.x, y: carrier.y });
+      carrier.airState = 'fly';
+    }
+  }
+
+  private isTransportCarrier(u: Unit): boolean {
+    return (UNITS[u.type].transportCapacity ?? 0) > 0;
+  }
+
+  private canCarryUnit(carrier: Unit, cargo: Unit): boolean {
+    const cd = UNITS[carrier.type];
+    const ud = UNITS[cargo.type];
+    if (!cd.transportCapacity || !cd.transportArmor) return false;
+    if (carrier.owner !== cargo.owner || cargo.dead || cargo.transportedBy || ud.isAir) return false;
+    if (!cd.transportArmor.includes(ud.armor)) return false;
+    return (carrier.passengers?.length ?? 0) < cd.transportCapacity;
+  }
+
+  private loadPassenger(carrier: Unit, cargo: Unit): boolean {
+    if (!this.canCarryUnit(carrier, cargo)) return false;
+    if (!carrier.passengers) carrier.passengers = [];
+    carrier.passengers.push(cargo.id);
+    cargo.transportedBy = carrier.id;
+    cargo.order = { kind: 'idle' };
+    cargo.path = null;
+    cargo.engageId = 0;
+    cargo.x = carrier.x;
+    cargo.y = carrier.y;
+    this.effects.push({ kind: 'flash', x: carrier.x, y: carrier.y, age: 0, dur: 0.22, r: 0.45 });
+    return true;
+  }
+
+  private unloadCarrier(carrier: Unit, x: number, y: number) {
+    const passengers = carrier.passengers ? [...carrier.passengers] : [];
+    if (passengers.length === 0) return;
+    carrier.passengers = [];
+    for (let i = 0; i < passengers.length; i++) {
+      const p = this.unitById.get(passengers[i]);
+      if (!p || p.dead) continue;
+      const angle = (i / Math.max(1, passengers.length)) * Math.PI * 2;
+      const baseX = x + Math.cos(angle) * (0.8 + i * 0.08);
+      const baseY = y + Math.sin(angle) * (0.8 + i * 0.08);
+      const spot = this.findFreeTileNear(baseX, baseY);
+      p.transportedBy = undefined;
+      p.x = spot.x;
+      p.y = spot.y;
+      p.order = { kind: 'idle' };
+      p.path = null;
+      p.engageId = 0;
+      p.exitFx = { x: carrier.x, y: carrier.y, t0: this.time };
+    }
+    this.effects.push({ kind: 'flash', x, y, age: 0, dur: 0.32, r: 0.7 });
   }
 
   deployMobileCommanders(ids: number[]) {
@@ -732,13 +837,24 @@ export class Game {
     for (const n of this.nodes)
       if (n.amount > 1 && n.tx >= tx - 1 && n.tx < tx + def.w + 1 && n.ty >= ty - 1 && n.ty < ty + def.h + 1) return false;
     for (const other of this.units) {
-      if (other.dead || other.id === u.id || UNITS[other.type].isAir) continue;
+      if (other.dead || other.transportedBy || other.id === u.id || UNITS[other.type].isAir) continue;
       if (other.x > tx - 0.5 && other.x < tx + def.w + 0.5 && other.y > ty - 0.5 && other.y < ty + def.h + 0.5) return false;
     }
     return true;
   }
 
   private airOrder(u: Unit, order: Order) {
+    if (this.isTransportCarrier(u)) {
+      if ((order.kind === 'move' || order.kind === 'attackmove') && order.x !== undefined && order.y !== undefined) {
+        if (u.airState === 'pad') this.events.push({ type: 'takeoff', owner: u.owner, x: u.x, y: u.y });
+        u.order = { kind: 'move', x: order.x, y: order.y };
+        u.airState = 'fly';
+      } else if (order.kind === 'move' && order.x === undefined) {
+        u.order = { kind: 'idle' };
+        if (u.airState === 'pad') u.airState = 'fly';
+      }
+      return;
+    }
     if (u.type === 'scoutplane') {
       // L'avion radar vole vers n'importe quel point puis rentre seul.
       if ((order.kind === 'move' || order.kind === 'attackmove' || order.kind === 'attack')
@@ -1027,6 +1143,7 @@ export class Game {
   private updateUnits(dt: number) {
     for (const u of this.units) {
       if (u.dead) continue;
+      if (u.transportedBy) continue;
       if (u.cd > 0) u.cd -= dt;
       if (u.airState) { this.updateAircraft(u, dt); continue; }
       const def = UNITS[u.type];
@@ -1083,6 +1200,9 @@ export class Game {
         case 'repair': this.updateEngineer(u, dt); break;
         case 'escort': this.updateEscort(u, dt); break;
         case 'infiltrate': this.updateSpy(u, dt); break;
+        case 'load': this.updateLoadOrder(u, dt); break;
+        case 'pickup': u.order = { kind: 'idle' }; break;
+        case 'unload': u.order = { kind: 'idle' }; break;
       }
     }
   }
@@ -1118,6 +1238,19 @@ export class Game {
       this.effects.push({ kind: 'flash', x: c.x, y: c.y, age: 0, dur: 0.5, r: 1.2 });
       this.killUnit(u, -1);
     }
+  }
+
+  private updateLoadOrder(u: Unit, dt: number) {
+    const carrier = this.unitById.get(u.order.targetId ?? 0);
+    if (!carrier || carrier.dead || carrier.owner !== u.owner || !this.canCarryUnit(carrier, u)) {
+      u.order = { kind: 'idle' };
+      return;
+    }
+    if (Math.hypot(carrier.x - u.x, carrier.y - u.y) <= 0.9 + UNITS[u.type].radius + UNITS[carrier.type].radius) {
+      this.loadPassenger(carrier, u);
+      return;
+    }
+    this.moveAlong(u, carrier.x, carrier.y, dt, () => {});
   }
 
   // Escorte : rester près du protégé, engager les menaces, revenir (laisse courte).
@@ -1577,25 +1710,40 @@ export class Game {
   private updateAircraft(u: Unit, dt: number) {
     const def = UNITS[u.type];
     const pad = u.padBuildingId ? this.buildingById.get(u.padBuildingId) : undefined;
+    const isTransport = this.isTransportCarrier(u);
 
-    if (!pad || pad.dead) {
-      // Chercher un autre aéroport libre, sinon crash.
-      let found: Building | null = null;
-      for (const b of this.buildings) {
-        if (b.dead || !b.built || b.owner !== u.owner || b.type !== 'airport') continue;
-        let taken = false;
-        for (const o of this.units)
-          if (!o.dead && o !== u && o.type === 'bomber' && o.padBuildingId === b.id) { taken = true; break; }
-        if (!taken) { found = b; break; }
+    if (u.passengers?.length) {
+      for (const id of u.passengers) {
+        const p = this.unitById.get(id);
+        if (p && !p.dead) { p.x = u.x; p.y = u.y; }
       }
-      if (found) { u.padBuildingId = found.id; }
-      else { this.killUnit(u, -1); return; }
-      return;
     }
 
-    const padC = this.buildingCenter(pad);
+    if (!pad || pad.dead) {
+      if (isTransport) {
+        u.padBuildingId = undefined;
+        if (u.airState === 'pad') u.airState = 'fly';
+      } else {
+        // Chercher un autre aéroport libre, sinon crash.
+        let found: Building | null = null;
+        for (const b of this.buildings) {
+          if (b.dead || !b.built || b.owner !== u.owner || b.type !== UNITS[u.type].builtAt) continue;
+          let taken = false;
+          for (const o of this.units)
+            if (!o.dead && o !== u && o.type === u.type && o.padBuildingId === b.id) { taken = true; break; }
+          if (!taken) { found = b; break; }
+        }
+        if (found) { u.padBuildingId = found.id; }
+        else { this.killUnit(u, -1); return; }
+        return;
+      }
+    }
+
+    const padC = pad && !pad.dead ? this.buildingCenter(pad) : { x: u.x, y: u.y };
     // L'avion radar se gare en décalé pour cohabiter avec le bombardier.
     if (u.type === 'scoutplane') { padC.x += 0.95; padC.y += 0.55; }
+    if (u.type === 'transportheli') { padC.x -= 0.55; padC.y += 0.18; }
+    if (u.type === 'cargoheli') { padC.x += 0.65; padC.y += 0.18; }
 
     if (u.airState === 'pad') {
       u.x = padC.x; u.y = padC.y;
@@ -1607,6 +1755,39 @@ export class Game {
     }
 
     const speed = def.speed;
+    if (isTransport) {
+      let tx = u.order.x ?? u.x, ty = u.order.y ?? u.y;
+      if (u.order.kind === 'pickup') {
+        const target = this.unitById.get(u.order.targetId ?? 0);
+        if (!target || target.dead || target.owner !== u.owner || !this.canCarryUnit(u, target)) {
+          u.order = { kind: 'idle' };
+          return;
+        }
+        tx = target.x; ty = target.y;
+        if (Math.hypot(tx - u.x, ty - u.y) <= 1.0 + UNITS[target.type].radius + def.radius) {
+          this.loadPassenger(u, target);
+          u.order = { kind: 'idle' };
+          return;
+        }
+      }
+      const d = Math.hypot(tx - u.x, ty - u.y);
+      if (u.order.kind === 'move' || u.order.kind === 'attackmove' || u.order.kind === 'pickup' || u.order.kind === 'unload') {
+        if (d > 0.35) {
+          u.dir = Math.atan2(ty - u.y, tx - u.x);
+          const step = Math.min(d, speed * dt);
+          u.x += Math.cos(u.dir) * step;
+          u.y += Math.sin(u.dir) * step;
+        }
+        if (d < 0.75 && u.order.kind === 'unload') {
+          this.unloadCarrier(u, tx, ty);
+          u.order = { kind: 'idle' };
+        } else if (d < 0.75 && (u.order.kind === 'move' || u.order.kind === 'attackmove')) {
+          u.order = { kind: 'idle' };
+        }
+      }
+      return;
+    }
+
     if (u.airState === 'return') {
       const d = Math.hypot(padC.x - u.x, padC.y - u.y);
       if (d < 0.6) {
@@ -1809,6 +1990,18 @@ export class Game {
 
   killUnit(u: Unit, attacker: number) {
     if (u.dead) return;
+    if (u.transportedBy) {
+      const carrier = this.unitById.get(u.transportedBy);
+      if (carrier?.passengers) carrier.passengers = carrier.passengers.filter(id => id !== u.id);
+      u.transportedBy = undefined;
+    }
+    if (u.passengers?.length) {
+      for (const id of [...u.passengers]) {
+        const psg = this.unitById.get(id);
+        if (psg && !psg.dead) this.killUnit(psg, attacker);
+      }
+      u.passengers = [];
+    }
     u.dead = true;
     const def = UNITS[u.type];
     const p = this.players[u.owner];
@@ -1900,7 +2093,7 @@ export class Game {
     for (const p of this.players) if (!p.defeated && !p.isHuman) { anyAI = true; break; }
     if (!anyAI) return;
     const harv = new Array(this.players.length).fill(0);
-    for (const u of this.units) if (!u.dead && u.type === 'harvester') harv[u.owner]++;
+    for (const u of this.units) if (!u.dead && !u.transportedBy && u.type === 'harvester') harv[u.owner]++;
     for (const p of this.players) {
       if (p.defeated || p.isHuman) continue;
       if (harv[p.id] === 0 && p.ore < ECON_RESCUE_CAP) {
@@ -2001,6 +2194,14 @@ export class Game {
     this.setVis(sx, sy);
     for (const o of Game.OCT) this.castLight(sx, sy, 1, 1.0, 0.0, r, o[0], o[1], o[2], o[3]);
   }
+  private reliefVisionMultiplier(x: number, y: number): number {
+    const tx = Math.max(0, Math.min(this.map.w - 1, Math.round(x)));
+    const ty = Math.max(0, Math.min(this.map.h - 1, Math.round(y)));
+    const h = this.map.height[ty * this.map.w + tx] ?? 0.5;
+    if (h >= 0.66) return Math.min(1.1, 1 + (h - 0.66) * 0.34);
+    if (h <= 0.42) return Math.max(0.92, 1 - (0.42 - h) * 0.34);
+    return 1;
+  }
   private castLight(cx: number, cy: number, row: number, start: number, end: number,
     radius: number, xx: number, xy: number, yx: number, yy: number) {
     if (start < end) return;
@@ -2047,15 +2248,15 @@ export class Game {
     this._vfog = fog;
     this._vexpl = p.exploredCount;
     for (const u of this.units) {
-      if (u.dead || u.owner !== p.id) continue;
+      if (u.dead || u.transportedBy || u.owner !== p.id) continue;
       const minVision = sabotaged ? 2.4 : 0;
-      this.stampVision(u.x, u.y, Math.max(minVision, UNITS[u.type].vision * unitMult));
+      this.stampVision(u.x, u.y, Math.max(minVision, UNITS[u.type].vision * unitMult * this.reliefVisionMultiplier(u.x, u.y)));
     }
     for (const b of this.buildings) {
       if (b.dead || b.owner !== p.id) continue;
       const c = this.buildingCenter(b);
       const minVision = sabotaged ? 1.8 : 0;
-      this.stampVision(c.x, c.y, Math.max(minVision, BUILDINGS[b.type].vision * radarMult * opticsMult * (b.built ? 1 : 0.6)));
+      this.stampVision(c.x, c.y, Math.max(minVision, BUILDINGS[b.type].vision * radarMult * opticsMult * this.reliefVisionMultiplier(c.x, c.y) * (b.built ? 1 : 0.6)));
     }
     p.exploredCount = this._vexpl;
   }

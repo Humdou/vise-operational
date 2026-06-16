@@ -12,7 +12,7 @@ export interface GameMap {
   terrain: Uint8Array;          // T_*
   roads: Uint8Array;            // 0 = aucun, 1 = route de campagne/militaire
   shade: Float32Array;          // variation visuelle par tuile
-  height: Float32Array;         // hauteur visuelle précalculée (aucun impact gameplay)
+  height: Float32Array;         // hauteur précalculée : rendu + léger bonus/malus de vision
   light: Float32Array;          // lightmap terrain précalculée
   cliff: Uint8Array;            // bits N/E/S/W quand une tuile domine un voisin
   starts: { x: number; y: number }[];
@@ -105,13 +105,13 @@ function computeVisualRelief(
       const e = elev[i];
       base = 0.26 + e * 0.66;
       if (t === T_WATER) base = 0.04 + e * 0.10;          // fonds bas
-      else if (t === T_ROCK) base = Math.max(base, 0.92); // massifs hauts → falaises franches
+      else if (t === T_ROCK) base = Math.max(base, 0.95); // massifs hauts → falaises franches
       else if (t === T_ROUGH) base += 0.05;               // contreforts un peu surélevés
     } else {
       base = 0.44;
       if (t === T_WATER) base = 0.10;
       else if (t === T_ROUGH) base = 0.66;
-      else if (t === T_ROCK) base = 0.98;
+      else if (t === T_ROCK) base = 1.0;
     }
     if (roads[i]) base -= 0.04;
     raw[i] = Math.max(0, Math.min(1, base + shade[i] * 0.30));
@@ -137,7 +137,6 @@ function computeVisualRelief(
   }
 
   const at = (x: number, y: number) => height[Math.max(0, Math.min(h - 1, y)) * w + Math.max(0, Math.min(w - 1, x))];
-  const rawAt = (x: number, y: number) => raw[Math.max(0, Math.min(h - 1, y)) * w + Math.max(0, Math.min(w - 1, x))];
   const lightRaw = new Float32Array(n);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
@@ -150,12 +149,17 @@ function computeVisualRelief(
       if (terrain[i] !== T_WATER && height[i] < (at(x - 1, y) + at(x + 1, y) + at(x, y - 1) + at(x, y + 1)) * 0.25 - 0.02) valley = -0.10;
       lightRaw[i] = Math.max(0.5, Math.min(1.55, 0.99 + slopeLight + altitude + valley));
 
+      // Les FACES de falaise ne sont dessinées qu'au bord de la ROCHE
+      // (= terrain réellement infranchissable). Ainsi « ça ressemble à une
+      // falaise » ⟺ « on ne peut pas passer » : la carte devient lisible et
+      // logique. Les pentes praticables gardent un ombrage doux (pas de falaise).
       let mask = 0;
-      const here = rawAt(x, y);
-      if (here - rawAt(x, y - 1) > 0.09) mask |= CLIFF_N;
-      if (here - rawAt(x + 1, y) > 0.09) mask |= CLIFF_E;
-      if (here - rawAt(x, y + 1) > 0.09) mask |= CLIFF_S;
-      if (here - rawAt(x - 1, y) > 0.09) mask |= CLIFF_W;
+      if (terrain[i] === T_ROCK) {
+        if (y > 0 && terrain[(y - 1) * w + x] !== T_ROCK) mask |= CLIFF_N;
+        if (x < w - 1 && terrain[y * w + (x + 1)] !== T_ROCK) mask |= CLIFF_E;
+        if (y < h - 1 && terrain[(y + 1) * w + x] !== T_ROCK) mask |= CLIFF_S;
+        if (x > 0 && terrain[y * w + (x - 1)] !== T_ROCK) mask |= CLIFF_W;
+      }
       cliff[i] = mask;
     }
   }
@@ -195,6 +199,7 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
   const terrain = new Uint8Array(n * n);
   const roads = new Uint8Array(n * n);
   const shade = new Float32Array(n * n);
+  const passageMask = new Uint8Array(n * n);
   // Trois octaves : continents (basse fréquence) + collines + détail. Donne un
   // relief plus lisible et varié qu'un simple bruit à deux octaves.
   const noiseLow = makeNoise(rng, 16);
@@ -238,9 +243,13 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
 
   // Lacs intérieurs : quelques plans d'eau aux contours irréguliers, plus
   // nombreux sur les grandes cartes (repères visuels + obstacles tactiques).
-  const lakeCount = 1 + Math.floor(n / 90) + (theme === 'tropical' ? 2 : 0);
+  const lakeCount = 3 + Math.floor(n / 55) + (theme === 'tropical' ? 4 : 0);
   for (let i = 0; i < lakeCount; i++) {
-    blob(Math.floor(n * (0.2 + rng() * 0.6)), Math.floor(n * (0.2 + rng() * 0.6)), 4 + rng() * (n * 0.04), T_WATER);
+    blob(Math.floor(n * (0.16 + rng() * 0.68)), Math.floor(n * (0.16 + rng() * 0.68)), 5 + rng() * (n * 0.065), T_WATER);
+  }
+  const largeLakeCount = 1 + Math.floor(n / 150) + (theme === 'tropical' ? 1 : 0);
+  for (let i = 0; i < largeLakeCount; i++) {
+    blob(Math.floor(n * (0.16 + rng() * 0.68)), Math.floor(n * (0.16 + rng() * 0.68)), 9 + rng() * (n * 0.075), T_WATER, 0.58);
   }
   // Massifs rocheux : barrières naturelles qui structurent les couloirs.
   const ridgeCount = 2 + Math.floor(n / 75);
@@ -248,27 +257,152 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
     blob(Math.floor(n * (0.15 + rng() * 0.7)), Math.floor(n * (0.15 + rng() * 0.7)), 3 + rng() * (n * 0.03), T_ROCK, 0.5);
   }
 
+  const paintTerrain = (x: number, y: number, fill: number, minElev?: number) => {
+    if (x <= 1 || y <= 1 || x >= n - 1 || y >= n - 1) return;
+    const i = y * n + x;
+    terrain[i] = fill;
+    if (minElev !== undefined && elev[i] < minElev) elev[i] = minElev;
+  };
+
   // CHAÎNES MONTAGNEUSES : longues crêtes rocheuses infranchissables qui
   // découpent la carte en vallées. Elles serpentent sur une grande distance et
-  // sont assez épaisses pour ne pas être contournables ; les corridors tracés
+  // sont assez épaisses pour structurer les déplacements ; les corridors tracés
   // plus bas y percent les rares PASSAGES → vrais goulots stratégiques.
-  const rangeCount = 1 + Math.floor(n / 150);
-  const rangeThick = 2 + Math.floor(n / 170);
+  const rangeCount = Math.max(2, Math.floor(n / 105) + Math.floor(playerCount / 12));
+  const rangeThick = 2 + Math.floor(n / 150);
   for (let i = 0; i < rangeCount; i++) {
-    let rx = n * (0.18 + rng() * 0.64), ry = n * (0.18 + rng() * 0.64);
+    let rx = n * (0.15 + rng() * 0.7), ry = n * (0.15 + rng() * 0.7);
     let ang = rng() * Math.PI * 2;
-    const len = Math.floor(n * (0.55 + rng() * 0.5));
+    const len = Math.floor(n * (0.62 + rng() * 0.55));
     for (let s = 0; s < len; s++) {
       ang += (noiseMid(rx * 0.06, ry * 0.06) - 0.5) * 0.45;       // méandre naturel
-      const tw = rangeThick + Math.round((noiseHi(rx * 0.25, ry * 0.25) - 0.5) * 2.2);
+      const tw = rangeThick + Math.round((noiseHi(rx * 0.25, ry * 0.25) - 0.5) * 2.6);
       const px2 = Math.cos(ang + Math.PI / 2), py2 = Math.sin(ang + Math.PI / 2);
-      for (let wph = -tw; wph <= tw; wph++) {
+      for (let wph = -tw - 3; wph <= tw + 3; wph++) {
         const mx = Math.round(rx + px2 * wph), my = Math.round(ry + py2 * wph);
-        if (mx > 1 && my > 1 && mx < n - 1 && my < n - 1) terrain[my * n + mx] = T_ROCK;
+        const dist = Math.abs(wph);
+        if (dist <= tw) paintTerrain(mx, my, T_ROCK, 0.9);
+        else if (rng() < 0.78) paintTerrain(mx, my, T_ROUGH, 0.66);
+      }
+      if (s % 18 === 0 && rng() < 0.48) {
+        const spurAng = ang + (rng() < 0.5 ? 1 : -1) * (0.75 + rng() * 0.65);
+        const spurLen = Math.floor(n * (0.06 + rng() * 0.08));
+        let sx = rx, sy = ry;
+        for (let q = 0; q < spurLen; q++) {
+          const sw = Math.max(1, Math.round(tw * (1 - q / Math.max(1, spurLen)) * 0.75));
+          const nx = Math.cos(spurAng + Math.PI / 2), ny = Math.sin(spurAng + Math.PI / 2);
+          for (let wph = -sw - 2; wph <= sw + 2; wph++) {
+            const mx = Math.round(sx + nx * wph), my = Math.round(sy + ny * wph);
+            if (Math.abs(wph) <= sw) paintTerrain(mx, my, T_ROCK, 0.9);
+            else if (rng() < 0.82) paintTerrain(mx, my, T_ROUGH, 0.64);
+          }
+          sx += Math.cos(spurAng); sy += Math.sin(spurAng);
+          if (sx < 3 || sy < 3 || sx > n - 3 || sy > n - 3) break;
+        }
       }
       rx += Math.cos(ang); ry += Math.sin(ang);
       if (rx < 2 || ry < 2 || rx > n - 2 || ry > n - 2) break;
     }
+  }
+
+  // Contreforts/plateaux : transformer une partie des grandes plaines proches
+  // des massifs ou hautes altitudes en terrain accidenté. C'est franchissable,
+  // donc cela ajoute du relief et des zones d'embuscade sans casser le pathfinding.
+  const rugged = terrain.slice();
+  for (let y = 2; y < n - 2; y++) {
+    for (let x = 2; x < n - 2; x++) {
+      const i = y * n + x;
+      if (terrain[i] !== T_GRASS) continue;
+      let rockNear = 0, roughNear = 0;
+      for (let dy = -2; dy <= 2; dy++)
+        for (let dx = -2; dx <= 2; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const t = terrain[(y + dy) * n + (x + dx)];
+          if (t === T_ROCK) rockNear++;
+          else if (t === T_ROUGH) roughNear++;
+        }
+      const high = elev[i] > 0.56 + (moisture(x * 0.08, y * 0.08) - 0.5) * 0.08;
+      if ((rockNear >= 2 && rng() < 0.72) || (roughNear >= 5 && rng() < 0.34) || (high && rng() < 0.32)) {
+        rugged[i] = T_ROUGH;
+        elev[i] = Math.max(elev[i], 0.6 + rng() * 0.08);
+      }
+    }
+  }
+  terrain.set(rugged);
+
+  // Plateaux fracturés : grandes zones rugueuses avec quelques dents rocheuses.
+  // Elles donnent des axes d'embuscade et cassent les plaines, tout en restant
+  // majoritairement franchissables.
+  const plateauCount = 4 + Math.floor(n / 62);
+  for (let k = 0; k < plateauCount; k++) {
+    const px0 = Math.floor(n * (0.12 + rng() * 0.76));
+    const py0 = Math.floor(n * (0.12 + rng() * 0.76));
+    const rx = 5 + rng() * (n * 0.035);
+    const ry = 4 + rng() * (n * 0.028);
+    const ang = rng() * Math.PI * 2;
+    const ca = Math.cos(ang), sa = Math.sin(ang);
+    for (let y = Math.max(2, Math.floor(py0 - ry * 1.8)); y <= Math.min(n - 3, Math.ceil(py0 + ry * 1.8)); y++) {
+      for (let x = Math.max(2, Math.floor(px0 - rx * 1.8)); x <= Math.min(n - 3, Math.ceil(px0 + rx * 1.8)); x++) {
+        const lx = (x - px0) * ca + (y - py0) * sa;
+        const ly = -(x - px0) * sa + (y - py0) * ca;
+        const d = (lx * lx) / (rx * rx) + (ly * ly) / (ry * ry);
+        if (d > 1.15) continue;
+        const edge = noiseHi(x * 0.18, y * 0.18);
+        if (d < 0.72 + edge * 0.32) {
+          if (Math.abs(ly) < 1.35 && edge > 0.62 && rng() < 0.46) paintTerrain(x, y, T_ROCK, 0.86);
+          else if (rng() < 0.9) paintTerrain(x, y, T_ROUGH, 0.63 + rng() * 0.08);
+        }
+      }
+    }
+  }
+
+  // Bandes de terrain cassé à très basse fréquence : elles évitent les immenses
+  // tapis de plaine sur les grandes cartes. Tout reste passable ; les clears et
+  // corridors garantis plus bas reprennent la priorité autour des bases.
+  for (let y = 2; y < n - 2; y++) {
+    for (let x = 2; x < n - 2; x++) {
+      const i = y * n + x;
+      if (terrain[i] !== T_GRASS) continue;
+      const band =
+        noiseLow(x * 0.035 + 19.4, y * 0.035 + 7.1) * 0.55 +
+        noiseMid(x * 0.055 + 3.7, y * 0.055 + 31.2) * 0.45;
+      if (band > 0.72 && elev[i] > waterLevel + 0.16) paintTerrain(x, y, T_ROUGH, 0.58 + (band - 0.72) * 0.5);
+    }
+  }
+
+  // Cohérence des massifs : les chaînes doivent être lisibles comme de vrais
+  // obstacles. Cette passe ferme les micro-trous accidentels au coeur des roches
+  // et transforme leur bord immédiat en contreforts, avant que les clairières et
+  // corridors garantis ne percent les passages voulus.
+  for (let pass = 0; pass < 2; pass++) {
+    const tightened = terrain.slice();
+    for (let y = 2; y < n - 2; y++) {
+      for (let x = 2; x < n - 2; x++) {
+        const i = y * n + x;
+        if (terrain[i] === T_ROCK || terrain[i] === T_WATER) continue;
+        let rock4 = 0, rock8 = 0, water8 = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const t = terrain[(y + dy) * n + (x + dx)];
+            if (t === T_ROCK) {
+              rock8++;
+              if (dx === 0 || dy === 0) rock4++;
+            } else if (t === T_WATER) {
+              water8++;
+            }
+          }
+        }
+        if (rock4 >= 3 || rock8 >= 6) {
+          tightened[i] = T_ROCK;
+          elev[i] = Math.max(elev[i], 0.91);
+        } else if (terrain[i] === T_GRASS && rock8 >= 2 && water8 === 0) {
+          tightened[i] = T_ROUGH;
+          elev[i] = Math.max(elev[i], 0.64);
+        }
+      }
+    }
+    terrain.set(tightened);
   }
 
   // Bordure rocheuse.
@@ -303,13 +437,15 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
   // Clairière centrale + clairières stratégiques à mi-distance : zones ouvertes
   // pour les grands affrontements (et accueil de gros gisements contestés).
   const openZones: { x: number; y: number }[] = [{ x: Math.round(cx), y: Math.round(cy) }];
-  clear(Math.round(cx), Math.round(cy), Math.round(7 + n / 90));
+  const centerClearR = Math.round(7 + n / 90);
+  const midClearR = Math.round(5 + n / 130);
+  clear(Math.round(cx), Math.round(cy), centerClearR);
   const midRingCount = Math.min(8, 2 + Math.floor(playerCount / 2));
   for (let i = 0; i < midRingCount; i++) {
     const a = baseAngle + (i / midRingCount) * Math.PI * 2 + 0.4;
     const zx = Math.round(cx + Math.cos(a) * n * 0.2);
     const zy = Math.round(cy + Math.sin(a) * n * 0.2);
-    clear(zx, zy, Math.round(5 + n / 130));
+    clear(zx, zy, midClearR);
     openZones.push({ x: zx, y: zy });
   }
 
@@ -327,7 +463,10 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
           const xx = x + dx, yy = y + dy;
           if (xx > 0 && yy > 0 && xx < n - 1 && yy < n - 1) {
             const i = yy * n + xx;
-            terrain[i] = T_GRASS;
+            const wasBlocked = terrain[i] === T_ROCK || terrain[i] === T_WATER;
+            terrain[i] = wasBlocked ? T_ROUGH : T_GRASS;
+            passageMask[i] = 1;
+            elev[i] = Math.min(elev[i], wasBlocked ? 0.58 : 0.5);
             if (markRoad && Math.abs(dx) + Math.abs(dy) <= Math.max(1, cwidth)) roads[i] = 1;
           }
         }
@@ -366,13 +505,235 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
     }
     return { x: Math.round(cx), y: Math.round(cy) };
   };
-  const segCount = 2 + Math.floor(n / 80);
+  const segCount = 3 + Math.floor(n / 65);
   // certaines pistes relient des clairières neutres (mi-carte), d'autres sont libres
   for (let k = 0; k < segCount; k++) {
     const a = openZones.length > 1 && rng() < 0.5
       ? openZones[Math.floor(rng() * openZones.length)] : randLand();
     const b = randLand();
     if (Math.hypot(a.x - b.x, a.y - b.y) < n * 0.55) traceRoad(a.x, a.y, b.x, b.y);
+  }
+  if (n >= 200) {
+    const branchCount = Math.floor(n / 110);
+    for (let k = 0; k < branchCount; k++) {
+      const a = randLand();
+      const ang = rng() * Math.PI * 2;
+      const d = n * (0.12 + rng() * 0.12);
+      const b = {
+        x: Math.max(3, Math.min(n - 4, Math.round(a.x + Math.cos(ang) * d))),
+        y: Math.max(3, Math.min(n - 4, Math.round(a.y + Math.sin(ang) * d))),
+      };
+      if (terrain[b.y * n + b.x] === T_GRASS || terrain[b.y * n + b.x] === T_ROUGH) traceRoad(a.x, a.y, b.x, b.y);
+    }
+  }
+
+  // Bassins/plateaux isolés : vraies poches constructibles, riches en minerai,
+  // volontairement coupées par roche/eau. Elles donnent une raison stratégique
+  // aux transports aériens sans menacer les départs ni les corridors principaux.
+  const isolatedZones: { x: number; y: number; r: number }[] = [];
+  const isoCount = n < 150 ? 0 : 1 + Math.floor(n / 210);
+  const farFromStrategic = (x: number, y: number, r: number) => {
+    if (Math.hypot(x - cx, y - cy) < n * 0.18 + r) return false;
+    for (const s of starts) if (Math.hypot(x - s.x, y - s.y) < startClearR + r + 8) return false;
+    return true;
+  };
+  for (let z = 0; z < isoCount; z++) {
+    let zx = 0, zy = 0, zr = 0, ok = false;
+    for (let tries = 0; tries < 70 && !ok; tries++) {
+      zr = Math.round(7 + rng() * (n >= 260 ? 5 : 3));
+      zx = Math.round(n * (0.14 + rng() * 0.72));
+      zy = Math.round(n * (0.14 + rng() * 0.72));
+      ok = farFromStrategic(zx, zy, zr) && isolatedZones.every(o => Math.hypot(o.x - zx, o.y - zy) > o.r + zr + 12);
+    }
+    if (!ok) continue;
+    isolatedZones.push({ x: zx, y: zy, r: zr });
+    const barrier = rng() < 0.25 ? T_WATER : T_ROCK;
+    const outer = zr + 4;
+    for (let y = Math.max(2, zy - outer); y <= Math.min(n - 3, zy + outer); y++) {
+      for (let x = Math.max(2, zx - outer); x <= Math.min(n - 3, zx + outer); x++) {
+        const d = Math.hypot(x - zx, y - zy);
+        const roughEdge = zr - 2 + (noiseHi(x * 0.23, y * 0.23) - 0.5) * 2.2;
+        const wallEdge = zr + 2 + (noiseMid(x * 0.16, y * 0.16) - 0.5) * 2.4;
+        const i = y * n + x;
+        if (d <= roughEdge) {
+          terrain[i] = d > zr * 0.55 && rng() < 0.35 ? T_ROUGH : T_GRASS;
+          elev[i] = Math.max(elev[i], 0.58 + rng() * 0.08);
+          roads[i] = 0;
+        } else if (d <= wallEdge) {
+          terrain[i] = barrier;
+          elev[i] = barrier === T_ROCK ? Math.max(elev[i], 0.92) : Math.min(elev[i], 0.18);
+          roads[i] = 0;
+        }
+      }
+    }
+  }
+
+  // Passe finale anti-micro-passages : après tous les creusements, on ferme les
+  // ouvertures rocheuses non volontaires. Les corridors garantis, clairières de
+  // départ, zones centrales et poches isolées restent explicitement protégés.
+  const protectedPassage = (x: number, y: number) => {
+    const i = y * n + x;
+    if (passageMask[i]) return true;
+    for (const s of starts) if (Math.hypot(x - s.x, y - s.y) <= startClearR + 2) return true;
+    for (let zi = 0; zi < openZones.length; zi++) {
+      const z = openZones[zi];
+      const rr = zi === 0 ? centerClearR + 2 : midClearR + 2;
+      if (Math.hypot(x - z.x, y - z.y) <= rr) return true;
+    }
+    for (const z of isolatedZones) if (Math.hypot(x - z.x, y - z.y) <= z.r + 1) return true;
+    return false;
+  };
+  for (let pass = 0; pass < 3; pass++) {
+    const sealed = terrain.slice();
+    for (let y = 2; y < n - 2; y++) {
+      for (let x = 2; x < n - 2; x++) {
+        const i = y * n + x;
+        if (terrain[i] === T_ROCK || terrain[i] === T_WATER || protectedPassage(x, y)) continue;
+        const left = terrain[i - 1] === T_ROCK;
+        const right = terrain[i + 1] === T_ROCK;
+        const up = terrain[i - n] === T_ROCK;
+        const down = terrain[i + n] === T_ROCK;
+        let rock8 = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            if (terrain[(y + dy) * n + (x + dx)] === T_ROCK) rock8++;
+          }
+        }
+        const rock4 = (left ? 1 : 0) + (right ? 1 : 0) + (up ? 1 : 0) + (down ? 1 : 0);
+        const slit = (left && right) || (up && down);
+        if (rock4 >= 3 || rock8 >= 6 || (slit && rock8 >= 4)) {
+          sealed[i] = T_ROCK;
+          elev[i] = Math.max(elev[i], 0.92);
+          roads[i] = 0;
+        } else if (terrain[i] === T_GRASS && rock8 >= 3) {
+          sealed[i] = T_ROUGH;
+          elev[i] = Math.max(elev[i], 0.66);
+        }
+      }
+    }
+    terrain.set(sealed);
+  }
+  for (let y = 1; y < n - 1; y++) {
+    for (let x = 1; x < n - 1; x++) {
+      const i = y * n + x;
+      if (!passageMask[i] || terrain[i] === T_WATER || terrain[i] === T_ROCK) continue;
+      if (terrain[i - 1] === T_ROCK || terrain[i + 1] === T_ROCK || terrain[i - n] === T_ROCK || terrain[i + n] === T_ROCK) {
+        terrain[i] = T_ROUGH;
+        elev[i] = Math.max(elev[i], 0.62);
+      }
+    }
+  }
+  for (let y = 1; y < n - 1; y++) {
+    for (let x = 1; x < n - 1; x++) {
+      const i = y * n + x;
+      if (terrain[i] === T_ROCK || terrain[i] === T_WATER) continue;
+      if (terrain[i - 1] === T_ROCK && terrain[i + 1] === T_ROCK && terrain[i - n] === T_ROCK && terrain[i + n] === T_ROCK) {
+        terrain[i] = T_ROCK;
+        elev[i] = Math.max(elev[i], 0.92);
+        roads[i] = 0;
+      }
+    }
+  }
+
+  // ===================================================================
+  // COHÉRENCE STRUCTURELLE FINALE — garantit une carte LISIBLE et LOGIQUE
+  // quelle que soit la complexité des passes amont :
+  //   1. eau regroupée (pas de flaques isolées) ;
+  //   2. roche regroupée (pas d'éclats parasites) ;
+  //   3. murs scellés (aucune fuite diagonale → montagnes vraiment infranchissables) ;
+  //   4. connectivité garantie (chaque base reliée par un col propre).
+  // ===================================================================
+  const N = n * n;
+  const NB4: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+  // -- helper : composantes connexes 4-voisins d'un type, retire celles trop petites
+  const cleanupType = (type: number, minSize: number, replace: number) => {
+    const seen = new Uint8Array(N);
+    const stack: number[] = [];
+    for (let i0 = 0; i0 < N; i0++) {
+      if (terrain[i0] !== type || seen[i0]) continue;
+      stack.length = 0; stack.push(i0); seen[i0] = 1;
+      const comp: number[] = [i0];
+      while (stack.length) {
+        const c = stack.pop()!; const cx2 = c % n, cy2 = (c / n) | 0;
+        for (const [dx, dy] of NB4) {
+          const xx = cx2 + dx, yy = cy2 + dy;
+          if (xx < 0 || yy < 0 || xx >= n || yy >= n) continue;
+          const j = yy * n + xx;
+          if (terrain[j] === type && !seen[j]) { seen[j] = 1; stack.push(j); comp.push(j); }
+        }
+      }
+      if (comp.length < minSize) for (const j of comp) {
+        terrain[j] = replace;
+        if (type === T_WATER) elev[j] = Math.max(elev[j], waterLevel + 0.05);
+      }
+    }
+  };
+  // 1) lacs cohérents : supprime les plans d'eau minuscules (le seuil de bruit
+  //    en sème beaucoup) → ne restent que de vraies masses d'eau continues.
+  cleanupType(T_WATER, Math.max(14, Math.floor(N * 0.0009)), T_GRASS);
+  // remplir les trous d'1 tuile DANS l'eau (berges plus nettes)
+  for (let y = 1; y < n - 1; y++) for (let x = 1; x < n - 1; x++) {
+    const i = y * n + x;
+    if (terrain[i] === T_WATER) continue;
+    let wn = 0; for (const [dx, dy] of NB4) if (terrain[(y + dy) * n + (x + dx)] === T_WATER) wn++;
+    if (wn === 4) { terrain[i] = T_WATER; elev[i] = Math.min(elev[i], waterLevel - 0.04); }
+  }
+  // 2) roche cohérente : supprime les éclats rocheux isolés (parasites) → seules
+  //    les chaînes/massifs lisibles subsistent. (La bordure est une grande
+  //    composante, conservée.)
+  cleanupType(T_ROCK, 7, T_ROUGH);
+
+  // 3) ÉTANCHÉITÉ DES MURS : scelle tout pincement diagonal de roche (2×2 avec
+  //    une diagonale rocheuse et l'autre praticable) — sinon une unité se faufile
+  //    en diagonale « à travers » la crête. On ne scelle jamais un passage voulu.
+  const isRockT = (x: number, y: number) => terrain[y * n + x] === T_ROCK;
+  for (let y = 0; y < n - 1; y++) {
+    for (let x = 0; x < n - 1; x++) {
+      const a = isRockT(x, y), b = isRockT(x + 1, y), c = isRockT(x, y + 1), d = isRockT(x + 1, y + 1);
+      if (a && d && !b && !c) {
+        if (!passageMask[y * n + (x + 1)]) { terrain[y * n + (x + 1)] = T_ROCK; elev[y * n + (x + 1)] = Math.max(elev[y * n + (x + 1)], 0.92); }
+        else if (!passageMask[(y + 1) * n + x]) { terrain[(y + 1) * n + x] = T_ROCK; elev[(y + 1) * n + x] = Math.max(elev[(y + 1) * n + x], 0.92); }
+      } else if (b && c && !a && !d) {
+        if (!passageMask[y * n + x]) { terrain[y * n + x] = T_ROCK; elev[y * n + x] = Math.max(elev[y * n + x], 0.92); }
+        else if (!passageMask[(y + 1) * n + (x + 1)]) { terrain[(y + 1) * n + (x + 1)] = T_ROCK; elev[(y + 1) * n + (x + 1)] = Math.max(elev[(y + 1) * n + (x + 1)], 0.92); }
+      }
+    }
+  }
+
+  // 4) CONNECTIVITÉ GARANTIE : flood-fill praticable depuis le centre ; si une
+  //    base est isolée (un mur scellé l'a coupée), on perce un COL propre (large,
+  //    en herbe, clairement franchissable) vers le centre.
+  const passable = (x: number, y: number) => { const t = terrain[y * n + x]; return t === T_GRASS || t === T_ROUGH; };
+  const carveCol = (x0: number, y0: number, x1: number, y1: number) => {
+    let x = x0, y = y0, guard = 0;
+    while ((x !== x1 || y !== y1) && guard++ < n * 4) {
+      if (Math.abs(x1 - x) > Math.abs(y1 - y)) x += Math.sign(x1 - x);
+      else if (y !== y1) y += Math.sign(y1 - y);
+      else x += Math.sign(x1 - x);
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+        const xx = x + dx, yy = y + dy;
+        if (xx > 0 && yy > 0 && xx < n - 1 && yy < n - 1 && Math.abs(dx) + Math.abs(dy) <= 3) {
+          const i = yy * n + xx; terrain[i] = T_GRASS; elev[i] = Math.min(elev[i], 0.5); passageMask[i] = 1; roads[i] = 0;
+        }
+      }
+    }
+  };
+  {
+    const seen = new Uint8Array(N); const stack: number[] = [];
+    const start0 = Math.round(cy) * n + Math.round(cx);
+    if (passable(Math.round(cx), Math.round(cy))) { stack.push(start0); seen[start0] = 1; }
+    while (stack.length) {
+      const c = stack.pop()!; const x2 = c % n, y2 = (c / n) | 0;
+      for (const [dx, dy] of NB4) {
+        const xx = x2 + dx, yy = y2 + dy;
+        if (xx < 0 || yy < 0 || xx >= n || yy >= n) continue;
+        const j = yy * n + xx;
+        if (!seen[j] && passable(xx, yy)) { seen[j] = 1; stack.push(j); }
+      }
+    }
+    for (const s of starts) if (!seen[s.y * n + s.x]) carveCol(s.x, s.y, Math.round(cx), Math.round(cy));
   }
 
   // Gisements de minerai.
@@ -431,6 +792,11 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
       2 + Math.floor(rng() * (n - 4)),
       rare ? 3 : 4, (rare ? 450 : 700) * oreScale, rare ? 'rare' : 'gold',
     );
+  }
+  // 4) Récompenses aériennes : ressources riches dans les poches isolées.
+  for (const z of isolatedZones) {
+    addCluster(z.x - 2, z.y, 7, 1200 * oreScale, 'gold');
+    addCluster(z.x + 3, z.y + 2, 4, 650 * oreScale, 'rare');
   }
 
   const relief = computeVisualRelief(n, n, terrain, roads, shade, elev);

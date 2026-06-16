@@ -849,6 +849,7 @@ const BUILDING_INFO: Record<BuildingTypeId, string> = {
   factory: 'Produit les véhicules terrestres. Indispensable pour créer tanks, artilleries, récolteurs et unités mécaniques.',
   radar: 'Améliore la vision stratégique et la lecture de la carte. À construire quand tu veux mieux anticiper les attaques.',
   radarcenter: 'Renforce fortement la vision de ton armée et de tes bâtiments. Excellent pour contrôler la carte en milieu de partie.',
+  helipad: 'Produit les hélicoptères de transport. Sert à projeter infanterie et véhicules vers les zones isolées.',
   airport: 'Produit et réarme les avions. Utilise-le pour reconnaissance rapide et frappes ciblées.',
   tech: 'Débloque les améliorations globales. À utiliser quand ton économie peut financer une montée en puissance durable.',
   lab: 'Débloque les bâtiments et unités de niveau 2. Un investissement important pour dominer le milieu et la fin de partie.',
@@ -872,6 +873,8 @@ const UNIT_INFO: Record<UnitTypeId, string> = {
   harvester: 'Récolte automatiquement le minerai et le rapporte à une raffinerie. Protège-le : sans récolteurs, ton économie s’écroule.',
   bomber: 'Avion d’attaque rapide. Excellent pour frapper une cible importante puis rentrer se réarmer.',
   scoutplane: 'Avion de reconnaissance non armé. Utilise-le pour révéler la carte, trouver des expansions ou repérer une attaque.',
+  transportheli: 'Transport aérien de troupes. Embarque jusqu’à 6 unités d’infanterie pour contourner falaises, lacs et montagnes.',
+  cargoheli: 'Transport aérien lourd. Embarque un véhicule terrestre et permet d’ouvrir des avant-postes dans des zones isolées.',
   elite: 'Infanterie T2 polyvalente et résistante. Bonne pour renforcer une ligne, nettoyer l’infanterie et tenir les points clés.',
   rocketeer: 'Infanterie anti-blindé avancée. Très utile contre véhicules lourds et bâtiments, mais à protéger contre les tirs directs.',
   kamikaze: 'Unité d’assaut à usage unique. À envoyer sur des groupes ou bâtiments importants quand l’échange vaut le sacrifice.',
@@ -964,7 +967,7 @@ function InfoTile({
 const PRODUCTION_CATEGORIES: { id: ProductionCategoryId; label: string; sub: string; producers: BuildingTypeId[] }[] = [
   { id: 'infantry', label: 'Caserne', sub: 'Infanterie', producers: ['barracks', 'barracks2'] },
   { id: 'vehicles', label: 'Usine', sub: 'Véhicules', producers: ['factory', 'factory2'] },
-  { id: 'air', label: 'Aéroport', sub: 'Aérien', producers: ['airport'] },
+  { id: 'air', label: 'Aérien', sub: 'Avions & hélicos', producers: ['airport', 'helipad'] },
 ];
 
 function findBestProducer(game: Game, type: UnitTypeId, pov: number): { building: Building | null; reason: string } {
@@ -1250,6 +1253,10 @@ function UnitPanel({
   }
   const hasCombat = [...byType.keys()].some(t => UNITS[t].weapon);
   const hasMobileCommand = byType.has('mobilecmd');
+  const hasLoadedTransport = units.some(id => {
+    const u = game.unitById.get(id);
+    return !!u && (UNITS[u.type].transportCapacity ?? 0) > 0 && (u.passengers?.length ?? 0) > 0;
+  });
 
   return (
     <div className={`bottombar ${mobileOpen ? 'mobile-open' : 'mobile-closed'}`}>
@@ -1267,7 +1274,7 @@ function UnitPanel({
         {hasCombat && (
           <button
             className={`action-btn ${controls.attackMoveMode ? 'toggled' : ''}`}
-            onClick={() => { controls.attackMoveMode = !controls.attackMoveMode; controls.escortMode = false; refresh(); }}
+            onClick={() => { controls.attackMoveMode = !controls.attackMoveMode; controls.escortMode = false; controls.unloadMode = false; refresh(); }}
           >
             ⚔ Attaque-dépl.
           </button>
@@ -1275,7 +1282,7 @@ function UnitPanel({
         <button
           className={`action-btn ${controls.escortMode ? 'on' : ''}`}
           title="Puis cliquez sur l'unité alliée à protéger (récolteur, artillerie…)"
-          onClick={() => { controls.escortMode = !controls.escortMode; controls.attackMoveMode = false; refresh(); }}
+          onClick={() => { controls.escortMode = !controls.escortMode; controls.attackMoveMode = false; controls.unloadMode = false; refresh(); }}
         >
           🛡 Escorter
         </button>
@@ -1283,6 +1290,14 @@ function UnitPanel({
         {hasMobileCommand && (
           <button className="action-btn" onClick={() => { controls.deploySelection(); refresh(); }}>
             Déployer QG
+          </button>
+        )}
+        {hasLoadedTransport && (
+          <button
+            className={`action-btn ${controls.unloadMode ? 'on' : ''}`}
+            onClick={() => { controls.startUnloadMode(); refresh(); }}
+          >
+            Décharger
           </button>
         )}
         <button

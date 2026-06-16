@@ -3,12 +3,13 @@
 export type UnitTypeId =
   | 'rifle' | 'bazooka' | 'sniper' | 'jeep' | 'tank'
   | 'artillery' | 'harvester' | 'engineer' | 'bomber' | 'scoutplane'
+  | 'transportheli' | 'cargoheli'
   // Niveau 2 (Laboratoire avancé)
   | 'elite' | 'rocketeer' | 'kamikaze' | 'spy'
   | 'heavytank' | 'tankdestroyer' | 'heavyarty' | 'radarvehicle' | 'mobilecmd';
 
 export type BuildingTypeId =
-  | 'hq' | 'power' | 'refinery' | 'barracks' | 'factory' | 'airport'
+  | 'hq' | 'power' | 'refinery' | 'barracks' | 'factory' | 'airport' | 'helipad'
   | 'radar' | 'turret' | 'atgun' | 'aa' | 'tech' | 'radarcenter' | 'depot'
   // Niveau 2
   | 'lab' | 'barracks2' | 'factory2' | 'power2' | 'refinery2';
@@ -50,6 +51,8 @@ export interface UnitDef {
   weapon?: WeaponDef;
   builtAt: BuildingTypeId;
   isAir?: boolean;
+  transportCapacity?: number;
+  transportArmor?: Armor[];
 }
 
 export interface BuildingDef {
@@ -135,6 +138,16 @@ export const UNITS: Record<UnitTypeId, UnitDef> = {
     id: 'scoutplane', name: 'Avion radar', desc: 'Reconnaissance rapide non armée : révèle une large zone puis rentre.',
     cost: 350, time: 8, hp: 120, speed: 9, vision: 12, armor: 'air', radius: 0.42, builtAt: 'airport', isAir: true,
   },
+  transportheli: {
+    id: 'transportheli', name: 'Hélicoptère de transport', desc: 'Transport aérien de troupes. Embarque jusqu’à 6 unités d’infanterie.',
+    cost: 600, time: 10, hp: 260, speed: 5.3, vision: 7.5, armor: 'air', radius: 0.5, builtAt: 'helipad', isAir: true,
+    transportCapacity: 6, transportArmor: ['inf'],
+  },
+  cargoheli: {
+    id: 'cargoheli', name: 'Hélicoptère cargo', desc: 'Transport aérien lourd. Embarque un seul véhicule terrestre.',
+    cost: 700, time: 12, hp: 340, speed: 4.6, vision: 7, armor: 'air', radius: 0.58, builtAt: 'helipad', isAir: true,
+    transportCapacity: 1, transportArmor: ['light', 'heavy'],
+  },
 
   // ----- Niveau 2 : Caserne T2
   elite: {
@@ -211,6 +224,10 @@ export const BUILDINGS: Record<BuildingTypeId, BuildingDef> = {
     id: 'airport', name: 'Aéroport', desc: 'Produit et réarme les chasseurs-bombardiers.',
     cost: 700, time: 14, hp: 850, w: 3, h: 2, power: -40, vision: 8, prereq: ['factory', 'radar'],
   },
+  helipad: {
+    id: 'helipad', name: 'Héliport', desc: 'Produit des hélicoptères de transport pour projeter troupes et véhicules.',
+    cost: 650, time: 12, hp: 780, w: 3, h: 2, power: -30, vision: 8, prereq: ['factory', 'radar'],
+  },
   turret: {
     id: 'turret', name: 'Tourelle', desc: 'Défense anti-infanterie.',
     cost: 300, time: 6, hp: 500, w: 1, h: 1, power: -10, vision: 7, prereq: ['barracks'],
@@ -272,8 +289,8 @@ export const UPGRADES: Record<UpgradeId, UpgradeDef> = {
 };
 
 export const BUILD_ORDER_UI: BuildingTypeId[] = [
-  'power', 'refinery', 'depot', 'barracks', 'factory', 'radar', 'radarcenter',
-  'airport', 'tech', 'lab', 'power2', 'refinery2', 'barracks2', 'factory2',
+  'power', 'refinery', 'depot', 'barracks', 'factory', 'radar', 'helipad',
+  'radarcenter', 'airport', 'tech', 'lab', 'power2', 'refinery2', 'barracks2', 'factory2',
   'turret', 'atgun', 'aa',
 ];
 

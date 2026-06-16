@@ -21,6 +21,9 @@ export type Cmd =
   | { k: 'qcancel'; bId: number; i: number }
   | { k: 'repairOn'; bId: number; on: boolean }
   | { k: 'deploy'; ids: number[] }
+  | { k: 'load'; ids: number[]; carrier: number }
+  | { k: 'pickup'; ids: number[]; target: number }
+  | { k: 'unload'; ids: number[]; x: number; y: number }
   // système (scellée par l'hôte) : un humain déconnecté passe sous contrôle IA
   | { k: 'aitakeover'; player: number };
 
@@ -100,6 +103,21 @@ export function applyCommand(g: Game, owner: number, c: Cmd) {
     case 'deploy': {
       const ids = ownUnits(g, owner, c.ids);
       if (ids.length) g.deployMobileCommanders(ids);
+      break;
+    }
+    case 'load': {
+      const ids = ownUnits(g, owner, c.ids);
+      if (ownUnits(g, owner, [c.carrier]).length && ids.length) g.cmdLoadInto(ids, c.carrier);
+      break;
+    }
+    case 'pickup': {
+      const ids = ownUnits(g, owner, c.ids);
+      if (ownUnits(g, owner, [c.target]).length && ids.length) g.cmdPickup(ids, c.target);
+      break;
+    }
+    case 'unload': {
+      const ids = ownUnits(g, owner, c.ids);
+      if (ids.length) g.cmdUnload(ids, c.x, c.y);
       break;
     }
     case 'aitakeover':

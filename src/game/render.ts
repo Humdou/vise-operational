@@ -317,6 +317,17 @@ export class Renderer {
         let gtx = Math.round(wx); if (gtx < 0) gtx = 0; else if (gtx >= w) gtx = w - 1;
         let gty = Math.round(wy); if (gty < 0) gty = 0; else if (gty >= h) gty = h - 1;
         const t = terrain[gty * w + gtx];
+        let rockContact = 0, openContact = 0;
+        if (t !== T_WATER) {
+          const neigh: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+          for (const [dx, dy] of neigh) {
+            const nx = gtx + dx, ny = gty + dy;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+            const nt = terrain[ny * w + nx];
+            if (nt === T_ROCK) rockContact++;
+            else if (nt !== T_WATER) openContact++;
+          }
+        }
 
         // ----- couleur fondue : mélange bilinéaire des 4 tuiles voisines
         tileRGB(x0, y0, c00); tileRGB(x0 + 1, y0, c10); tileRGB(x0, y0 + 1, c01); tileRGB(x0 + 1, y0 + 1, c11);
@@ -324,6 +335,22 @@ export class Renderer {
         let r = c00[0] * w00 + c10[0] * w10 + c01[0] * w01 + c11[0] * w11;
         let gn = c00[1] * w00 + c10[1] * w10 + c01[1] * w01 + c11[1] * w11;
         let b = c00[2] * w00 + c10[2] * w10 + c01[2] * w01 + c11[2] * w11;
+        if (t === T_ROCK) {
+          // Les zones infranchissables doivent rester immédiatement lisibles,
+          // même après le mélange organique des bordures.
+          r = r * 0.72 + 42;
+          gn = gn * 0.70 + 38;
+          b = b * 0.68 + 34;
+          if (openContact > 0) {
+            const rim = Math.min(0.24, openContact * 0.06);
+            r += 42 * rim; gn += 36 * rim; b += 24 * rim;
+          }
+        } else if (rockContact > 0 && t !== T_WATER) {
+          const border = Math.min(0.28, rockContact * 0.085);
+          r *= 1 - border;
+          gn *= 1 - border;
+          b *= 1 - border * 0.9;
+        }
 
         const e = SH[i4];
         if (t !== T_WATER) {
@@ -334,6 +361,20 @@ export class Renderer {
           // variation fine de teinte (herbe/sol moins répétitifs)
           const j = (grain(fx * 3.1, fy * 3.1) - 0.5) * 0.16 + (tint(fx * 7.3, fy * 7.3) - 0.5) * 0.10;
           r *= 1 + j; gn *= 1 + j; b *= 1 + j;
+          // Lecture stratégique du relief : les fonds de vallée sont plus froids
+          // et sombres, les plateaux/sommets plus secs et rocheux.
+          const valleyTone = Math.max(0, Math.min(1, (0.46 - e) * 2.4));
+          if (valleyTone > 0) {
+            r = r * (1 - valleyTone * 0.18) + 18 * valleyTone;
+            gn = gn * (1 - valleyTone * 0.10) + 38 * valleyTone;
+            b = b * (1 - valleyTone * 0.06) + 30 * valleyTone;
+          }
+          const plateauTone = Math.max(0, Math.min(1, (e - 0.64) * 2.1));
+          if (plateauTone > 0) {
+            r = r * (1 - plateauTone * 0.16) + 142 * plateauTone;
+            gn = gn * (1 - plateauTone * 0.18) + 128 * plateauTone;
+            b = b * (1 - plateauTone * 0.26) + 92 * plateauTone;
+          }
         } else {
           // eau : forte profondeur (fonds très sombres et bleutés, hauts-fonds
           // clairs et turquoise) → contraste marqué + meilleure intégration.
@@ -356,17 +397,17 @@ export class Renderer {
         const ym = sy > 0 ? sy - 1 : sy, yp = sy < H4 - 1 ? sy + 1 : sy;
         const hl = SH[sy * W4 + xm], hr = SH[sy * W4 + xp], hu = SH[ym * W4 + sx2], hd = SH[yp * W4 + sx2];
         const dxh = hr - hl, dyh = hd - hu;
-        const LEVELS = 7;
+        const LEVELS = 9;
         const myL = Math.floor(e * LEVELS);
         // rampe de luminosité par palier : contraste fort entre étages
         let relief = 0.64 + myL * (0.62 / LEVELS);
         if (t !== T_WATER) {
           // bord SUPÉRIEUR de falaise (domine l'est/le sud, côté éclairé) → liseré clair
-          if (myL > Math.floor(hr * LEVELS)) relief += 0.18;
-          if (myL > Math.floor(hd * LEVELS)) relief += 0.18;
+          if (myL > Math.floor(hr * LEVELS)) relief += 0.28;
+          if (myL > Math.floor(hd * LEVELS)) relief += 0.28;
           // PIED de falaise (dominé par l'ouest/le nord) → ombre franche
-          if (myL < Math.floor(hl * LEVELS)) relief -= 0.42;
-          if (myL < Math.floor(hu * LEVELS)) relief -= 0.42;
+          if (myL < Math.floor(hl * LEVELS)) relief -= 0.56;
+          if (myL < Math.floor(hu * LEVELS)) relief -= 0.56;
         }
         // micro-pente continue (douceur à l'intérieur d'un palier)
         relief += (-dxh - dyh) * 7;
@@ -378,7 +419,7 @@ export class Renderer {
           const diff = SH[ay * W4 + ax] - e - s * 0.0085;
           if (diff > cast) cast = diff;
         }
-        const m = relief * (1 - Math.min(0.66, cast * 2.6));
+        const m = relief * (1 - Math.min(0.76, cast * 3.35));
         r *= m; gn *= m; b *= m;
 
         const o = i4 * 4;
@@ -472,30 +513,30 @@ export class Renderer {
         const mask = cliff[i] ?? 0;
         if (!mask || terrain[i] === T_WATER) continue;
         const px = tx * tpx, py = ty * tpx;
-        const face = Math.max(SS * 1.2, tpx * 0.34);
+        const face = Math.max(SS * 1.4, tpx * 0.42);
         const jitter = (s: number, salt: number) => (warpB(tx + s * 0.25 + salt, ty + s * 0.25) - 0.5) * SS * 1.1;
         if (mask & 1) { // N : arête éclairée
-          tc.fillStyle = 'rgba(255,250,222,0.45)';
+          tc.fillStyle = 'rgba(255,250,222,0.58)';
           for (let s = 0; s < SUB; s++) tc.fillRect(px + s * SS, py + jitter(s, 1), SS + 1, Math.max(1.5, SS * 0.5));
         }
         if (mask & 8) { // O : arête éclairée
-          tc.fillStyle = 'rgba(255,250,222,0.38)';
+          tc.fillStyle = 'rgba(255,250,222,0.5)';
           for (let s = 0; s < SUB; s++) tc.fillRect(px + jitter(s, 4), py + s * SS, Math.max(1.5, SS * 0.5), SS + 1);
         }
         if (mask & 2) { // E : face sombre + stries
           const gr = tc.createLinearGradient(px + tpx - face, 0, px + tpx, 0);
-          gr.addColorStop(0, 'rgba(18,14,10,0.04)'); gr.addColorStop(1, 'rgba(6,4,3,0.5)');
+          gr.addColorStop(0, 'rgba(18,14,10,0.12)'); gr.addColorStop(1, 'rgba(6,4,3,0.74)');
           tc.fillStyle = gr; tc.fillRect(px + tpx - face, py, face, tpx);
-          tc.strokeStyle = 'rgba(0,0,0,0.3)'; tc.lineWidth = 1;
+          tc.strokeStyle = 'rgba(0,0,0,0.5)'; tc.lineWidth = 1;
           for (let k = 0; k < SUB; k++) { const yy = py + k * SS + rng() * SS; tc.beginPath(); tc.moveTo(px + tpx - face, yy); tc.lineTo(px + tpx, yy + (rng() - 0.5) * SS); tc.stroke(); }
         }
         if (mask & 4) { // S : face sombre + ombre projetée au pied
           const gr = tc.createLinearGradient(0, py + tpx - face, 0, py + tpx);
-          gr.addColorStop(0, 'rgba(18,14,10,0.04)'); gr.addColorStop(1, 'rgba(6,4,3,0.55)');
+          gr.addColorStop(0, 'rgba(18,14,10,0.13)'); gr.addColorStop(1, 'rgba(6,4,3,0.78)');
           tc.fillStyle = gr; tc.fillRect(px, py + tpx - face, tpx, face);
-          tc.strokeStyle = 'rgba(0,0,0,0.32)'; tc.lineWidth = 1;
+          tc.strokeStyle = 'rgba(0,0,0,0.54)'; tc.lineWidth = 1;
           for (let k = 0; k < SUB; k++) { const xx = px + k * SS + rng() * SS; tc.beginPath(); tc.moveTo(xx, py + tpx - face); tc.lineTo(xx + (rng() - 0.5) * SS, py + tpx); tc.stroke(); }
-          if (ty + 1 < h && terrain[(ty + 1) * w + tx] !== T_WATER) { tc.fillStyle = 'rgba(6,8,16,0.32)'; tc.fillRect(px, py + tpx, tpx, face * 0.7); }
+          if (ty + 1 < h && terrain[(ty + 1) * w + tx] !== T_WATER) { tc.fillStyle = 'rgba(6,8,16,0.5)'; tc.fillRect(px, py + tpx, tpx, face); }
         }
       }
 
@@ -668,7 +709,7 @@ export class Renderer {
     // pente. Cela donne une lecture plus naturelle des plateaux et vallées sans
     // changer une seule tuile de gameplay.
     const erosionRng = mulberry32(w * 409 + h * 37 + 23);
-    const erosionCount = Math.floor(w * h * 0.32);
+    const erosionCount = Math.floor(w * h * 0.42);
     for (let k = 0; k < erosionCount; k++) {
       const tx = (erosionRng() * w) | 0, ty = (erosionRng() * h) | 0;
       const i = ty * w + tx;
@@ -913,6 +954,7 @@ export class Renderer {
     // L'animation est purement visuelle : la position de jeu est inchangée.
     const exiting = new Set<number>();
     for (const u of g.units) {
+      if (u.transportedBy) continue;
       if (u.airState || !u.exitFx) continue;
       const dur = UNITS[u.type].armor === 'inf' ? 1.0 : 0.8;
       const t = (g.time - u.exitFx.t0) / dur;
@@ -940,6 +982,7 @@ export class Renderer {
       depthBuildings.push(b);
     }
     for (const u of g.units) {
+      if (u.transportedBy) continue;
       if (u.airState || exiting.has(u.id)) continue;
       if (u.x < tx0 - 1 || u.x > tx1 + 1 || u.y < ty0 - 1 || u.y > ty1 + 1) continue;
       if (!revealAll && u.owner !== this.pov && !g.isVisibleTo(this.pov, u.x, u.y)) continue;
@@ -1098,6 +1141,7 @@ export class Renderer {
 
     // ----- unités aériennes (au-dessus de tout)
     for (const u of g.units) {
+      if (u.transportedBy) continue;
       if (!u.airState) continue;
       if (!revealAll && u.owner !== this.pov && !g.isVisibleTo(this.pov, u.x, u.y)) continue;
       const flying = u.airState !== 'pad';
@@ -2306,6 +2350,24 @@ export class Renderer {
         break;
       }
 
+      // ============ Héliport : dalle de posé + hangar bas + marquage H
+      case 'helipad': {
+        apron(0, 0, W * 1.0, H * 0.94, '#687076');
+        c.fillStyle = '#2c3237';
+        c.beginPath(); c.ellipse(-W * 0.22, -H * 0.02, W * 0.24, H * 0.24, 0, 0, Math.PI * 2); c.fill();
+        c.strokeStyle = 'rgba(245,245,225,0.75)';
+        c.lineWidth = Math.max(2, W * 0.035);
+        c.beginPath(); c.ellipse(-W * 0.22, -H * 0.02, W * 0.17, H * 0.17, 0, 0, Math.PI * 2); c.stroke();
+        c.fillStyle = '#e8e1b5';
+        c.fillRect(-W * 0.31, -H * 0.055, W * 0.18, H * 0.035);
+        c.fillRect(-W * 0.24, -H * 0.13, W * 0.035, H * 0.15);
+        volume(W * 0.25, H * 0.24, W * 0.34, H * 0.22, H * 0.18, '#46505a', { seams: 2 });
+        door(W * 0.25, H * 0.24, W * 0.25, H * 0.13, '#b9a84e');
+        antenna(W * 0.42, -H * 0.12, H * 0.34, W * 0.045);
+        teamMark(W * 0.24, H * 0.08, W * 0.13, 4);
+        break;
+      }
+
       // ============ Défenses : encuvement octogonal bétonné
       case 'turret': case 'atgun': case 'aa': {
         c.save();
@@ -2623,7 +2685,26 @@ export class Renderer {
     if (def.isAir) {
       const [cv, c] = this.newSprite(1.6);
       const Tz = T;
-      if (type === 'scoutplane') {
+      if (type === 'transportheli' || type === 'cargoheli') {
+        const heavy = type === 'cargoheli';
+        armor(c, [[-Tz * 0.34, -Tz * 0.14], [Tz * 0.28, -Tz * 0.14], [Tz * 0.42, 0], [Tz * 0.28, Tz * 0.14], [-Tz * 0.34, Tz * 0.14], [-Tz * 0.44, 0]], heavy ? '#4a535a' : HULL_LIGHT);
+        armor(c, [[-Tz * 0.52, -Tz * 0.05], [-Tz * 0.36, 0], [-Tz * 0.52, Tz * 0.05]], col);
+        c.strokeStyle = '#252a2e'; c.lineWidth = Math.max(1.3, Tz * 0.035);
+        c.beginPath(); c.moveTo(-Tz * 0.38, 0); c.lineTo(-Tz * 0.74, 0); c.stroke();
+        c.beginPath(); c.moveTo(-Tz * 0.74, -Tz * 0.1); c.lineTo(-Tz * 0.74, Tz * 0.1); c.stroke();
+        c.strokeStyle = 'rgba(15,18,20,0.55)';
+        c.lineWidth = Math.max(2, Tz * 0.045);
+        c.beginPath(); c.moveTo(-Tz * 0.48, 0); c.lineTo(Tz * 0.48, 0); c.stroke();
+        c.beginPath(); c.moveTo(0, -Tz * 0.42); c.lineTo(0, Tz * 0.42); c.stroke();
+        c.fillStyle = '#23282d';
+        c.beginPath(); c.arc(0, 0, Tz * 0.08, 0, Math.PI * 2); c.fill();
+        if (heavy) {
+          c.strokeStyle = '#1d2226'; c.lineWidth = Math.max(1, Tz * 0.025);
+          c.beginPath(); c.moveTo(-Tz * 0.18, Tz * 0.18); c.lineTo(Tz * 0.18, Tz * 0.18); c.stroke();
+          c.fillStyle = '#2a3035';
+          c.fillRect(-Tz * 0.18, Tz * 0.19, Tz * 0.36, Tz * 0.08);
+        }
+      } else if (type === 'scoutplane') {
         armor(c, [[-Tz * 0.42, -Tz * 0.05], [Tz * 0.38, -Tz * 0.05], [Tz * 0.38, Tz * 0.05], [-Tz * 0.42, Tz * 0.05]], HULL_LIGHT); // fuselage
         armor(c, [[-Tz * 0.05, -Tz * 0.44], [Tz * 0.09, -Tz * 0.44], [Tz * 0.05, 0], [Tz * 0.09, Tz * 0.44], [-Tz * 0.05, Tz * 0.44]], col); // ailes droites
         armor(c, [[-Tz * 0.4, -Tz * 0.18], [-Tz * 0.28, 0], [-Tz * 0.4, Tz * 0.18]], col); // empennage
@@ -3755,6 +3836,21 @@ export class Renderer {
         }
         break;
       }
+      case 'helipad': {
+        const blink = 0.25 + 0.45 * Math.max(0, Math.sin(g.time * 4));
+        ctx.strokeStyle = `rgba(255,226,122,${blink})`;
+        ctx.lineWidth = Math.max(1.2, z * 0.045);
+        ctx.beginPath();
+        ctx.arc(cx - bw * 0.2, cy, Math.max(3, z * 0.42), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = `rgba(255,226,122,${blink})`;
+        for (const [lx, ly] of [[-0.43, -0.26], [0.04, -0.26], [-0.43, 0.26], [0.04, 0.26]]) {
+          ctx.beginPath();
+          ctx.arc(cx + bw * lx, cy + bh * ly, Math.max(1, z * 0.045), 0, Math.PI * 2);
+          ctx.fill();
+        }
+        break;
+      }
       case 'turret': case 'atgun': {
         const target = b.engageId ? g.unitById.get(b.engageId) : undefined;
         const ang = target ? Math.atan2(target.y - (b.ty + b.h / 2), target.x - (b.tx + b.w / 2)) : g.time * 0.3 + b.id;
@@ -4128,6 +4224,21 @@ export class Renderer {
         ctx.closePath(); ctx.fill();
         break;
       }
+      case 'helipad': {
+        ctx.fillStyle = '#2b3136';
+        ctx.beginPath();
+        ctx.ellipse(px + bw * 0.32, cy, bw * 0.22, bh * 0.28, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(245,245,225,0.78)';
+        ctx.lineWidth = Math.max(1, z * 0.055);
+        ctx.beginPath();
+        ctx.ellipse(px + bw * 0.32, cy, bw * 0.16, bh * 0.2, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = '#e8e1b5';
+        ctx.fillRect(px + bw * 0.24, cy - bh * 0.025, bw * 0.16, bh * 0.05);
+        ctx.fillRect(px + bw * 0.3, cy - bh * 0.11, bw * 0.04, bh * 0.22);
+        break;
+      }
       case 'turret': case 'atgun': {
         // plateforme octogonale + tourelle blindée orientée + canon avec recul visuel
         ctx.fillStyle = '#2c3136';
@@ -4475,6 +4586,7 @@ export class Renderer {
 
     // unités
     for (const u of g.units) {
+      if (u.transportedBy) continue;
       const own = u.owner === this.pov;
       if (!revealAll && !own && (!radar || !g.isVisibleTo(this.pov, u.x, u.y))) continue;
       ctx.fillStyle = own ? '#9fe0ff' : PLAYER_COLORS[u.owner];

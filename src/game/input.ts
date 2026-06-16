@@ -1,7 +1,7 @@
 // Contrôles : caméra, sélection, ordres. Souris/clavier PC et tactile mobile.
 import { Game } from './engine';
 import { applyCommand, CommandSink } from './commands';
-import { UNITS, BUILDINGS, BuildingTypeId } from './data';
+import { UNITS, BUILDINGS, BuildingTypeId, UnitTypeId } from './data';
 import { Camera, ViewState } from './render';
 import { Sfx } from './audio';
 
@@ -15,6 +15,7 @@ export class Controls {
   placing: BuildingTypeId | null = null;
   attackMoveMode = false;
   escortMode = false;        // prochain clic sur une unité alliée = escorter
+  unloadMode = false;        // prochain clic/tap = largage des transports sélectionnés
   boxSelectMode = false;     // mobile : le glisser devient une sélection
   dpr = 1;
 
@@ -151,6 +152,11 @@ export class Controls {
     if (e.pointerType === 'mouse') {
       if (e.button === 0) {
         if (this.placing) { this.tryPlace(e.clientX, e.clientY); return; }
+        if (this.unloadMode) {
+          const w = this.toWorld(e.clientX, e.clientY);
+          this.contextOrder(w.x, w.y);
+          return;
+        }
         if (this.attackMoveMode) {
           const w = this.toWorld(e.clientX, e.clientY);
           this.issueAttackMove(w.x, w.y);
@@ -329,6 +335,10 @@ export class Controls {
   private tap(px: number, py: number) {
     if (this.placing) { this.tryPlace(px, py); return; }
     const w = this.toWorld(px, py);
+    if (this.unloadMode) {
+      this.contextOrder(w.x, w.y);
+      return;
+    }
     if (this.attackMoveMode) {
       this.issueAttackMove(w.x, w.y);
       this.attackMoveMode = false;
@@ -386,6 +396,7 @@ export class Controls {
     let best = null, bestD = 0.75;
     for (const u of this.g.units) {
       if (u.dead) continue;
+      if (u.transportedBy) continue;
       if (ownOnly && u.owner !== this.pov) continue;
       if (u.owner !== this.pov && !this.g.isVisibleTo(this.pov, u.x, u.y)) continue;
       const d = Math.hypot(u.x - wx, u.y - wy);
@@ -430,8 +441,9 @@ export class Controls {
       if (now - this.lastClickT < 350 && unit.id === this.lastClickUnit) {
         const ids: number[] = [];
         const vw = this.canvas.width / this.cam.zoom / 2, vh = this.canvas.height / this.cam.zoom / 2;
-        for (const u of this.g.units) {
-          if (u.dead || u.owner !== this.pov || u.type !== unit.type) continue;
+    for (const u of this.g.units) {
+      if (u.dead || u.owner !== this.pov || u.type !== unit.type) continue;
+      if (u.transportedBy) continue;
           if (Math.abs(u.x - this.cam.x) < vw && Math.abs(u.y - this.cam.y) < vh) ids.push(u.id);
         }
         this.selectUnits(ids);
@@ -468,6 +480,7 @@ export class Controls {
     const w1 = this.toWorld(Math.max(a.x, b.x), Math.max(a.y, b.y));
     const ids: number[] = additive ? [...this.selectedUnits] : [];
     for (const u of this.g.units) {
+      if (u.transportedBy) continue;
       if (u.dead || u.owner !== this.pov) continue;
       if (u.x >= w0.x && u.x <= w1.x && u.y >= w0.y && u.y <= w1.y && !ids.includes(u.id)) ids.push(u.id);
     }
@@ -501,6 +514,20 @@ export class Controls {
           this.sfx.order();
         }
       }
+      return;
+    }
+
+    if (this.unloadMode) {
+      const carriers = sel.filter(id => this.canUnloadCarrier(this.g.unitById.get(id)?.type));
+      if (carriers.length > 0) {
+        this.issue({ k: 'unload', ids: carriers, x: wx, y: wy });
+        this.addOrderMarker('move', wx, wy);
+        this.sfx.order();
+      } else {
+        this.sfx.error();
+      }
+      this.unloadMode = false;
+      this.onChange();
       return;
     }
 
@@ -559,6 +586,28 @@ export class Controls {
     // clic droit sur une unité alliée : ingénieurs réparent, le reste escorte
     const ownUnit = this.pickUnit(wx, wy, true);
     if (ownUnit && !sel.includes(ownUnit.id)) {
+      const selectedTransports = sel.filter(id => {
+        const u = this.g.unitById.get(id);
+        return u && this.canUnloadCarrier(u.type) && this.canTransportUnit(u.type, ownUnit.type);
+      });
+      if (selectedTransports.length > 0) {
+        this.issue({ k: 'pickup', ids: selectedTransports, target: ownUnit.id });
+        this.addOrderMarker('move', ownUnit.x, ownUnit.y);
+        this.sfx.order();
+        return;
+      }
+      if (this.canUnloadCarrier(ownUnit.type)) {
+        const cargo = sel.filter(id => {
+          const u = this.g.unitById.get(id);
+          return u && !UNITS[u.type].isAir && this.canTransportUnit(ownUnit.type, u.type);
+        });
+        if (cargo.length > 0) {
+          this.issue({ k: 'load', ids: cargo, carrier: ownUnit.id });
+          this.addOrderMarker('move', ownUnit.x, ownUnit.y);
+          this.sfx.order();
+          return;
+        }
+      }
       const engineers = sel.filter(id => this.g.unitById.get(id)?.type === 'engineer');
       const others = sel.filter(id => !engineers.includes(id));
       let acted = false;
@@ -638,6 +687,25 @@ export class Controls {
     this.sfx.order();
   }
 
+  startUnloadMode() {
+    const ids = this.aliveSelection().filter(id => this.canUnloadCarrier(this.g.unitById.get(id)?.type));
+    if (ids.length === 0) { this.sfx.error(); return; }
+    this.unloadMode = true;
+    this.attackMoveMode = false;
+    this.escortMode = false;
+    this.onChange();
+  }
+
+  private canUnloadCarrier(type?: UnitTypeId) {
+    return !!type && (UNITS[type].transportCapacity ?? 0) > 0;
+  }
+
+  private canTransportUnit(carrierType: UnitTypeId, unitType: UnitTypeId) {
+    const carrier = UNITS[carrierType];
+    const unit = UNITS[unitType];
+    return !!carrier.transportArmor && carrier.transportArmor.includes(unit.armor) && !unit.isAir;
+  }
+
   // -------------------------------------------------------------- placement
 
   startPlacement(type: BuildingTypeId) {
@@ -672,16 +740,19 @@ export class Controls {
       this.placing = null;
       this.attackMoveMode = false;
       this.escortMode = false;
+      this.unloadMode = false;
       this.selectedUnits = [];
       this.selectedBuilding = 0;
       this.onChange();
     } else if (k === 'a' && this.selectedUnits.length > 0) {
       this.attackMoveMode = true;
       this.escortMode = false;
+      this.unloadMode = false;
       this.onChange();
     } else if (k === 'e' && this.selectedUnits.length > 0) {
       this.escortMode = true;
       this.attackMoveMode = false;
+      this.unloadMode = false;
       this.onChange();
     } else if (k === 's') {
       this.stopSelection();
