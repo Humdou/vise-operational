@@ -376,13 +376,14 @@ export class Renderer {
 
     // ===== 2) RIVAGES : écume + liseré clair, contour irrégulier (sous-tuile)
     tc.lineWidth = Math.max(1, SS * 0.6);
+    const icyShore = g.map.theme === 'snow';
     for (let ty = 0; ty < h; ty++)
       for (let tx = 0; tx < w; tx++) {
         if (terrain[ty * w + tx] !== T_WATER) continue;
         const neigh: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
         for (const [dx, dy] of neigh) {
           if (!isLand(tx + dx, ty + dy)) continue;
-          tc.strokeStyle = 'rgba(228,242,250,0.55)';
+          tc.strokeStyle = icyShore ? 'rgba(238,248,255,0.76)' : 'rgba(228,242,250,0.55)';
           tc.beginPath();
           const ex = (tx + (dx > 0 ? 1 : 0)) * tpx, ey = (ty + (dy > 0 ? 1 : 0)) * tpx;
           for (let s = 0; s <= SUB; s++) {
@@ -392,6 +393,19 @@ export class Renderer {
             if (s === 0) tc.moveTo(x, y); else tc.lineTo(x, y);
           }
           tc.stroke();
+          if (icyShore) {
+            tc.strokeStyle = 'rgba(150,205,230,0.28)';
+            tc.lineWidth = Math.max(1, SS * 0.28);
+            tc.beginPath();
+            for (let s = 0; s <= SUB; s++) {
+              const jit = (warpB(tx + s * 0.22 + 7, ty + s * 0.22 + 2) - 0.5) * SS * 1.1;
+              const x = dx !== 0 ? ex + dx * SS * 0.45 + jit * 0.25 : tx * tpx + s * SS;
+              const y = dy !== 0 ? ey + dy * SS * 0.45 + jit * 0.25 : ty * tpx + s * SS;
+              if (s === 0) tc.moveTo(x, y); else tc.lineTo(x, y);
+            }
+            tc.stroke();
+            tc.lineWidth = Math.max(1, SS * 0.6);
+          }
         }
       }
 
@@ -520,6 +534,7 @@ export class Renderer {
     // ===== 5) VÉGÉTATION / DÉTAILS épars (densité bornée pour la perf) : touffes,
     // buissons, cailloux, palmiers en tropical — donnent la richesse de surface.
     const tropical = g.map.theme === 'tropical';
+    const arctic = g.map.theme === 'snow';
     const vegRng = mulberry32(w * 17 + h * 101 + 55);
     const vegCount = Math.floor(w * h * 1.1);
     for (let k = 0; k < vegCount; k++) {
@@ -530,6 +545,46 @@ export class Renderer {
       const r = vegRng();
       if (t === T_ROCK) {
         if (r < 0.4) { tc.fillStyle = `rgba(0,0,0,${0.12 + vegRng() * 0.14})`; tc.beginPath(); tc.arc(px, py, SS * (0.4 + vegRng() * 0.5), 0, Math.PI * 2); tc.fill(); }
+      } else if (arctic && r < 0.045 && !roads[ty * w + tx]) {
+        const scale = 0.75 + vegRng() * 0.55;
+        const trunkH = tpx * 0.28 * scale;
+        tc.fillStyle = 'rgba(18,28,28,0.28)';
+        tc.beginPath(); tc.ellipse(px + SS * 0.22, py + SS * 0.3, SS * 0.9 * scale, SS * 0.42 * scale, 0.25, 0, Math.PI * 2); tc.fill();
+        tc.strokeStyle = 'rgba(70,52,38,0.72)';
+        tc.lineWidth = Math.max(1, SS * 0.22);
+        tc.beginPath(); tc.moveTo(px, py + trunkH * 0.35); tc.lineTo(px, py - trunkH * 0.35); tc.stroke();
+        for (let tier = 0; tier < 3; tier++) {
+          const yy = py - trunkH * (0.44 - tier * 0.28);
+          const ww = SS * (2.5 - tier * 0.52) * scale;
+          const hh = SS * (1.15 - tier * 0.12) * scale;
+          tc.fillStyle = tier === 0 ? 'rgba(17,56,47,0.72)' : 'rgba(20,72,56,0.68)';
+          tc.beginPath();
+          tc.moveTo(px, yy - hh * 0.72);
+          tc.lineTo(px + ww * 0.5, yy + hh * 0.45);
+          tc.lineTo(px - ww * 0.5, yy + hh * 0.45);
+          tc.closePath(); tc.fill();
+          tc.fillStyle = 'rgba(238,247,255,0.64)';
+          tc.beginPath();
+          tc.moveTo(px - ww * 0.42, yy + hh * 0.15);
+          tc.lineTo(px + ww * 0.32, yy + hh * 0.04);
+          tc.lineTo(px + ww * 0.43, yy + hh * 0.28);
+          tc.lineTo(px - ww * 0.32, yy + hh * 0.34);
+          tc.closePath(); tc.fill();
+        }
+      } else if (arctic && r < 0.13) {
+        tc.fillStyle = 'rgba(42,55,60,0.22)';
+        tc.beginPath(); tc.ellipse(px, py, SS * (0.8 + vegRng() * 0.75), SS * (0.45 + vegRng() * 0.35), vegRng() * Math.PI, 0, Math.PI * 2); tc.fill();
+        tc.fillStyle = 'rgba(242,248,252,0.36)';
+        tc.beginPath(); tc.ellipse(px - SS * 0.15, py - SS * 0.15, SS * (0.65 + vegRng() * 0.45), SS * 0.26, vegRng() * Math.PI, 0, Math.PI * 2); tc.fill();
+      } else if (arctic && r < 0.28) {
+        const len = SS * (0.7 + vegRng() * 0.8);
+        tc.strokeStyle = 'rgba(24,42,38,0.23)'; tc.lineWidth = 1;
+        for (let q = 0; q < 2; q++) {
+          tc.beginPath();
+          tc.moveTo(px + (vegRng() - 0.5) * SS, py + SS * 0.35);
+          tc.lineTo(px + (vegRng() - 0.5) * SS, py - len);
+          tc.stroke();
+        }
       } else if (tropical && r < 0.05) {
         const topX = px + (vegRng() - 0.5) * SS, topY = py - tpx * 0.5;
         tc.strokeStyle = '#5d4a30'; tc.lineWidth = Math.max(1.2, SS * 0.4);
@@ -1045,13 +1100,23 @@ export class Renderer {
       const rally = m.kind === 'rally';
       const col = attack ? '255,70,58' : harvest ? '72,220,120' : rally ? '100,190,255' : '230,238,244';
       const r = z * (0.22 + f * 0.68);
+      const inner = z * (0.16 + f * 0.1);
 
       ctx.save();
       ctx.globalAlpha = 1 - f;
+      ctx.fillStyle = `rgba(0,0,0,${0.22 * (1 - f)})`;
+      ctx.beginPath();
+      ctx.ellipse(px + z * 0.08, py + z * 0.1, r * 0.95, r * 0.42, 0, 0, Math.PI * 2);
+      ctx.fill();
       ctx.strokeStyle = `rgba(${col},0.95)`;
       ctx.lineWidth = Math.max(1.5, z * 0.055);
       ctx.beginPath();
       ctx.arc(px, py, r, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = `rgba(255,255,255,${0.32 * (1 - f)})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(px, py, Math.max(2, inner), 0, Math.PI * 2);
       ctx.stroke();
 
       ctx.strokeStyle = `rgba(${col},0.72)`;
@@ -1081,6 +1146,17 @@ export class Renderer {
         ctx.lineTo(px, py + r * 0.8);
         ctx.closePath();
         ctx.fill();
+      }
+      if (!attack && !rally) {
+        ctx.strokeStyle = `rgba(${col},${0.55 * (1 - f)})`;
+        ctx.lineWidth = Math.max(1.2, z * 0.045);
+        for (let k = 0; k < 4; k++) {
+          const a = (k / 4) * Math.PI * 2 + f * 1.2;
+          ctx.beginPath();
+          ctx.moveTo(px + Math.cos(a) * r * 0.22, py + Math.sin(a) * r * 0.22);
+          ctx.lineTo(px + Math.cos(a) * r * 0.45, py + Math.sin(a) * r * 0.45);
+          ctx.stroke();
+        }
       }
       ctx.restore();
     }
@@ -2635,6 +2711,11 @@ export class Renderer {
     const s = z / SPX;
 
     if (selected) {
+      ctx.fillStyle = 'rgba(255,255,255,0.055)';
+      ctx.beginPath(); ctx.arc(px, py, (def.radius + 0.42) * z, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+      ctx.lineWidth = Math.max(3, z * 0.14);
+      ctx.beginPath(); ctx.arc(px, py, (def.radius + 0.32) * z, 0, Math.PI * 2); ctx.stroke();
       ctx.strokeStyle = col;
       ctx.globalAlpha = 0.9;
       ctx.lineWidth = Math.max(2, z * 0.1);
@@ -2736,6 +2817,11 @@ export class Renderer {
 
     if (selected) {
       // double anneau : couleur d'équipe + cœur blanc
+      ctx.fillStyle = 'rgba(255,255,255,0.055)';
+      ctx.beginPath(); ctx.arc(px, py, (def.radius + 0.42) * z, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+      ctx.lineWidth = Math.max(3, z * 0.14);
+      ctx.beginPath(); ctx.arc(px, py, (def.radius + 0.32) * z, 0, Math.PI * 2); ctx.stroke();
       ctx.strokeStyle = col;
       ctx.globalAlpha = 0.9;
       ctx.lineWidth = Math.max(2, z * 0.1);
@@ -3591,6 +3677,12 @@ export class Renderer {
       ctx.fillText('🔧', px + bw - z * 0.4, py + z * 0.4);
     }
     if (selected) {
+      ctx.fillStyle = 'rgba(255,255,255,0.045)';
+      ctx.fillRect(px - 4, py - 4, bw + 8, bh + 8);
+      ctx.strokeStyle = 'rgba(0,0,0,0.62)';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(px - 3, py - 3, bw + 6, bh + 6);
       ctx.strokeStyle = '#fff';
       ctx.lineWidth = 1.5;
       ctx.setLineDash([4, 3]);
