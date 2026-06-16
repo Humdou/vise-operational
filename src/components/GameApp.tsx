@@ -547,7 +547,11 @@ function GameScreen({ settings, mp, onEnd, onQuit }: {
     const simStep = (now: number, dt: number) => {
       if (!game.over && (!pausedRef.current || sync)) {
         if (sync) sync.pump(now);               // hôte : diffuse l'état si dû
-        acc = Math.min(acc + dt, 0.25);          // rattrapage borné, jamais de gel
+        // Rattrapage borné. En solo (grandes cartes), on borne plus court pour
+        // éviter qu'une frame lente ne déclenche une rafale de ticks (= « gros
+        // à-coups »). En multijoueur, on garde la marge plus large (le timing
+        // partagé / les snapshots corrigent la dérive) — inchangé.
+        acc = Math.min(acc + dt, sync ? 0.25 : 0.12);
         let advanced = 0;
         while (acc >= SIM_DT) {
           prof.wrap('sim.update', () => game.update(SIM_DT));
@@ -871,10 +875,12 @@ const UNIT_INFO: Record<UnitTypeId, string> = {
   elite: 'Infanterie T2 polyvalente et résistante. Bonne pour renforcer une ligne, nettoyer l’infanterie et tenir les points clés.',
   rocketeer: 'Infanterie anti-blindé avancée. Très utile contre véhicules lourds et bâtiments, mais à protéger contre les tirs directs.',
   kamikaze: 'Unité d’assaut à usage unique. À envoyer sur des groupes ou bâtiments importants quand l’échange vaut le sacrifice.',
+  spy: 'Unité d’infiltration sans arme. Peut saboter un QG ennemi pour couper son radar et réduire fortement sa vision.',
   heavytank: 'Char lourd de rupture. Lent mais très robuste, parfait pour mener une attaque frontale.',
   tankdestroyer: 'Véhicule spécialisé anti-char. Très fort contre blindés, moins flexible contre l’infanterie et les attaques multiples.',
   heavyarty: 'Artillerie lourde de siège. Dévastatrice à longue portée, mais lente et fragile si l’ennemi approche.',
   radarvehicle: 'Véhicule de reconnaissance avancée. Sert à surveiller la carte et sécuriser les mouvements de ton armée.',
+  mobilecmd: 'Camion de commandement très coûteux. Déploie-le dans un secteur sécurisé pour créer un nouveau QG.',
 };
 
 const UPGRADE_INFO: Record<UpgradeId, string> = {
@@ -1243,6 +1249,7 @@ function UnitPanel({
     if (u) byType.set(u.type, (byType.get(u.type) ?? 0) + 1);
   }
   const hasCombat = [...byType.keys()].some(t => UNITS[t].weapon);
+  const hasMobileCommand = byType.has('mobilecmd');
 
   return (
     <div className={`bottombar ${mobileOpen ? 'mobile-open' : 'mobile-closed'}`}>
@@ -1273,6 +1280,11 @@ function UnitPanel({
           🛡 Escorter
         </button>
         <button className="action-btn" onClick={() => { controls.stopSelection(); refresh(); }}>■ Stop</button>
+        {hasMobileCommand && (
+          <button className="action-btn" onClick={() => { controls.deploySelection(); refresh(); }}>
+            Déployer QG
+          </button>
+        )}
         <button
           className={`action-btn ${controls.boxSelectMode ? 'on' : ''}`}
           onClick={() => { controls.boxSelectMode = !controls.boxSelectMode; refresh(); }}

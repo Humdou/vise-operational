@@ -4,8 +4,8 @@ export type UnitTypeId =
   | 'rifle' | 'bazooka' | 'sniper' | 'jeep' | 'tank'
   | 'artillery' | 'harvester' | 'engineer' | 'bomber' | 'scoutplane'
   // Niveau 2 (Laboratoire avancé)
-  | 'elite' | 'rocketeer' | 'kamikaze'
-  | 'heavytank' | 'tankdestroyer' | 'heavyarty' | 'radarvehicle';
+  | 'elite' | 'rocketeer' | 'kamikaze' | 'spy'
+  | 'heavytank' | 'tankdestroyer' | 'heavyarty' | 'radarvehicle' | 'mobilecmd';
 
 export type BuildingTypeId =
   | 'hq' | 'power' | 'refinery' | 'barracks' | 'factory' | 'airport'
@@ -151,6 +151,10 @@ export const UNITS: Record<UnitTypeId, UnitDef> = {
     id: 'kamikaze', name: 'Kamikaze', desc: 'Rapide, explose au contact : très efficace contre groupes et bâtiments. Usage unique.',
     cost: 350, time: 7, hp: 90, speed: 3.1, vision: 5.5, armor: 'inf', radius: 0.27, builtAt: 'barracks2',
   },
+  spy: {
+    id: 'spy', name: 'Espion', desc: 'Infiltration et reconnaissance. Peut saboter un QG ennemi sans combattre.',
+    cost: 700, time: 10, hp: 125, speed: 1.75, vision: 8, armor: 'inf', radius: 0.25, builtAt: 'barracks2',
+  },
 
   // ----- Niveau 2 : Usine T2
   heavytank: {
@@ -171,6 +175,10 @@ export const UNITS: Record<UnitTypeId, UnitDef> = {
   radarvehicle: {
     id: 'radarvehicle', name: 'Véhicule radar', desc: 'Vision énorme : reconnaissance mobile et contrôle de carte. Non armé.',
     cost: 500, time: 8, hp: 330, speed: 2.4, vision: 13, armor: 'light', radius: 0.42, builtAt: 'factory2',
+  },
+  mobilecmd: {
+    id: 'mobilecmd', name: 'Commandant mobile', desc: 'Camion de commandement extrêmement coûteux. Se déploie en nouveau QG.',
+    cost: 6000, time: 32, hp: 1400, speed: 1.15, vision: 9, armor: 'heavy', radius: 0.56, builtAt: 'factory2',
   },
 };
 
@@ -357,6 +365,9 @@ export const REFINERY2_INCOME_BONUS = 1.3;  // revenus des livraisons en raffine
 export const REFINERY2_UNLOAD_FACTOR = 0.5; // déchargement bien plus rapide
 export const KAMIKAZE_DMG = 240;
 export const KAMIKAZE_SPLASH = 2.2;
+export const SPY_INFILTRATE_TIME = 2.6;
+export const SPY_SABOTAGE_DURATION = 15;
+export const SPY_VISION_FACTOR = 0.3;
 
 // Secours économique des IA (anti-mort) : une IA sans aucun récolteur reçoit un
 // filet de minerai très lent, plafonné — juste de quoi reconstruire une

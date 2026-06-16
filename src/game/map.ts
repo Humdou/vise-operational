@@ -10,7 +10,11 @@ export interface GameMap {
   w: number;
   h: number;
   terrain: Uint8Array;          // T_*
+  roads: Uint8Array;            // 0 = aucun, 1 = route de campagne/militaire
   shade: Float32Array;          // variation visuelle par tuile
+  height: Float32Array;         // hauteur visuelle précalculée (aucun impact gameplay)
+  light: Float32Array;          // lightmap terrain précalculée
+  cliff: Uint8Array;            // bits N/E/S/W quand une tuile domine un voisin
   starts: { x: number; y: number }[];
   nodes: OreNodeInit[];
   theme: ThemeId;
@@ -79,6 +83,104 @@ function pointInPolygon(x: number, y: number, poly: [number, number][]): boolean
   return inside;
 }
 
+const CLIFF_N = 1, CLIFF_E = 2, CLIFF_S = 4, CLIFF_W = 8;
+
+function computeVisualRelief(
+  w: number, h: number, terrain: Uint8Array, roads: Uint8Array, shade: Float32Array,
+  elev?: Float32Array,
+) {
+  const n = w * h;
+  const raw = new Float32Array(n);
+  const height = new Float32Array(n);
+  const light = new Float32Array(n);
+  const cliff = new Uint8Array(n);
+
+  for (let i = 0; i < n; i++) {
+    const t = terrain[i];
+    let base: number;
+    if (elev) {
+      // VRAI champ d'altitude continu : collines, pentes et vallées réelles
+      // sur toute la carte (et plus seulement par type de terrain) → relief
+      // visible partout, pas une plaine plate.
+      const e = elev[i];
+      base = 0.26 + e * 0.66;
+      if (t === T_WATER) base = 0.04 + e * 0.10;          // fonds bas
+      else if (t === T_ROCK) base = Math.max(base, 0.92); // massifs hauts → falaises franches
+      else if (t === T_ROUGH) base += 0.05;               // contreforts un peu surélevés
+    } else {
+      base = 0.44;
+      if (t === T_WATER) base = 0.10;
+      else if (t === T_ROUGH) base = 0.66;
+      else if (t === T_ROCK) base = 0.98;
+    }
+    if (roads[i]) base -= 0.04;
+    raw[i] = Math.max(0, Math.min(1, base + shade[i] * 0.30));
+  }
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      let sum = raw[i] * 4.5;
+      let weight = 4.5;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const xx = x + dx, yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+          const ww = dx === 0 || dy === 0 ? 1.0 : 0.45;
+          sum += raw[yy * w + xx] * ww;
+          weight += ww;
+        }
+      }
+      height[i] = sum / weight;
+    }
+  }
+
+  const at = (x: number, y: number) => height[Math.max(0, Math.min(h - 1, y)) * w + Math.max(0, Math.min(w - 1, x))];
+  const rawAt = (x: number, y: number) => raw[Math.max(0, Math.min(h - 1, y)) * w + Math.max(0, Math.min(w - 1, x))];
+  const lightRaw = new Float32Array(n);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      const dx = at(x + 1, y) - at(x - 1, y);
+      const dy = at(x, y + 1) - at(x, y - 1);
+      const slopeLight = (-dx - dy) * 5.5; // lumière franche venant du nord-ouest
+      const altitude = (height[i] - 0.46) * 0.32;
+      let valley = 0;
+      if (terrain[i] !== T_WATER && height[i] < (at(x - 1, y) + at(x + 1, y) + at(x, y - 1) + at(x, y + 1)) * 0.25 - 0.02) valley = -0.10;
+      lightRaw[i] = Math.max(0.5, Math.min(1.55, 0.99 + slopeLight + altitude + valley));
+
+      let mask = 0;
+      const here = rawAt(x, y);
+      if (here - rawAt(x, y - 1) > 0.09) mask |= CLIFF_N;
+      if (here - rawAt(x + 1, y) > 0.09) mask |= CLIFF_E;
+      if (here - rawAt(x, y + 1) > 0.09) mask |= CLIFF_S;
+      if (here - rawAt(x - 1, y) > 0.09) mask |= CLIFF_W;
+      cliff[i] = mask;
+    }
+  }
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      let sum = lightRaw[i] * 3.2;
+      let weight = 3.2;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const xx = x + dx, yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+          sum += lightRaw[yy * w + xx];
+          weight += 1;
+        }
+      }
+      light[i] = Math.max(0.48, Math.min(1.62, sum / weight));
+    }
+  }
+
+  return { height, light, cliff };
+}
+
 export function generateMap(
   sizeId: MapSizeId, theme: ThemeId, playerCount: number, seed: number, special?: SpecialMapId,
 ): GameMap {
@@ -91,6 +193,7 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
   const n = MAP_SIZES[sizeId].tiles;
   const oreScale = MAP_SIZES[sizeId].oreScale;
   const terrain = new Uint8Array(n * n);
+  const roads = new Uint8Array(n * n);
   const shade = new Float32Array(n * n);
   // Trois octaves : continents (basse fréquence) + collines + détail. Donne un
   // relief plus lisible et varié qu'un simple bruit à deux octaves.
@@ -103,6 +206,7 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
   // Relief de base : eau (bas), plaine, terrain accidenté, montagne (haut).
   // Le thème tropical a plus de lagunes, en archipel.
   const waterLevel = theme === 'tropical' ? 0.30 : 0.23;
+  const elev = new Float32Array(n * n);   // altitude continue conservée → relief réel
   const fL = 4.2 / n, fM = 9 / n, fH = 19 / n;
   for (let y = 0; y < n; y++) {
     for (let x = 0; x < n; x++) {
@@ -116,8 +220,9 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
       else if (e > 0.80) t = T_ROCK;
       else if (e > 0.62 + (m - 0.5) * 0.12) t = T_ROUGH;  // accidenté plus étendu là où c'est « sec »
       terrain[y * n + x] = t;
-      // Teinte : micro-grain + assombrissement léger des hauteurs (lecture du relief).
-      shade[y * n + x] = (detail(x * 0.7, y * 0.7) - 0.5) * 0.13 + (e - 0.5) * 0.12;
+      elev[y * n + x] = e;
+      // Teinte : micro-grain seulement (le relief vient désormais du champ d'altitude).
+      shade[y * n + x] = (detail(x * 0.7, y * 0.7) - 0.5) * 0.13;
     }
   }
 
@@ -188,7 +293,7 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
   // Corridors garantis (largeur croissante avec la taille de carte → flux fluide
   // des armées massives). Tracés APRÈS les lacs/massifs : aucune base enfermée.
   const cwidth = n > 230 ? 2 : 1;
-  const carve = (x0: number, y0: number, x1: number, y1: number) => {
+  const carve = (x0: number, y0: number, x1: number, y1: number, markRoad = false) => {
     let x = x0, y = y0;
     while (x !== x1 || y !== y1) {
       if (rng() < 0.5 && x !== x1) x += Math.sign(x1 - x);
@@ -197,15 +302,29 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
       for (let dy = -cwidth; dy <= cwidth; dy++)
         for (let dx = -cwidth; dx <= cwidth; dx++) {
           const xx = x + dx, yy = y + dy;
-          if (xx > 0 && yy > 0 && xx < n - 1 && yy < n - 1) terrain[yy * n + xx] = T_GRASS;
+          if (xx > 0 && yy > 0 && xx < n - 1 && yy < n - 1) {
+            const i = yy * n + xx;
+            terrain[i] = T_GRASS;
+            if (markRoad && Math.abs(dx) + Math.abs(dy) <= Math.max(1, cwidth)) roads[i] = 1;
+          }
         }
     }
   };
-  for (const s of starts) carve(s.x, s.y, Math.round(cx), Math.round(cy));
+  for (const s of starts) carve(s.x, s.y, Math.round(cx), Math.round(cy), true);
   // Corridors périphériques entre voisins : plusieurs accès par base.
   for (let i = 0; i < starts.length; i++) {
     const a = starts[i], b = starts[(i + 1) % starts.length];
-    if (starts.length > 1) carve(a.x, a.y, b.x, b.y);
+    if (starts.length > 1) carve(a.x, a.y, b.x, b.y, i % 2 === 0 || n < 180);
+  }
+  for (const s of starts) {
+    const rr = Math.round(5 + n / 180);
+    for (let a = 0; a < Math.PI * 2; a += 0.08) {
+      const x = Math.round(s.x + Math.cos(a) * rr);
+      const y = Math.round(s.y + Math.sin(a) * rr);
+      if (x > 1 && y > 1 && x < n - 2 && y < n - 2 && terrain[y * n + x] !== T_WATER && terrain[y * n + x] !== T_ROCK) {
+        roads[y * n + x] = 1;
+      }
+    }
   }
 
   // Gisements de minerai.
@@ -266,7 +385,8 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
     );
   }
 
-  return { w: n, h: n, terrain, shade, starts, nodes, theme };
+  const relief = computeVisualRelief(n, n, terrain, roads, shade, elev);
+  return { w: n, h: n, terrain, roads, shade, ...relief, starts, nodes, theme };
 }
 
 // ---------------------------------------------------------- cartes spéciales
@@ -276,6 +396,7 @@ function generateSpecialMap(special: SpecialMapId, theme: ThemeId, playerCount: 
   const rng = mulberry32(seed);
   const { w, h, polygon, oreScale } = def;
   const terrain = new Uint8Array(w * h).fill(T_WATER); // mer tout autour du pays
+  const roads = new Uint8Array(w * h);
   const shade = new Float32Array(w * h);
   const noise1 = makeNoise(rng, 16);
   const noise2 = makeNoise(rng, 16);
@@ -340,7 +461,7 @@ function generateSpecialMap(special: SpecialMapId, theme: ThemeId, playerCount: 
   // (suit la péninsule au lieu de couper à travers la mer).
   const axis = h >= w ? 'y' : 'x';
   const chain = [...starts].sort((a, b) => (axis === 'y' ? a.y - b.y : a.x - b.x));
-  const carve = (x0: number, y0: number, x1: number, y1: number) => {
+  const carve = (x0: number, y0: number, x1: number, y1: number, markRoad = false) => {
     let x = x0, y = y0;
     while (x !== x1 || y !== y1) {
       if (rng() < 0.5 && x !== x1) x += Math.sign(x1 - x);
@@ -349,11 +470,15 @@ function generateSpecialMap(special: SpecialMapId, theme: ThemeId, playerCount: 
       for (let dy = -1; dy <= 1; dy++)
         for (let dx = -1; dx <= 1; dx++) {
           const xx = x + dx, yy = y + dy;
-          if (xx > 0 && yy > 0 && xx < w - 1 && yy < h - 1) terrain[yy * w + xx] = T_GRASS;
+          if (xx > 0 && yy > 0 && xx < w - 1 && yy < h - 1) {
+            const i = yy * w + xx;
+            terrain[i] = T_GRASS;
+            if (markRoad && Math.abs(dx) + Math.abs(dy) <= 1) roads[i] = 1;
+          }
         }
     }
   };
-  for (let i = 0; i + 1 < chain.length; i++) carve(chain[i].x, chain[i].y, chain[i + 1].x, chain[i + 1].y);
+  for (let i = 0; i + 1 < chain.length; i++) carve(chain[i].x, chain[i].y, chain[i + 1].x, chain[i + 1].y, true);
 
   // Gisements (uniquement sur la terre ferme).
   const nodes: OreNodeInit[] = [];
@@ -397,5 +522,6 @@ function generateSpecialMap(special: SpecialMapId, theme: ThemeId, playerCount: 
     addCluster(x, y, rare ? 3 : 4, (rare ? 450 : 700) * oreScale, rare ? 'rare' : 'gold');
   }
 
-  return { w, h, terrain, shade, starts, nodes, theme };
+  const relief = computeVisualRelief(w, h, terrain, roads, shade);
+  return { w, h, terrain, roads, shade, ...relief, starts, nodes, theme };
 }

@@ -518,9 +518,22 @@ export class Controls {
       return;
     }
     if (building && building.owner !== this.pov) {
-      this.issue({ k: 'attack', ids: sel, t: building.id, b: true });
-      this.addOrderMarker('attack', wx, wy);
-      this.sfx.order();
+      const spies = sel.filter(id => this.g.unitById.get(id)?.type === 'spy');
+      const attackers = sel.filter(id => this.g.unitById.get(id)?.type !== 'spy');
+      if (spies.length > 0 && building.type === 'hq') {
+        this.issue({ k: 'attack', ids: spies, t: building.id, b: true });
+        this.addOrderMarker('attack', wx, wy);
+        this.sfx.order();
+      }
+      if (attackers.length > 0) {
+        this.issue({ k: 'attack', ids: attackers, t: building.id, b: true });
+        this.addOrderMarker('attack', wx, wy);
+        this.sfx.order();
+      } else if (spies.length > 0 && building.type !== 'hq') {
+        this.issue({ k: 'move', ids: spies, x: wx, y: wy, am: false });
+        this.addOrderMarker('move', wx, wy);
+        this.sfx.order();
+      }
       return;
     }
     if (node) {
@@ -615,6 +628,13 @@ export class Controls {
 
   stopSelection() {
     this.issue({ k: 'stop', ids: this.aliveSelection() });
+    this.sfx.order();
+  }
+
+  deploySelection() {
+    const ids = this.aliveSelection().filter(id => this.g.unitById.get(id)?.type === 'mobilecmd');
+    if (ids.length === 0) { this.sfx.error(); return; }
+    this.issue({ k: 'deploy', ids });
     this.sfx.order();
   }
 

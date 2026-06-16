@@ -610,6 +610,10 @@ export class AIController {
     const factories2 = this.myBuildings('factory2').filter(b => b.built);
     for (const f of factories2) {
       if (f.queue.length >= queueDepth) continue;
+      if (this.p.expandSkill >= 1 && this.g.map.w >= 200 && this.myUnits('mobilecmd').length === 0 &&
+          this.g.countBuildings(this.pid, 'hq') < 2 && spendable() > UNITS.mobilecmd.cost + 1200) {
+        if (this.g.queueUnit(f.id, 'mobilecmd')) continue;
+      }
       // Un véhicule radar pour l'information, puis les blindés lourds.
       if (this.myUnits('radarvehicle').length === 0 && spendable() > UNITS.radarvehicle.cost + 200) {
         if (this.g.queueUnit(f.id, 'radarvehicle')) continue;
@@ -620,6 +624,9 @@ export class AIController {
     const barracks2 = this.myBuildings('barracks2').filter(b => b.built);
     for (const b of barracks2) {
       if (b.queue.length >= queueDepth) continue;
+      if (this.p.harass && this.myUnits('spy').length < (this.p.expandSkill >= 1 ? 2 : 1) && spendable() > UNITS.spy.cost + 250) {
+        if (this.g.queueUnit(b.id, 'spy')) continue;
+      }
       const pick = this.pickArmyUnit('barracks2');
       if (pick && spendable() > UNITS[pick].cost + 50) this.g.queueUnit(b.id, pick);
     }
@@ -790,6 +797,28 @@ export class AIController {
   private manageTactics() {
     const base = this.baseCenter();
     const enemyEco = this.pickPressureTarget();
+    const knownHq = this.knownEnemyBuildings('hq')[0] ?? null;
+
+    if (knownHq) {
+      for (const spy of this.myUnits('spy')) {
+        if (spy.order.kind === 'idle' || spy.order.kind === 'move') {
+          const real = this.g.buildings.find(b => !b.dead && b.id === knownHq.id && b.type === 'hq');
+          if (real && this.g.buildingVisibleTo(this.pid, real)) this.g.cmdAttack([spy.id], real.id, true);
+          else this.g.cmdMove([spy.id], knownHq.x, knownHq.y);
+          break;
+        }
+      }
+    }
+
+    for (const cmd of this.myUnits('mobilecmd')) {
+      if (this.g.countBuildings(this.pid, 'hq') >= 2) break;
+      const far = Math.hypot(cmd.x - base.x, cmd.y - base.y) > Math.min(70, this.g.map.w * 0.22);
+      if (far) this.g.deployMobileCommanders([cmd.id]);
+      else if (cmd.order.kind === 'idle') {
+        const node = this.pickExpansionNode(base, 999, this.econBuildings());
+        if (node) this.g.cmdMove([cmd.id], node.x, node.y);
+      }
+    }
 
     for (const u of this.myUnits()) {
       if (!this.isCombat(u)) continue;

@@ -1,4 +1,5 @@
 // Recherche de chemin A* sur grille (8 directions) + ligne de vue.
+import { prof } from './profiler';
 
 export interface NavGrid {
   w: number;
@@ -143,6 +144,8 @@ export function findPath(
       }
     }
   }
+
+  if (prof.enabled) { prof.count('path.calls', 1); prof.count('path.expanded', expanded); }
 
   // Reconstituer le chemin (vers la meilleure approche si cible inatteignable).
   const from = FROM;

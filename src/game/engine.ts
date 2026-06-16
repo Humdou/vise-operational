@@ -8,6 +8,7 @@ import {
   SCOUT_REARM_TIME, RARE_ORE_MULT, DEPOT_RADIUS, DEPOT_INCOME_BONUS, DEPOT_UNLOAD_FACTOR,
   REFINERY2_INCOME_BONUS, REFINERY2_UNLOAD_FACTOR, KAMIKAZE_DMG, KAMIKAZE_SPLASH,
   ECON_RESCUE_CAP, ECON_RESCUE_PER_SEC,
+  SPY_INFILTRATE_TIME, SPY_SABOTAGE_DURATION, SPY_VISION_FACTOR,
   SpecialMapId, WeaponDef,
 } from './data';
 import { generateMap, GameMap, OreKind, mulberry32, T_GRASS, T_ROUGH, T_WATER, T_ROCK } from './map';
@@ -28,7 +29,7 @@ export interface GameSettings {
   humanSlots?: number[];     // index des joueurs humains (défaut : [0])
 }
 
-export type OrderKind = 'idle' | 'move' | 'attackmove' | 'attack' | 'harvest' | 'repair' | 'escort';
+export type OrderKind = 'idle' | 'move' | 'attackmove' | 'attack' | 'harvest' | 'repair' | 'escort' | 'infiltrate';
 
 export interface Order {
   kind: OrderKind;
@@ -58,6 +59,7 @@ export interface Unit {
   cargo: number;
   cargoValue: number; // valeur de la cargaison (minerai rare = ×3)
   unloadT: number;
+  infiltrateT?: number;
   // animation de sortie de bâtiment — purement visuel, jamais lu par le gameplay
   exitFx?: { x: number; y: number; t0: number };
   // aviation
@@ -180,6 +182,7 @@ export interface Player {
   exploredCount: number;
   alertT: number;             // dernier moment où ce joueur a été attaqué
   alertX: number; alertY: number;
+  sabotageUntil: number;      // espion : radar coupé + vision très réduite
   stats: PlayerStats;
 }
 
@@ -220,7 +223,13 @@ export class Game {
   private rescueTimer = 0;
   private winTimer = 0;
   private hash = new Map<number, number[]>();
-  private pathBudget = 0;
+  private pathBudget = 0;        // chemins/tick partagés (IA + débordement humain)
+  private pathBudgetHuman = 0;   // réserve garantie aux unités humaines (anti-famine des ordres)
+  // Cache de chemins : un groupe d'unités proches visant la même tuile partage
+  // un seul calcul A* (les vagues d'IA et les sélections du joueur bougent en
+  // groupe). Clé = tuile cible ; on réutilise si une unité part près du départ
+  // d'un chemin récent. Vidé quand la navigation change (construction/destruction).
+  private pathCache = new Map<number, { path: { x: number; y: number }[]; sx: number; sy: number; t: number }>();
   humanAlertSoundT = -100;
   oreRegenPerSec: number;
 
@@ -267,6 +276,7 @@ export class Game {
         fog: new Uint8Array(w * h),
         exploredCount: 0,
         alertT: -100, alertX: 0, alertY: 0,
+        sabotageUntil: -100,
         stats: emptyStats(),
       });
       const s = this.map.starts[i];
@@ -516,6 +526,7 @@ export class Game {
       subject: type,
     });
     this.createBuilding(owner, type, tx, ty);
+    this.pathCache.clear();   // la navigation a changé : chemins en cache périmés
     this.events.push({ type: 'place', owner, x: tx, y: ty });
     return true;
   }
@@ -609,6 +620,17 @@ export class Game {
     for (const id of ids) {
       const u = this.unitById.get(id);
       if (!u || u.dead) continue;
+      if (u.type === 'spy') {
+        if (!targetIsBuilding) continue;
+        const b = this.buildingById.get(targetId);
+        if (!b || b.dead || b.owner === u.owner || b.type !== 'hq') continue;
+        u.order = { kind: 'infiltrate', targetId, targetIsBuilding: true };
+        u.engageId = targetId;
+        u.engageIsBuilding = true;
+        u.infiltrateT = 0;
+        u.path = null;
+        continue;
+      }
       if (!UNITS[u.type].weapon && u.type !== 'kamikaze') continue;
       if (u.airState) { this.airOrder(u, { kind: 'attack', targetId, targetIsBuilding }); continue; }
       u.order = { kind: 'attack', targetId, targetIsBuilding };
@@ -660,7 +682,49 @@ export class Game {
       u.order = { kind: 'idle' };
       u.path = null;
       u.engageId = 0;
+      u.infiltrateT = 0;
     }
+  }
+
+  deployMobileCommanders(ids: number[]) {
+    for (const id of ids) {
+      const u = this.unitById.get(id);
+      if (!u || u.dead || u.type !== 'mobilecmd') continue;
+      const def = BUILDINGS.hq;
+      const tx = Math.round(u.x - def.w / 2);
+      const ty = Math.round(u.y - def.h / 2);
+      if (!this.canDeployHqAt(u, tx, ty)) continue;
+      const b = this.createBuilding(u.owner, 'hq', tx, ty, true);
+      b.hp = Math.min(b.maxHp, Math.max(b.maxHp * 0.55, u.hp));
+      this.pathCache.clear();
+      u.dead = true;
+      this.unitById.delete(u.id);
+      this.recomputePower();
+      this.updateFog(this.players[u.owner]);
+      this.events.push({ type: 'built', owner: u.owner, x: tx, y: ty });
+      this.effects.push({ kind: 'flash', x: u.x, y: u.y, age: 0, dur: 0.35, r: 0.8 });
+    }
+  }
+
+  private canDeployHqAt(u: Unit, tx: number, ty: number): boolean {
+    const def = BUILDINGS.hq;
+    const { w, h } = this.map;
+    if (tx < 1 || ty < 1 || tx + def.w > w - 1 || ty + def.h > h - 1) return false;
+    for (let y = ty; y < ty + def.h; y++) {
+      for (let x = tx; x < tx + def.w; x++) {
+        const i = y * w + x;
+        const t = this.map.terrain[i];
+        if (t === T_WATER || t === T_ROCK) return false;
+        if (this.buildGrid[i] !== 0) return false;
+      }
+    }
+    for (const n of this.nodes)
+      if (n.amount > 1 && n.tx >= tx - 1 && n.tx < tx + def.w + 1 && n.ty >= ty - 1 && n.ty < ty + def.h + 1) return false;
+    for (const other of this.units) {
+      if (other.dead || other.id === u.id || UNITS[other.type].isAir) continue;
+      if (other.x > tx - 0.5 && other.x < tx + def.w + 0.5 && other.y > ty - 0.5 && other.y < ty + def.h + 0.5) return false;
+    }
+    return true;
   }
 
   private airOrder(u: Unit, order: Order) {
@@ -776,7 +840,12 @@ export class Game {
     if (this.over) return;
     dt = Math.min(dt, 0.1);
     this.time += dt;
-    this.pathBudget = 20;
+    // Budget de pathfinding par tick. Le cache de chemins (groupes) réduit
+    // fortement le nombre d'A* réels, donc on peut servir plus de demandes sans
+    // pic. La réserve humaine garantit que les ordres du joueur répondent même
+    // quand des dizaines d'unités d'IA recalculent en même temps.
+    this.pathBudget = 18;
+    this.pathBudgetHuman = 14;
 
     prof.wrap('sim.hash', () => this.rebuildHash());
     prof.wrap('sim.production', () => this.updateProduction(dt));
@@ -1002,7 +1071,41 @@ export class Game {
         case 'harvest': this.updateHarvester(u, dt); break;
         case 'repair': this.updateEngineer(u, dt); break;
         case 'escort': this.updateEscort(u, dt); break;
+        case 'infiltrate': this.updateSpy(u, dt); break;
       }
+    }
+  }
+
+  private updateSpy(u: Unit, dt: number) {
+    if (u.type !== 'spy') { u.order = { kind: 'idle' }; return; }
+    const target = this.buildingById.get(u.order.targetId!);
+    if (!target || target.dead || target.owner === u.owner || target.type !== 'hq') {
+      u.order = { kind: 'idle' };
+      u.infiltrateT = 0;
+      return;
+    }
+    const cp = this.closestPointOfBuilding(target, u.x, u.y);
+    if (Math.hypot(cp.x - u.x, cp.y - u.y) > 1.25) {
+      u.infiltrateT = 0;
+      this.moveAlong(u, cp.x, cp.y, dt, () => {});
+      return;
+    }
+    u.path = null;
+    u.dir = Math.atan2(cp.y - u.y, cp.x - u.x);
+    u.infiltrateT = (u.infiltrateT ?? 0) + dt;
+    this.effects.push({ kind: 'spark', x: u.x, y: u.y, age: 0, dur: 0.18, r: 0.15 });
+    if (u.infiltrateT >= SPY_INFILTRATE_TIME) {
+      const p = this.players[target.owner];
+      p.sabotageUntil = Math.max(p.sabotageUntil, this.time + SPY_SABOTAGE_DURATION);
+      p.alertT = this.time;
+      const c = this.buildingCenter(target);
+      p.alertX = c.x; p.alertY = c.y;
+      if (p.isHuman) {
+        this.pings.push({ x: c.x, y: c.y, t: this.time });
+        this.events.push({ type: 'alert', x: c.x, y: c.y, owner: p.id });
+      }
+      this.effects.push({ kind: 'flash', x: c.x, y: c.y, age: 0, dur: 0.5, r: 1.2 });
+      this.killUnit(u, -1);
     }
   }
 
@@ -1220,6 +1323,54 @@ export class Game {
 
   // ---------------------------------------------------------------- mouvement
 
+  // Demande un chemin pour `u` vers (tx,ty). Renvoie :
+  //   null         → budget épuisé ce tick (l'ordre N'EST PAS perdu, on réessaie)
+  //   []           → aucun chemin atteignable
+  //   [...]        → chemin (issu du cache partagé d'un voisin, ou calculé)
+  private requestPath(u: Unit, tx: number, ty: number): { x: number; y: number }[] | null {
+    const rtx = Math.round(tx), rty = Math.round(ty);
+    const key = rty * this.map.w + rtx;
+
+    // 1) Cache : un voisin proche a-t-il déjà un chemin vers cette tuile ?
+    const c = this.pathCache.get(key);
+    if (c && this.time - c.t < 0.8 && Math.hypot(u.x - c.sx, u.y - c.sy) <= 6) {
+      return c.path;
+    }
+
+    // 2) Sinon calculer — sous budget (réserve garantie aux unités humaines).
+    const human = this.players[u.owner].isHuman;
+    if (human) {
+      if (this.pathBudgetHuman > 0) this.pathBudgetHuman--;
+      else if (this.pathBudget > 0) this.pathBudget--;
+      else { u.repathT = 0.08; return null; }
+    } else {
+      if (this.pathBudget > 0) this.pathBudget--;
+      else { u.repathT = 0.18; return null; }
+    }
+
+    const _ps = prof.enabled ? performance.now() : 0;
+    // maxExpand borné : sur 360² un A* « complet » explorait ~2500-9000 nœuds et
+    // provoquait les pics. On plafonne ; findPath renvoie alors le meilleur chemin
+    // partiel (vers le point le plus proche) et l'unité recalcule en chemin.
+    const path = findPath(this.nav, u.x, u.y, tx, ty, 3000);
+    if (prof.enabled) prof.add('sim.pathfind', performance.now() - _ps);
+    if (!path) return [];
+
+    // Mémoriser pour le groupe (taille bornée).
+    if (this.pathCache.size > 256) this.pathCache.clear();
+    this.pathCache.set(key, { path, sx: u.x, sy: u.y, t: this.time });
+    return path;
+  }
+
+  private nearestWaypoint(path: { x: number; y: number }[], x: number, y: number): number {
+    let bi = 0, bd = Infinity;
+    for (let i = 0; i < path.length; i++) {
+      const d = (path[i].x - x) ** 2 + (path[i].y - y) ** 2;
+      if (d < bd) { bd = d; bi = i; }
+    }
+    return bi;
+  }
+
   private moveAlong(u: Unit, tx: number, ty: number, dt: number, onArrive: () => void) {
     const def = UNITS[u.type];
     const arriveDist = 0.35;
@@ -1228,14 +1379,14 @@ export class Game {
 
     if (!u.path || u.pathI >= u.path.length) {
       if (u.repathT > 0) { u.repathT -= dt; return; }
-      if (this.pathBudget <= 0) { u.repathT = 0.15; return; }
-      this.pathBudget--;
-      const _ps = prof.enabled ? performance.now() : 0;
-      const path = findPath(this.nav, u.x, u.y, tx, ty);
-      if (prof.enabled) prof.add('sim.pathfind', performance.now() - _ps);
-      if (!path || path.length === 0) { u.repathT = 1.2; onArrive(); return; }
+      const path = this.requestPath(u, tx, ty);
+      if (path === null) return;            // budget épuisé ce tick : réessaie au prochain
+      if (path.length === 0) { u.repathT = 1.2; onArrive(); return; }
+      // Démarre au point du chemin le plus proche de l'unité (utile quand le
+      // chemin vient du cache d'un voisin : évite de repartir en arrière).
+      const startIdx = path.length > 1 ? this.nearestWaypoint(path, u.x, u.y) : 0;
       u.path = path;
-      u.pathI = 0;
+      u.pathI = startIdx;
       u.stuckT = 0;
     }
 
@@ -1529,7 +1680,7 @@ export class Game {
         const mult = DMG_MULT[w.kind][UNITS[t.type].armor];
         if (mult <= 0.05) continue;
         const d = Math.hypot(t.x - c.x, t.y - c.y);
-        const score = mult * 10 - d;
+        const score = (t.type === 'spy' ? 50 : 0) + mult * 10 - d;
         if (score > bestScore) { bestScore = score; best = t; }
       }
       if (best) {
@@ -1667,6 +1818,7 @@ export class Game {
   killBuilding(b: Building, attacker: number) {
     if (b.dead) return;
     b.dead = true;
+    this.pathCache.clear();   // la navigation a changé : chemins en cache périmés
     const def = BUILDINGS[b.type];
     const p = this.players[b.owner];
     p.stats.buildingsLost++;
@@ -1779,9 +1931,10 @@ export class Game {
     for (let i = 0; i < fog.length; i++) if (fog[i] === 2) fog[i] = 1;
 
     // Le centre radar avancé surclasse le radar simple.
-    const hasCenter = this.countBuildings(p.id, 'radarcenter') > 0 && p.energyRatio >= 1;
-    const radarMult = hasCenter ? 1.6 : this.hasRadar(p.id) ? 1.25 : 1;
-    const unitMult = hasCenter ? 1.15 : 1;
+    const sabotaged = this.time < p.sabotageUntil;
+    const hasCenter = !sabotaged && this.countBuildings(p.id, 'radarcenter') > 0 && p.energyRatio >= 1;
+    const radarMult = sabotaged ? SPY_VISION_FACTOR : hasCenter ? 1.6 : this.hasRadar(p.id) ? 1.25 : 1;
+    const unitMult = sabotaged ? 0.55 : hasCenter ? 1.15 : 1;
     const opticsMult = p.upgrades.optics ? 1.25 : 1;
 
     // exploredCount mis à jour de façon incrémentale (une tuile 0→visible n'est
@@ -1805,14 +1958,23 @@ export class Game {
 
     for (const u of this.units) {
       if (u.dead || u.owner !== p.id) continue;
-      stamp(u.x, u.y, UNITS[u.type].vision * unitMult);
+      const minVision = sabotaged ? 2.4 : 0;
+      stamp(u.x, u.y, Math.max(minVision, UNITS[u.type].vision * unitMult));
     }
     for (const b of this.buildings) {
       if (b.dead || b.owner !== p.id) continue;
       const c = this.buildingCenter(b);
-      stamp(c.x, c.y, BUILDINGS[b.type].vision * radarMult * opticsMult * (b.built ? 1 : 0.6));
+      const minVision = sabotaged ? 1.8 : 0;
+      stamp(c.x, c.y, Math.max(minVision, BUILDINGS[b.type].vision * radarMult * opticsMult * (b.built ? 1 : 0.6)));
     }
     p.exploredCount = explored;
+  }
+
+  revealAllFor(owner: number) {
+    const p = this.players[owner];
+    if (!p) return;
+    p.fog.fill(2);
+    p.exploredCount = this.map.w * this.map.h;
   }
 
   // ---------------------------------------------------------------- victoire
@@ -1834,6 +1996,7 @@ export class Game {
       this.over = true;
       this.winner = 0;
     }
+    if (this.over) for (const p of this.players) this.revealAllFor(p.id);
   }
 
   private eliminate(p: Player) {

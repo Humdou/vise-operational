@@ -20,6 +20,7 @@ export type Cmd =
   | { k: 'qup'; bId: number; up: UpgradeId }
   | { k: 'qcancel'; bId: number; i: number }
   | { k: 'repairOn'; bId: number; on: boolean }
+  | { k: 'deploy'; ids: number[] }
   // système (scellée par l'hôte) : un humain déconnecté passe sous contrôle IA
   | { k: 'aitakeover'; player: number };
 
@@ -94,6 +95,11 @@ export function applyCommand(g: Game, owner: number, c: Cmd) {
     }
     case 'repairOn': {
       if (ownBuilding(g, owner, c.bId)) g.setRepair(c.bId, c.on);
+      break;
+    }
+    case 'deploy': {
+      const ids = ownUnits(g, owner, c.ids);
+      if (ids.length) g.deployMobileCommanders(ids);
       break;
     }
     case 'aitakeover':
