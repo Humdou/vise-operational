@@ -2894,6 +2894,27 @@ export class Renderer {
       }
     }
 
+    if (def.armor !== 'inf') {
+      // Petits feux et reflets métalliques : améliore la lisibilité premium des
+      // véhicules sans ajouter d'état ni de particules.
+      const fx = Math.cos(u.dir), fy = Math.sin(u.dir);
+      const oxp = -fy * def.radius * 0.42 * z;
+      const oyp = fx * def.radius * 0.42 * z;
+      const nose = def.radius * 0.9 * z;
+      const lx = px + fx * nose;
+      const ly = py + fy * nose - lift * 0.9;
+      const lampR = Math.max(1, z * 0.045);
+      ctx.fillStyle = 'rgba(255,224,145,0.52)';
+      ctx.beginPath(); ctx.arc(lx + oxp, ly + oyp, lampR, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(lx - oxp, ly - oyp, lampR, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+      ctx.lineWidth = Math.max(1, z * 0.025);
+      ctx.beginPath();
+      ctx.moveTo(px - fx * def.radius * 0.45 * z - oxp * 0.55, py - fy * def.radius * 0.45 * z - oyp * 0.55 - lift);
+      ctx.lineTo(px + fx * def.radius * 0.32 * z - oxp * 0.55, py + fy * def.radius * 0.32 * z - oyp * 0.55 - lift);
+      ctx.stroke();
+    }
+
     // surcouches non orientées
     if (u.type === 'kamikaze') {
       const pulse = 0.45 + 0.35 * Math.sin(g.time * 7 + u.id);
@@ -3451,6 +3472,19 @@ export class Renderer {
       }
       ctx.restore();
     };
+
+    // Ombre d'assise commune : les sprites pré-cuits ont du volume, mais cette
+    // ellipse les ancre toujours au terrain courant, quelle que soit la taille.
+    ctx.save();
+    const shadowGrad = ctx.createRadialGradient(cx + z * 0.16, py + bh * 0.72, 0, cx + z * 0.16, py + bh * 0.72, Math.max(bw, bh) * 0.72);
+    shadowGrad.addColorStop(0, 'rgba(0,0,0,0.28)');
+    shadowGrad.addColorStop(0.62, 'rgba(0,0,0,0.12)');
+    shadowGrad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = shadowGrad;
+    ctx.beginPath();
+    ctx.ellipse(cx + z * 0.16, py + bh * 0.72, bw * 0.62, bh * 0.42, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
 
     if (!b.built) {
       // ================= CHANTIER en trois phases (purement visuel)
