@@ -503,10 +503,13 @@ export class Renderer {
     // battue (largeur irrégulière) → bords usés → ornières jumelles → crête de
     // poussière → gravier/flaques. Tracées de centre à centre (pistes continues).
     const snow = g.map.theme === 'snow', desert = g.map.theme === 'desert';
-    const dirtMid = snow ? [150, 144, 132] : desert ? [152, 120, 78] : [92, 74, 52];
-    const roadEdge = snow ? 'rgba(54,58,62,0.22)' : 'rgba(20,14,8,0.3)';
-    const roadRut = snow ? 'rgba(42,48,54,0.22)' : 'rgba(0,0,0,0.26)';
-    const roadCrest = snow ? 'rgba(245,248,250,0.16)' : 'rgba(232,216,176,0.14)';
+    // Teinte terreuse claire ET surtout TRANSLUCIDE : la piste se FOND dans le sol
+    // (le terrain et son relief transparaissent dessous) au lieu de trancher.
+    const dirtMid = snow ? [156, 150, 140] : desert ? [160, 132, 92] : [112, 96, 70];
+    const ROAD_A = 0.5;                 // opacité de la terre battue (faible = fondu)
+    const roadEdge = snow ? 'rgba(54,58,62,0.13)' : 'rgba(28,20,12,0.16)';
+    const roadRut = snow ? 'rgba(42,48,54,0.13)' : 'rgba(10,6,2,0.16)';
+    const roadCrest = snow ? 'rgba(245,248,250,0.1)' : 'rgba(228,214,176,0.09)';
     const dirs8: [number, number][] = [[1, 0], [0, 1], [1, 1], [1, -1]];
     const roadN = (tx: number, ty: number) => {
       let n = 0;
@@ -534,10 +537,10 @@ export class Renderer {
           if ((layer === 2 || layer === 3 || layer === 4) && !thin) continue;
           // remplissage plein de la chaussée (disques fusionnés → pas de grille)
           if (layer === 0) {
-            tc.fillStyle = 'rgba(0,0,0,0.24)';
+            tc.fillStyle = 'rgba(0,0,0,0.12)';
             tc.beginPath(); tc.arc(cx, cy + tpx * 0.06, wide * 0.62 + tpx * 0.08, 0, Math.PI * 2); tc.fill();
           } else if (layer === 1) {
-            tc.fillStyle = `rgba(${Math.round(dirtMid[0] * tone)},${Math.round(dirtMid[1] * tone)},${Math.round(dirtMid[2] * tone)},0.94)`;
+            tc.fillStyle = `rgba(${Math.round(dirtMid[0] * tone)},${Math.round(dirtMid[1] * tone)},${Math.round(dirtMid[2] * tone)},${ROAD_A})`;
             tc.beginPath(); tc.arc(cx, cy, wide * 0.62, 0, Math.PI * 2); tc.fill();
           }
           for (const [dx, dy] of dirs8) {
@@ -547,10 +550,10 @@ export class Renderer {
             const len = Math.hypot(dx, dy);
             const ox = (-dy / len), oy = (dx / len);            // perpendiculaire unitaire
             if (layer === 0) {                                   // assise creusée
-              tc.strokeStyle = 'rgba(0,0,0,0.24)'; tc.lineWidth = wide + tpx * 0.18;
+              tc.strokeStyle = 'rgba(0,0,0,0.12)'; tc.lineWidth = wide + tpx * 0.18;
               tc.beginPath(); tc.moveTo(cx, cy + tpx * 0.06); tc.lineTo(nxp, nyp + tpx * 0.06); tc.stroke();
             } else if (layer === 1) {                            // terre battue
-              tc.strokeStyle = `rgba(${Math.round(dirtMid[0] * tone)},${Math.round(dirtMid[1] * tone)},${Math.round(dirtMid[2] * tone)},0.94)`;
+              tc.strokeStyle = `rgba(${Math.round(dirtMid[0] * tone)},${Math.round(dirtMid[1] * tone)},${Math.round(dirtMid[2] * tone)},${ROAD_A})`;
               tc.lineWidth = wide;
               tc.beginPath(); tc.moveTo(cx, cy); tc.lineTo(nxp, nyp); tc.stroke();
             } else if (layer === 2) {                            // bords assombris (usure)

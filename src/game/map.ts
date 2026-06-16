@@ -310,21 +310,46 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
         }
     }
   };
-  for (const s of starts) carve(s.x, s.y, Math.round(cx), Math.round(cy), true);
-  // Corridors périphériques entre voisins : plusieurs accès par base.
+  // IMPORTANT : les corridors assurent la CONNECTIVITÉ (terrain) mais ne sont
+  // PLUS marqués comme routes — sinon les routes trahiraient la position des
+  // bases (corridors base→centre, base→base, anneau autour du QG).
+  for (const s of starts) carve(s.x, s.y, Math.round(cx), Math.round(cy), false);
   for (let i = 0; i < starts.length; i++) {
     const a = starts[i], b = starts[(i + 1) % starts.length];
-    if (starts.length > 1) carve(a.x, a.y, b.x, b.y, i % 2 === 0 || n < 180);
+    if (starts.length > 1) carve(a.x, a.y, b.x, b.y, false);
   }
-  for (const s of starts) {
-    const rr = Math.round(5 + n / 180);
-    for (let a = 0; a < Math.PI * 2; a += 0.08) {
-      const x = Math.round(s.x + Math.cos(a) * rr);
-      const y = Math.round(s.y + Math.sin(a) * rr);
-      if (x > 1 && y > 1 && x < n - 2 && y < n - 2 && terrain[y * n + x] !== T_WATER && terrain[y * n + x] !== T_ROCK) {
-        roads[y * n + x] = 1;
+
+  // ----- ROUTES ALÉATOIRES : pistes de campagne réparties au hasard, SANS lien
+  // avec les bases (on ne doit pas pouvoir en déduire l'emplacement ennemi).
+  // Elles relient des points neutres (clairières / points aléatoires) et serpentent.
+  const traceRoad = (x0: number, y0: number, x1: number, y1: number) => {
+    let x = x0, y = y0, guard = 0;
+    while ((x !== x1 || y !== y1) && guard++ < n * 4) {
+      if (rng() < 0.5 && x !== x1) x += Math.sign(x1 - x);
+      else if (y !== y1) y += Math.sign(y1 - y);
+      else if (x !== x1) x += Math.sign(x1 - x);
+      if (rng() < 0.28) { x += Math.round((rng() - 0.5) * 2.4); y += Math.round((rng() - 0.5) * 2.4); } // méandre
+      if (x > 1 && y > 1 && x < n - 1 && y < n - 1) {
+        const t = terrain[y * n + x];
+        if (t === T_GRASS || t === T_ROUGH) roads[y * n + x] = 1;   // pas sur l'eau/la roche
       }
     }
+  };
+  const randLand = (): { x: number; y: number } => {
+    for (let tries = 0; tries < 40; tries++) {
+      const x = 3 + Math.floor(rng() * (n - 6)), y = 3 + Math.floor(rng() * (n - 6));
+      const t = terrain[y * n + x];
+      if (t === T_GRASS || t === T_ROUGH) return { x, y };
+    }
+    return { x: Math.round(cx), y: Math.round(cy) };
+  };
+  const segCount = 2 + Math.floor(n / 80);
+  // certaines pistes relient des clairières neutres (mi-carte), d'autres sont libres
+  for (let k = 0; k < segCount; k++) {
+    const a = openZones.length > 1 && rng() < 0.5
+      ? openZones[Math.floor(rng() * openZones.length)] : randLand();
+    const b = randLand();
+    if (Math.hypot(a.x - b.x, a.y - b.y) < n * 0.55) traceRoad(a.x, a.y, b.x, b.y);
   }
 
   // Gisements de minerai.
