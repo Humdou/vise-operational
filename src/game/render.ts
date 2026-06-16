@@ -4376,14 +4376,28 @@ export class Renderer {
       for (let i = 0; i < mw * mh; i++) {
         const t = g.map.terrain[i];
         const col = t === T_WATER ? theme.water : t === T_ROCK ? theme.rock[0] : t === T_ROUGH ? theme.rough[0] : theme.grass[0];
-        const li = Math.max(0.76, Math.min(1.16, g.map.light[i] ?? 1));
-        const r = Math.max(0, Math.min(255, Math.round(parseInt(col.slice(1, 3), 16) * li)));
-        const gg = Math.max(0, Math.min(255, Math.round(parseInt(col.slice(3, 5), 16) * li)));
-        const bb = Math.max(0, Math.min(255, Math.round(parseInt(col.slice(5, 7), 16) * li)));
+        const li = Math.max(0.72, Math.min(1.22, g.map.light[i] ?? 1));
+        const hi = Math.max(0, Math.min(1, g.map.height[i] ?? 0.5));
+        const cliff = g.map.cliff[i] ? 1 : 0;
+        const depth = t === T_WATER ? Math.max(0, Math.min(1, (0.22 - hi) / 0.22)) : 0;
+        const ridge = t !== T_WATER ? Math.max(-0.15, Math.min(0.2, (hi - 0.52) * 0.34)) : 0;
+        let r = Math.max(0, Math.min(255, Math.round(parseInt(col.slice(1, 3), 16) * (li + ridge))));
+        let gg = Math.max(0, Math.min(255, Math.round(parseInt(col.slice(3, 5), 16) * (li + ridge))));
+        let bb = Math.max(0, Math.min(255, Math.round(parseInt(col.slice(5, 7), 16) * (li + ridge))));
+        if (depth > 0) {
+          r = Math.floor(r * (1 - depth * 0.42));
+          gg = Math.floor(gg * (1 - depth * 0.28));
+          bb = Math.floor(bb * (1 + depth * 0.12) + 18 * depth);
+        }
+        if (cliff) {
+          r = Math.floor(r * 0.72 + 28);
+          gg = Math.floor(gg * 0.72 + 25);
+          bb = Math.floor(bb * 0.72 + 22);
+        }
         const road = g.map.roads[i] === 1;
-        img.data[i * 4] = road ? Math.floor(r * 0.68 + 76 * 0.32) : r;
-        img.data[i * 4 + 1] = road ? Math.floor(gg * 0.68 + 64 * 0.32) : gg;
-        img.data[i * 4 + 2] = road ? Math.floor(bb * 0.68 + 48 * 0.32) : bb;
+        img.data[i * 4] = road ? Math.floor(r * 0.56 + 96 * 0.44) : r;
+        img.data[i * 4 + 1] = road ? Math.floor(gg * 0.56 + 80 * 0.44) : gg;
+        img.data[i * 4 + 2] = road ? Math.floor(bb * 0.56 + 62 * 0.44) : bb;
         img.data[i * 4 + 3] = 255;
       }
       cc.putImageData(img, 0, 0);
