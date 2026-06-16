@@ -910,58 +910,92 @@ export class Renderer {
       const px = sx(e.x), py = sy(e.y);
       const f = e.age / e.dur;
       if (e.kind === 'boom') {
-        // onde de choc + boule de feu + débris incandescents + fumée
-        ctx.strokeStyle = `rgba(255,230,180,${(1 - f) * 0.55})`;
-        ctx.lineWidth = Math.max(1, z * 0.08 * (1 - f));
-        ctx.beginPath(); ctx.arc(px, py, e.r * z * (0.5 + f * 2.2), 0, Math.PI * 2); ctx.stroke();
-        ctx.fillStyle = `rgba(255,${Math.floor(190 - f * 120)},40,${1 - f})`;
-        ctx.beginPath(); ctx.arc(px, py, e.r * z * (0.4 + f * 1.1), 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = `rgba(255,250,220,${(1 - f) * 0.9})`;
-        ctx.beginPath(); ctx.arc(px, py, e.r * z * 0.32 * (1 - f), 0, Math.PI * 2); ctx.fill();
+        // onde de choc + flash chaud + cratère doux + débris incandescents.
+        const hot = Math.max(0, 1 - f);
+        ctx.fillStyle = `rgba(12,10,8,${0.22 * hot})`;
+        ctx.beginPath(); ctx.ellipse(px + z * 0.08, py + z * 0.14, e.r * z * (0.7 + f * 1.4), e.r * z * (0.34 + f * 0.62), 0, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = `rgba(255,238,190,${hot * 0.62})`;
+        ctx.lineWidth = Math.max(1, z * 0.09 * hot);
+        ctx.beginPath(); ctx.arc(px, py, e.r * z * (0.45 + f * 2.35), 0, Math.PI * 2); ctx.stroke();
+        ctx.strokeStyle = `rgba(255,110,55,${hot * 0.38})`;
+        ctx.lineWidth = Math.max(1, z * 0.055 * hot);
+        ctx.beginPath(); ctx.arc(px, py, e.r * z * (0.22 + f * 1.55), 0, Math.PI * 2); ctx.stroke();
+        const fire = ctx.createRadialGradient(px - e.r * z * 0.12, py - e.r * z * 0.18, 0, px, py, Math.max(1, e.r * z * (0.5 + f * 1.25)));
+        fire.addColorStop(0, `rgba(255,255,230,${hot * 0.92})`);
+        fire.addColorStop(0.34, `rgba(255,174,55,${hot * 0.82})`);
+        fire.addColorStop(0.72, `rgba(150,42,24,${hot * 0.42})`);
+        fire.addColorStop(1, 'rgba(30,24,20,0)');
+        ctx.fillStyle = fire;
+        ctx.beginPath(); ctx.arc(px, py, e.r * z * (0.55 + f * 1.22), 0, Math.PI * 2); ctx.fill();
         // débris projetés (déterministes, avec gravité)
         const seed = Math.floor(e.x * 13 + e.y * 7);
-        for (let k = 0; k < 6; k++) {
-          const a = ((seed + k) % 12) / 12 * Math.PI * 2;
+        for (let k = 0; k < 9; k++) {
+          const a = ((seed + k * 5) % 17) / 17 * Math.PI * 2;
           const sp = 1.4 + ((seed + k * 3) % 5) * 0.3;
           const dx = Math.cos(a) * f * sp * e.r * z;
           const dy = Math.sin(a) * f * sp * e.r * z * 0.7 - f * z * 0.6 + f * f * z * 2.2;
-          ctx.fillStyle = `rgba(255,${160 - Math.floor(f * 110)},60,${1 - f})`;
-          ctx.beginPath(); ctx.arc(px + dx, py + dy, Math.max(1, z * 0.06 * (1 - f * 0.5)), 0, Math.PI * 2); ctx.fill();
-        }
-        ctx.fillStyle = `rgba(60,50,45,${(1 - f) * 0.5})`;
-        ctx.beginPath(); ctx.arc(px, py - f * z * 0.5, e.r * z * f * 1.3, 0, Math.PI * 2); ctx.fill();
-      } else if (e.kind === 'smoke') {
-        // colonne de fumée qui s'élève et se dissipe
-        const rise = f * z * 1.8;
-        for (let k = 0; k < 3; k++) {
-          const kf = Math.max(0, f - k * 0.18);
-          if (kf <= 0) continue;
-          ctx.fillStyle = `rgba(${52 + k * 8},${48 + k * 8},${46 + k * 8},${(1 - f) * (0.4 - k * 0.09)})`;
+          ctx.strokeStyle = `rgba(255,${170 - Math.floor(f * 90)},70,${hot * 0.74})`;
+          ctx.lineWidth = Math.max(1, z * 0.035);
           ctx.beginPath();
-          ctx.arc(
-            px + Math.sin((f + k) * 5 + e.x) * z * 0.18,
-            py - rise + k * z * 0.45,
-            e.r * z * (0.4 + kf * 1.5),
+          ctx.moveTo(px + dx * 0.72, py + dy * 0.72);
+          ctx.lineTo(px + dx, py + dy);
+          ctx.stroke();
+          ctx.fillStyle = `rgba(255,${190 - Math.floor(f * 120)},80,${hot})`;
+          ctx.beginPath(); ctx.arc(px + dx, py + dy, Math.max(1, z * 0.055 * (1 - f * 0.5)), 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.fillStyle = `rgba(58,54,50,${hot * 0.46})`;
+        ctx.beginPath(); ctx.arc(px + Math.sin(seed) * z * 0.1, py - f * z * 0.65, e.r * z * (0.3 + f * 1.55), 0, Math.PI * 2); ctx.fill();
+      } else if (e.kind === 'smoke') {
+        // colonne de fumée stratifiée qui s'élève et se dissipe.
+        const rise = f * z * 1.8;
+        for (let k = 0; k < 5; k++) {
+          const kf = Math.max(0, f - k * 0.12);
+          if (kf <= 0) continue;
+          const wobble = Math.sin((f + k) * 5.4 + e.x * 1.7) * z * (0.14 + k * 0.035);
+          ctx.fillStyle = `rgba(${44 + k * 9},${43 + k * 9},${42 + k * 9},${(1 - f) * (0.36 - k * 0.045)})`;
+          ctx.beginPath();
+          ctx.ellipse(
+            px + wobble,
+            py - rise + k * z * 0.33,
+            e.r * z * (0.42 + kf * 1.35),
+            e.r * z * (0.28 + kf * 0.88),
+            0.2 * Math.sin(k + e.y),
             0, Math.PI * 2,
           );
           ctx.fill();
         }
       } else if (e.kind === 'flash') {
-        // éclair de bouche en étoile
+        // éclair de bouche / sabotage en étoile avec noyau chaud.
         ctx.fillStyle = `rgba(255,240,180,${1 - f})`;
         ctx.beginPath(); ctx.arc(px, py, e.r * z * 0.5, 0, Math.PI * 2); ctx.fill();
-        ctx.strokeStyle = `rgba(255,250,200,${(1 - f) * 0.8})`;
-        ctx.lineWidth = 1;
-        for (let k = 0; k < 4; k++) {
-          const a = (k / 4) * Math.PI + e.x;
+        ctx.strokeStyle = `rgba(255,250,205,${(1 - f) * 0.88})`;
+        ctx.lineWidth = Math.max(1, z * 0.035);
+        for (let k = 0; k < 6; k++) {
+          const a = (k / 6) * Math.PI * 2 + e.x;
           ctx.beginPath();
-          ctx.moveTo(px - Math.cos(a) * e.r * z * 0.9, py - Math.sin(a) * e.r * z * 0.9);
-          ctx.lineTo(px + Math.cos(a) * e.r * z * 0.9, py + Math.sin(a) * e.r * z * 0.9);
+          ctx.moveTo(px + Math.cos(a) * e.r * z * 0.2, py + Math.sin(a) * e.r * z * 0.2);
+          ctx.lineTo(px + Math.cos(a) * e.r * z * (0.75 + (k % 2) * 0.35), py + Math.sin(a) * e.r * z * (0.75 + (k % 2) * 0.35));
           ctx.stroke();
         }
       } else if (e.kind === 'spark') {
-        ctx.fillStyle = `rgba(255,210,120,${1 - f})`;
-        ctx.beginPath(); ctx.arc(px, py, Math.max(1, e.r * z * (1 - f)), 0, Math.PI * 2); ctx.fill();
+        const seed = Math.floor(e.x * 19 + e.y * 23);
+        ctx.strokeStyle = `rgba(255,214,125,${1 - f})`;
+        ctx.lineWidth = Math.max(1, z * 0.03);
+        for (let k = 0; k < 4; k++) {
+          const a = ((seed + k * 7) % 16) / 16 * Math.PI * 2;
+          const len = e.r * z * (0.65 + k * 0.22) * (1 - f);
+          ctx.beginPath();
+          ctx.moveTo(px, py);
+          ctx.lineTo(px + Math.cos(a) * len, py + Math.sin(a) * len);
+          ctx.stroke();
+        }
+        ctx.fillStyle = `rgba(255,235,160,${1 - f})`;
+        ctx.beginPath(); ctx.arc(px, py, Math.max(1, e.r * z * 0.55 * (1 - f)), 0, Math.PI * 2); ctx.fill();
+      } else if (e.kind === 'dust') {
+        ctx.fillStyle = `rgba(168,158,136,${(1 - f) * 0.34})`;
+        ctx.beginPath();
+        ctx.ellipse(px, py - f * z * 0.35, e.r * z * (0.5 + f * 1.1), e.r * z * (0.24 + f * 0.45), 0, 0, Math.PI * 2);
+        ctx.fill();
       }
     }
 
