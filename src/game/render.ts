@@ -409,6 +409,39 @@ export class Renderer {
         }
       }
 
+    if (icyShore) {
+      // Plaques de glace et fissures légères sur les lacs : visuel uniquement,
+      // pré-rendu, donc coût nul pendant les frames de jeu.
+      const iceRng = mulberry32(w * 251 + h * 997 + 19);
+      const iceCount = Math.floor(w * h * 0.035);
+      for (let k = 0; k < iceCount; k++) {
+        const tx = (iceRng() * w) | 0, ty = (iceRng() * h) | 0;
+        if (terrain[ty * w + tx] !== T_WATER) continue;
+        const cx = tx * tpx + iceRng() * tpx;
+        const cy = ty * tpx + iceRng() * tpx;
+        const rw = tpx * (0.32 + iceRng() * 0.42);
+        const rh = tpx * (0.08 + iceRng() * 0.15);
+        const a = -0.45 + (iceRng() - 0.5) * 0.5;
+        tc.save();
+        tc.translate(cx, cy);
+        tc.rotate(a);
+        tc.fillStyle = `rgba(222,242,250,${0.08 + iceRng() * 0.08})`;
+        tc.beginPath();
+        tc.ellipse(0, 0, rw, rh, 0, 0, Math.PI * 2);
+        tc.fill();
+        if (iceRng() < 0.45) {
+          tc.strokeStyle = 'rgba(190,224,238,0.18)';
+          tc.lineWidth = Math.max(1, SS * 0.12);
+          tc.beginPath();
+          tc.moveTo(-rw * 0.55, (iceRng() - 0.5) * rh);
+          tc.lineTo(-rw * 0.1, (iceRng() - 0.5) * rh);
+          tc.lineTo(rw * 0.55, (iceRng() - 0.5) * rh);
+          tc.stroke();
+        }
+        tc.restore();
+      }
+    }
+
     // ===== 3) FALAISES : escarpements à bords irréguliers (résolution sous-tuile),
     // arête éclairée au NO, face rocheuse sombre + stries au SE, ombre au pied.
     for (let ty = 0; ty < h; ty++)
@@ -654,6 +687,45 @@ export class Renderer {
         tc.fill();
       }
       tc.restore();
+    }
+
+    if (snow) {
+      // Stries de vent, plaques grises et neige compactée : augmente la richesse
+      // des grandes plaines arctiques sans créer d'obstacles ni de nouvelles tuiles.
+      const snowRng = mulberry32(w * 733 + h * 149 + 41);
+      const snowMarks = Math.floor(w * h * 0.24);
+      for (let k = 0; k < snowMarks; k++) {
+        const tx = (snowRng() * w) | 0, ty = (snowRng() * h) | 0;
+        const i = ty * w + tx;
+        const t = terrain[i];
+        if (t === T_WATER || t === T_ROCK || roads[i]) continue;
+        const px = tx * tpx + snowRng() * tpx;
+        const py = ty * tpx + snowRng() * tpx;
+        const len = tpx * (0.32 + snowRng() * 0.74);
+        const wid = SS * (0.18 + snowRng() * 0.26);
+        const angle = -0.62 + (snowRng() - 0.5) * 0.32;
+        tc.save();
+        tc.translate(px, py);
+        tc.rotate(angle);
+        if (snowRng() < 0.6) {
+          tc.strokeStyle = `rgba(255,255,255,${0.10 + snowRng() * 0.12})`;
+          tc.lineWidth = Math.max(1, wid);
+          tc.beginPath();
+          tc.moveTo(-len * 0.5, 0);
+          tc.quadraticCurveTo(0, (snowRng() - 0.5) * SS * 0.25, len * 0.5, 0);
+          tc.stroke();
+        } else {
+          tc.fillStyle = `rgba(78,91,98,${0.055 + snowRng() * 0.06})`;
+          tc.beginPath();
+          tc.ellipse(0, 0, len * 0.42, wid * 1.4, 0, 0, Math.PI * 2);
+          tc.fill();
+          tc.fillStyle = 'rgba(240,247,252,0.10)';
+          tc.beginPath();
+          tc.ellipse(-len * 0.08, -wid * 0.8, len * 0.3, wid * 0.45, 0, 0, Math.PI * 2);
+          tc.fill();
+        }
+        tc.restore();
+      }
     }
 
     // léger assombrissement global pour l'unité chromatique
