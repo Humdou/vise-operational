@@ -265,10 +265,15 @@ export class Renderer {
       const a = height[y0 * w + x0], b = height[y0 * w + x1], cc = height[y1 * w + x0], d = height[y1 * w + x1];
       return a + (b - a) * fx + (cc - a) * fy + (a - b - cc + d) * fx * fy;
     };
+    // Champ d'altitude sous-tuile, avec CONTRASTE ÉTALÉ autour de 0.46 : pousse
+    // les hauts plus haut et les bas plus bas → davantage de ruptures de niveau
+    // (donc plus de falaises/terrasses franches) sans toucher au gameplay.
     const SH = new Float32Array(W4 * H4);
     for (let sy = 0; sy < H4; sy++)
-      for (let sx2 = 0; sx2 < W4; sx2++)
-        SH[sy * W4 + sx2] = interpH((sx2 + 0.5) / SUB - 0.5, (sy + 0.5) / SUB - 0.5);
+      for (let sx2 = 0; sx2 < W4; sx2++) {
+        const hv = (interpH((sx2 + 0.5) / SUB - 0.5, (sy + 0.5) / SUB - 0.5) - 0.46) * 1.55 + 0.46;
+        SH[sy * W4 + sx2] = hv < 0 ? 0 : hv > 1 ? 1 : hv;
+      }
 
     const isLand = (tx: number, ty: number) => {
       if (tx < 0 || ty < 0 || tx >= w || ty >= h) return false;
@@ -330,33 +335,50 @@ export class Renderer {
           const j = (grain(fx * 3.1, fy * 3.1) - 0.5) * 0.16 + (tint(fx * 7.3, fy * 7.3) - 0.5) * 0.10;
           r *= 1 + j; gn *= 1 + j; b *= 1 + j;
         } else {
-          // eau : profondeur (plus c'est bas, plus c'est sombre/bleu) + reflets
-          const depth = Math.max(0, Math.min(1, (0.18 - e) / 0.18));
-          r *= 1 - depth * 0.55; gn *= 1 - depth * 0.45; b = b * (1 - depth * 0.2) + depth * 20;
-          const ripple = (grain(fx * 5, fy * 2.5) - 0.5) * 18;
+          // eau : forte profondeur (fonds très sombres et bleutés, hauts-fonds
+          // clairs et turquoise) → contraste marqué + meilleure intégration.
+          const depth = Math.max(0, Math.min(1, (0.2 - e) / 0.2));
+          if (depth > 0.55) {        // grand fond : bleu nuit profond
+            r *= 1 - depth * 0.72; gn *= 1 - depth * 0.6; b = b * (1 - depth * 0.32) + depth * 26;
+          } else {                   // haut-fond : turquoise plus clair
+            const sh2 = 1 - depth;
+            r = r * (1 - sh2 * 0.25) + sh2 * 30; gn = gn * (1 - sh2 * 0.15) + sh2 * 70; b = b * (1 - sh2 * 0.1) + sh2 * 30;
+          }
+          const ripple = (grain(fx * 5, fy * 2.5) - 0.5) * 20;
           r += ripple * 0.4; gn += ripple * 0.6; b += ripple;
         }
 
-        // ===== RELIEF FORTEMENT OMBRÉ : pente + altitude + ombre portée + AO ===
+        // ===== RELIEF EN PALIERS + FALAISES (lecture de hauteur immédiate) =====
+        // Style C&C/Tempest : l'altitude est découpée en niveaux ; chaque niveau
+        // a une luminosité distincte (haut clair / bas sombre) et les RUPTURES de
+        // niveau deviennent des falaises (arête éclairée au NO, ombre au pied SE).
         const xm = sx2 > 0 ? sx2 - 1 : sx2, xp = sx2 < W4 - 1 ? sx2 + 1 : sx2;
         const ym = sy > 0 ? sy - 1 : sy, yp = sy < H4 - 1 ? sy + 1 : sy;
         const hl = SH[sy * W4 + xm], hr = SH[sy * W4 + xp], hu = SH[ym * W4 + sx2], hd = SH[yp * W4 + sx2];
         const dxh = hr - hl, dyh = hd - hu;
-        // ombrage directionnel renforcé (soleil au nord-ouest)
-        let lmul = 1 + (-dxh - dyh) * 18 + (e - 0.5) * 0.26;
-        if (lmul < 0.4) lmul = 0.4; else if (lmul > 1.72) lmul = 1.72;
-        // ombre PORTÉE plus longue et plus marquée (falaises/collines projettent loin)
+        const LEVELS = 7;
+        const myL = Math.floor(e * LEVELS);
+        // rampe de luminosité par palier : contraste fort entre étages
+        let relief = 0.64 + myL * (0.62 / LEVELS);
+        if (t !== T_WATER) {
+          // bord SUPÉRIEUR de falaise (domine l'est/le sud, côté éclairé) → liseré clair
+          if (myL > Math.floor(hr * LEVELS)) relief += 0.18;
+          if (myL > Math.floor(hd * LEVELS)) relief += 0.18;
+          // PIED de falaise (dominé par l'ouest/le nord) → ombre franche
+          if (myL < Math.floor(hl * LEVELS)) relief -= 0.42;
+          if (myL < Math.floor(hu * LEVELS)) relief -= 0.42;
+        }
+        // micro-pente continue (douceur à l'intérieur d'un palier)
+        relief += (-dxh - dyh) * 7;
+        if (relief < 0.28) relief = 0.28; else if (relief > 1.82) relief = 1.82;
+        // ombre PORTÉE longue : falaises/collines projettent loin vers le SE
         let cast = 0;
-        for (let s = 1; s <= 9; s++) {
+        for (let s = 1; s <= 11; s++) {
           const ax = sx2 - s, ay = sy - s; if (ax < 0 || ay < 0) break;
-          const diff = SH[ay * W4 + ax] - e - s * 0.010;
+          const diff = SH[ay * W4 + ax] - e - s * 0.0085;
           if (diff > cast) cast = diff;
         }
-        const shadowMul = 1 - Math.min(0.6, cast * 2.2);
-        // occlusion ambiante : un creux entouré de terrain plus haut s'assombrit
-        const ao = (hl + hr + hu + hd) * 0.25 - e;
-        const aoMul = ao > 0.01 ? 1 - Math.min(0.22, ao * 1.6) : 1;
-        const m = lmul * shadowMul * aoMul;
+        const m = relief * (1 - Math.min(0.66, cast * 2.6));
         r *= m; gn *= m; b *= m;
 
         const o = i4 * 4;
