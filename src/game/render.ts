@@ -2655,45 +2655,31 @@ export class Renderer {
 
       // ============ Raffinerie T1 : extraction (chevalet, citernes couchées)
       case 'refinery': {
-        apron(W * 0.08, H * 0.06, W * 0.72, H * 0.82, '#4f514a', 4);
-        c.fillStyle = 'rgba(58,46,30,0.55)';
-        c.beginPath(); c.ellipse(-W * 0.28, -H * 0.02, W * 0.24, H * 0.19, 0.2, 0, Math.PI * 2); c.fill();
-        c.fillStyle = '#21180f';
-        c.beginPath(); c.ellipse(-W * 0.3, -H * 0.04, W * 0.12, H * 0.08, 0.2, 0, Math.PI * 2); c.fill();
-        c.fillStyle = '#d4af37';
-        for (let k = 0; k < 10; k++) c.fillRect(-W * 0.3 + (rng() - 0.5) * W * 0.18, -H * 0.04 + (rng() - 0.5) * H * 0.1, 2, 2);
-
-        // Unité de traitement : bâtiment compact, blindé, couvert de panneaux.
-        industrialBlock(W * 0.08, H * 0.28, W * 0.42, H * 0.22, H * 0.2, '#3b4038');
-        door(W * 0.08, H * 0.38, W * 0.17, H * 0.1, '#b88f34');
-        teamMark(W * 0.08, H * 0.29, W * 0.14, 4);
-        for (const gx of [-0.08, 0.08, 0.22]) ventPanel(W * gx, H * 0.17, W * 0.08, H * 0.055, 4);
-        tinyRivets(W * 0.08, H * 0.08, W * 0.34, 7);
-
-        // Extraction et convoyage minerai.
-        pumpjack(-W * 0.28, -H * 0.02, W * 0.48);
-        c.strokeStyle = '#151a16';
-        c.lineWidth = 6;
-        line(-W * 0.13, H * 0.03, W * 0.06, H * 0.18);
-        c.strokeStyle = 'rgba(190,170,105,0.48)';
-        c.lineWidth = 2;
-        line(-W * 0.13, H * 0.03, W * 0.06, H * 0.18);
-
-        // Cuves et tuyauterie, lisibles à distance.
-        flare(W * 0.42, -H * 0.18, H * 0.4);
-        hTankV(W * 0.2, -H * 0.1, W * 0.42, H * 0.14, '#81887f');
-        hTankV(W * 0.25, H * 0.08, W * 0.34, H * 0.12, '#8d6539');
-        cyl(W * 0.38, H * 0.22, W * 0.055, H * 0.18, '#777f78', 0.12);
-        pipe(-W * 0.14, H * 0.05, W * 0.01, -H * 0.14, 4, 8);
-        pipe(W * 0.2, -H * 0.1, W * 0.24, H * 0.2, 4, -6);
-        pipe(W * 0.36, H * 0.05, W * 0.1, H * 0.25, 3, W * 0.04);
-
-        // Quai de chargement raffinerie.
-        hazard(W * 0.08, H * 0.47, W * 0.36, H * 0.045);
-        truck(W * 0.34, H * 0.38, W * 0.14, -0.02);
-        warmLamp(W * 0.29, H * 0.28);
-        warmLamp(-W * 0.02, H * 0.36);
-        grimeStreaks(W * 0.06, H * 0.1, W * 0.74, H * 0.76, 301, 24);
+        // Raffinerie = RAFFINAGE (et plus extraction) : haute tour de distillation,
+        // ferme de cuves verticales, torchère, bloc de traitement et quai.
+        apron(0, 0, W * 1.0, H * 0.94, '#3d4248', 4);
+        // torchère + tour de distillation (silhouette haute signature)
+        flare(W * 0.4, -H * 0.26, H * 0.46);
+        column(-W * 0.3, -H * 0.04, W * 0.065, H * 0.62);
+        // ferme de cuves verticales (cluster de réservoirs)
+        cyl(-W * 0.04, -H * 0.12, W * 0.12, H * 0.34, '#69716a', 0.14, true);
+        cyl(W * 0.17, -H * 0.16, W * 0.095, H * 0.27, '#69716a', 0.14);
+        cyl(W * 0.04, H * 0.02, W * 0.08, H * 0.2, '#69716a', 0.14);
+        // bloc de traitement blindé + porte éclairée
+        industrialBlock(W * 0.06, H * 0.3, W * 0.5, H * 0.2, H * 0.18, '#3b4038');
+        door(W * 0.06, H * 0.38, W * 0.18, H * 0.1, '#caa536');
+        teamMark(W * 0.3, H * 0.31, W * 0.13, 4);
+        for (const gx of [-0.12, 0.0, 0.12]) ventPanel(W * gx, H * 0.18, W * 0.08, H * 0.05, 4);
+        // réseau de pipelines
+        pipe(-W * 0.3, H * 0.12, -W * 0.04, H * 0.04, 4, 6);
+        pipe(W * 0.17, -H * 0.05, W * 0.06, H * 0.18, 4, -5);
+        pipe(-W * 0.04, -H * 0.04, W * 0.18, -H * 0.12, 3, W * 0.03);
+        // quai de chargement + camion-citerne
+        hazard(W * 0.04, H * 0.46, W * 0.42, H * 0.045);
+        truck(-W * 0.34, H * 0.4, W * 0.14, 0);
+        warmLamp(W * 0.3, H * 0.28);
+        warmLamp(-W * 0.04, H * 0.34);
+        grimeStreaks(0, H * 0.1, W * 0.84, H * 0.76, 301, 24);
         break;
       }
 
@@ -3126,12 +3112,13 @@ export class Renderer {
   }
 
   private unitVisualScale(type: string, def: { armor: string; isAir?: boolean }) {
-    if (def.armor === 'inf') return 1.04;
-    if (def.isAir) return type === 'cargoheli' || type === 'transportheli' ? 1.1 : 1.08;
-    if (type === 'harvester' || type === 'mobilecmd') return 1.16;
-    if (type === 'heavytank' || type === 'heavyarty' || type === 'tankdestroyer') return 1.15;
-    if (type === 'artillery' || type === 'tank') return 1.12;
-    return 1.08;
+    // Véhicules agrandis (lisibilité + détail visible) ; hitbox/gameplay inchangés.
+    if (def.armor === 'inf') return 1.1;
+    if (def.isAir) return type === 'cargoheli' || type === 'transportheli' ? 1.2 : 1.18;
+    if (type === 'harvester' || type === 'mobilecmd') return 1.32;
+    if (type === 'heavytank' || type === 'heavyarty' || type === 'tankdestroyer') return 1.3;
+    if (type === 'artillery' || type === 'tank') return 1.26;
+    return 1.22;
   }
 
   private bakeUnit(type: string, col: string): { body: HTMLCanvasElement; turret?: HTMLCanvasElement } {
