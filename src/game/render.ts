@@ -2732,22 +2732,26 @@ export class Renderer {
 
       // ============ Caserne T1 : camp bas (baraquements, tente, entraînement)
       case 'barracks': {
-        c.fillStyle = 'rgba(86,74,52,0.4)';
-        this.rr(c, -W * 0.48, -H * 0.48, W * 0.96, H * 0.96, 8); c.fill();
-        fence(0, 0, W * 0.96, H * 0.94);
-        gableVol(W * 0.3, -H * 0.2, W * 0.22, H * 0.14, 6, '#6d6446');
-        gableVol(-W * 0.08, -H * 0.16, W * 0.62, H * 0.18, 9, '#55603f');
-        gableVol(-W * 0.08, H * 0.18, W * 0.62, H * 0.18, 9, '#4b5639');
-        door(-W * 0.08, H * 0.22, W * 0.1, 7, '#9aa1a7');
-        c.fillStyle = '#3b3f35';
-        for (let k = 0; k < 4; k++) c.fillRect(W * (0.18 + k * 0.07), H * 0.32, 3, 3);
-        c.strokeStyle = '#23272b';
-        c.lineWidth = 2;
-        line(W * 0.18, H * 0.42, W * 0.42, H * 0.42);
-        line(W * 0.18, H * 0.36, W * 0.18, H * 0.44);
-        line(W * 0.42, H * 0.36, W * 0.42, H * 0.44);
-        sandbags(-W * 0.08, H * 0.36, W * 0.22, 0);
-        flag(W * 0.38, H * 0.1, H * 0.34);
+        // Bunker-hangar bas et large (garnison militaire), façon référence :
+        // corps blindé principal + deux portes de déploiement éclairées, modules
+        // de casernement latéraux, aérations de toit, antenne, mât.
+        apron(0, 0, W * 1.0, H * 0.96, '#3d4248');
+        // modules latéraux (dortoirs blindés) en retrait
+        volume(-W * 0.4, -H * 0.04, W * 0.18, H * 0.42, H * 0.16, '#474e57', { seams: 1 });
+        volume(W * 0.4, -H * 0.04, W * 0.18, H * 0.42, H * 0.16, '#474e57', { seams: 1 });
+        // corps principal : hangar bas à toit large
+        volume(0, -H * 0.04, W * 0.66, H * 0.46, H * 0.2, '#4c545d', { win: 4, seams: 1 });
+        roofVents(0, -H * 0.2, W * 0.42, 5);
+        antenna(W * 0.22, -H * 0.28, H * 0.24, W * 0.04);
+        flag(-W * 0.24, -H * 0.26, H * 0.22);
+        // porche de déploiement au sud : deux portes blindées éclairées
+        volume(0, H * 0.26, W * 0.5, H * 0.12, H * 0.1, '#434a52');
+        door(-W * 0.15, H * 0.3, W * 0.13, H * 0.12, '#caa536');
+        door(W * 0.15, H * 0.3, W * 0.13, H * 0.12, '#caa536');
+        // marquage de zone + sacs de sable
+        hazard(0, H * 0.43, W * 0.42, H * 0.045);
+        sandbags(-W * 0.34, H * 0.4, W * 0.18, 0.25);
+        sandbags(W * 0.34, H * 0.4, W * 0.18, -0.25);
         break;
       }
 
@@ -2777,20 +2781,36 @@ export class Renderer {
 
       // ============ Usine T1 : hangar militaire massif à porte monumentale
       case 'factory': {
-        apron(0, H * 0.06, W * 1.02, H * 0.92, '#71767a');
-        lane(0, H * 0.34, 0, H * 0.52);
-        volume(0, -H * 0.02, W * 0.84, H * 0.5, H * 0.26, '#4e565e', { seams: 2 });
-        // verrière + extracteurs sur le toit
-        glass(0, -H * 0.2, W * 0.66, 7, false);
-        cyl(W * 0.3, -H * 0.1, 5, 10, '#5a6168', 0.5);
-        cyl(W * 0.38, -H * 0.1, 5, 10, '#5a6168', 0.5);
-        roofVents(0, -H * 0.08, W * 0.7, 8);
-        // porte monumentale sur la façade
-        door(0, H * 0.11, W * 0.5, H * 0.19, '#caa536');
-        hazard(0, H * 0.005, W * 0.5, 5);
-        teamMark(-W * 0.3, H * 0.16, W * 0.16, 5);
-        volume(-W * 0.42, H * 0.22, W * 0.16, H * 0.2, 13, '#5a5f63');
-        truck(W * 0.3, H * 0.4, W * 0.15, 0);
+        // Halle de production militaire : hall haut à toit en redans (sheds
+        // vitrés), cheminées d'usine, GRANDE PORTE BLINDÉE en façade, aile basse
+        // et PONT ROULANT au-dessus de la cour de sortie — façon référence.
+        apron(0, 0, W * 1.04, H * 0.96, '#3d4248');
+        lane(W * 0.34, H * 0.3, W * 0.34, H * 0.52);
+        // cheminées d'usine (lecture "industrie lourde")
+        cyl(-W * 0.34, -H * 0.24, 5, H * 0.52, '#5a6168', 0.5, true);
+        cyl(-W * 0.25, -H * 0.22, 5, H * 0.46, '#5a6168', 0.5);
+        // hall principal haut
+        volume(-W * 0.06, -H * 0.04, W * 0.66, H * 0.5, H * 0.32, '#48505a', { win: 4, seams: 3 });
+        // toit en redans : verrières inclinées (sheds)
+        c.fillStyle = 'rgba(150,200,235,0.32)';
+        for (let i = 0; i < 4; i++) {
+          const x0 = -W * 0.36 + (i * W * 0.6) / 4;
+          const yT = -H * 0.04 - H * 0.5 / 2 - H * 0.32;
+          c.beginPath();
+          c.moveTo(x0, yT + H * 0.06);
+          c.lineTo(x0 + W * 0.09, yT - 3 + H * 0.06);
+          c.lineTo(x0 + W * 0.15, yT + H * 0.06);
+          c.closePath(); c.fill();
+        }
+        roofVents(-W * 0.06, -H * 0.16, W * 0.5, 6);
+        // grande porte blindée + bandes de danger en façade
+        door(-W * 0.06, H * 0.16, W * 0.46, H * 0.2, '#caa536');
+        hazard(-W * 0.06, H * 0.04, W * 0.46, 5);
+        teamMark(W * 0.32, -H * 0.16, W * 0.14, 4);
+        // aile basse est (atelier) + pont roulant au-dessus de la cour
+        volume(W * 0.34, H * 0.02, W * 0.22, H * 0.44, H * 0.16, '#444b54', { win: 2 });
+        gantryVol(W * 0.02, H * 0.34, W * 0.74, H * 0.3);
+        truck(W * 0.36, H * 0.42, W * 0.14, 0);
         break;
       }
 
