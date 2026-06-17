@@ -1704,6 +1704,7 @@ export class Renderer {
     // ================= SOL (inchangé : dalles, marquages, clôtures…)
 
     const apron = (x: number, y: number, w: number, h: number, base = '#3d4248', r = 5) => {
+      base = mix(base, '#2e333a', 0.58);   // béton militaire sombre (tous les socles)
       c.fillStyle = 'rgba(0,0,0,0.22)';
       this.rr(c, x - w / 2 + 2, y - h / 2 + 3, w, h, r); c.fill();
       const gr = c.createLinearGradient(0, y - h / 2, 0, y + h / 2);
@@ -2961,15 +2962,15 @@ export class Renderer {
         c.fillStyle = 'rgba(8,10,8,0.3)';
         octPath(0, 0, W * 0.46); c.fill();
         c.restore();
-        // muret extrudé
-        c.fillStyle = '#4a5055';
+        // muret extrudé (béton blindé sombre)
+        c.fillStyle = mix('#4a5055', STEEL, 0.6);
         octPath(0, 4, W * 0.45); c.fill();
-        c.fillStyle = '#6a7075';
+        c.fillStyle = mix('#6a7075', STEEL, 0.55);
         octPath(0, 0, W * 0.45); c.fill();
         c.strokeStyle = 'rgba(0,0,0,0.5)';
         c.lineWidth = 1.6;
         c.stroke();
-        c.fillStyle = '#454b50';
+        c.fillStyle = mix('#454b50', STEEL, 0.6);
         octPath(0, 0, W * 0.34); c.fill();
         c.strokeStyle = 'rgba(0,0,0,0.35)';
         c.lineWidth = 1;
