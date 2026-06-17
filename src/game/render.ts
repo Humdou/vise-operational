@@ -3584,52 +3584,38 @@ export class Renderer {
       ctx.beginPath(); ctx.arc(px, py, (def.radius + 0.3) * z, 0, Math.PI * 2); ctx.stroke();
     }
 
-    // ----- extrusion 2.5D : ombre décalée + flancs sombres + dessus surélevé.
-    // L'illusion de volume vient de la pile : la copie assombrie ancre le
-    // véhicule au sol, le corps clair est dessiné plus haut à l'écran.
-    const lift = (def.armor === 'inf' ? 0.1 : u.type === 'harvester' ? 0.2 : 0.16) * z;
-
-    // ombre au sol : ellipse ORIENTÉE selon le véhicule et dimensionnée à son
-    // empreinte réelle (visualScale) → l'ombre suit la carrosserie au lieu d'un
-    // disque axial qui « flottait » à côté des véhicules allongés/tournés.
-    if (def.armor !== 'inf') {
-      const rxS = def.radius * 1.32 * visualScale * z;
-      const ryS = def.radius * 0.78 * visualScale * z;
+    // ----- OMBRE DE CONTACT DOUCE (dégradé radial), sous le véhicule. Une seule
+    // ombre, pas de copie sombre dupliquée → fini l'effet de « double ombre ».
+    {
+      const inf = def.armor === 'inf';
+      const rxS = (inf ? def.radius * 1.05 : def.radius * 1.34 * visualScale) * z;
+      const ryS = (inf ? def.radius * 0.64 : def.radius * 0.74 * visualScale) * z;
       ctx.save();
-      ctx.translate(px + z * 0.1, py + z * 0.13);
-      ctx.rotate(u.dir);
-      ctx.fillStyle = 'rgba(0,0,0,0.32)';
-      ctx.beginPath(); ctx.ellipse(0, 0, rxS, ryS, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.translate(px + z * 0.07, py + z * 0.1);
+      if (!inf) ctx.rotate(u.dir);
+      ctx.scale(1, ryS / Math.max(0.001, rxS));
+      const sg = ctx.createRadialGradient(0, 0, rxS * 0.2, 0, 0, rxS);
+      sg.addColorStop(0, 'rgba(0,0,0,0.38)');
+      sg.addColorStop(0.65, 'rgba(0,0,0,0.26)');
+      sg.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = sg;
+      ctx.beginPath(); ctx.arc(0, 0, rxS, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
-    } else {
-      // infanterie : petite ombre ronde simple
-      ctx.fillStyle = 'rgba(0,0,0,0.3)';
-      ctx.beginPath();
-      ctx.ellipse(px + z * 0.08, py + z * 0.12, def.radius * 1.1 * z, def.radius * 0.7 * z, 0, 0, Math.PI * 2);
+    }
+
+    // Corps unique, CENTRÉ sur la position de l'unité (l'ombre reste dessous).
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(u.dir);
+    ctx.drawImage(spr.body, -spr.body.width / 2 * s, -spr.body.height / 2 * s, spr.body.width * s, spr.body.height * s);
+    if (u.type === 'harvester' && u.cargo > 1) {
+      const L = def.radius * 2.7 * z * visualScale, Wd = def.radius * 2.1 * z * visualScale;
+      const fillF = Math.min(1, u.cargo / 320);
+      ctx.fillStyle = u.cargoValue > u.cargo * 1.5 ? '#c43050' : '#e7c44a';
+      this.rr(ctx, -L * 0.42, -Wd * 0.27, L * 0.52 * fillF, Wd * 0.54, z * 0.05 * visualScale);
       ctx.fill();
     }
-
-    // Volume SANS flottement : une tranche sombre légèrement décalée vers l'ombre
-    // (sud-est) fait office de base, puis le corps est dessiné CENTRÉ sur la
-    // position de l'unité — l'ombre reste donc bien sous le véhicule.
-    for (const [img, ddx, ddy] of [
-      [spr.side, z * 0.05, lift * 0.55],
-      [spr.body, 0, 0],
-    ] as [HTMLCanvasElement, number, number][]) {
-      ctx.save();
-      ctx.translate(px + ddx, py + ddy);
-      ctx.rotate(u.dir);
-      ctx.drawImage(img, -img.width / 2 * s, -img.height / 2 * s, img.width * s, img.height * s);
-      // benne du récolteur (sur le corps uniquement)
-      if (img === spr.body && u.type === 'harvester' && u.cargo > 1) {
-        const L = def.radius * 2.7 * z * visualScale, Wd = def.radius * 2.1 * z * visualScale;
-        const fillF = Math.min(1, u.cargo / 320);
-        ctx.fillStyle = u.cargoValue > u.cargo * 1.5 ? '#c43050' : '#e7c44a';
-        this.rr(ctx, -L * 0.42, -Wd * 0.27, L * 0.52 * fillF, Wd * 0.54, z * 0.05 * visualScale);
-        ctx.fill();
-      }
-      ctx.restore();
-    }
+    ctx.restore();
 
     // tourelle pivotante (tank, tank lourd)
     if (spr.turret) {
@@ -3669,7 +3655,7 @@ export class Renderer {
       const oyp = fx * def.radius * 0.42 * z;
       const nose = def.radius * 0.9 * z;
       const lx = px + fx * nose;
-      const ly = py + fy * nose - lift * 0.9;
+      const ly = py + fy * nose;
       const lampR = Math.max(1, z * 0.045);
       ctx.fillStyle = 'rgba(255,224,145,0.52)';
       ctx.beginPath(); ctx.arc(lx + oxp, ly + oyp, lampR, 0, Math.PI * 2); ctx.fill();
@@ -3677,8 +3663,8 @@ export class Renderer {
       ctx.strokeStyle = 'rgba(255,255,255,0.18)';
       ctx.lineWidth = Math.max(1, z * 0.025);
       ctx.beginPath();
-      ctx.moveTo(px - fx * def.radius * 0.45 * z - oxp * 0.55, py - fy * def.radius * 0.45 * z - oyp * 0.55 - lift);
-      ctx.lineTo(px + fx * def.radius * 0.32 * z - oxp * 0.55, py + fy * def.radius * 0.32 * z - oyp * 0.55 - lift);
+      ctx.moveTo(px - fx * def.radius * 0.45 * z - oxp * 0.55, py - fy * def.radius * 0.45 * z - oyp * 0.55);
+      ctx.lineTo(px + fx * def.radius * 0.32 * z - oxp * 0.55, py + fy * def.radius * 0.32 * z - oyp * 0.55);
       ctx.stroke();
     }
 
