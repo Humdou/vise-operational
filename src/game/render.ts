@@ -36,9 +36,10 @@ export interface ViewState {
 
 // Matériau commun des coques (cohérence visuelle façon Planetary Annihilation) :
 // métal neutre + panneaux à la couleur de l'équipe + accents lumineux.
-const HULL_DARK = '#272c31';
-const HULL_MID = '#4a525a';
-const HULL_LIGHT = '#5f6a73';
+const HULL_DARK = '#171b18';
+const HULL_MID = '#30372f';
+const HULL_LIGHT = '#485348';
+const INDUSTRIAL_ACCENT = '#b88f34';
 
 // Résolution des sprites pré-calculés (px par tuile) : le détail est "cuit"
 // une seule fois en haute résolution puis affiché lissé — beaucoup plus fin
@@ -76,9 +77,9 @@ function shade(color: string, f: number): string {
 // Plaque de métal biseautée : dégradé vertical, contour d'encrage, arête claire.
 function plate(c: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number, base: string) {
   const gr = c.createLinearGradient(0, y, 0, y + h);
-  gr.addColorStop(0, shade(base, 0.22));
-  gr.addColorStop(0.45, base);
-  gr.addColorStop(1, shade(base, -0.28));
+  gr.addColorStop(0, shade(base, 0.13));
+  gr.addColorStop(0.45, shade(base, -0.06));
+  gr.addColorStop(1, shade(base, -0.38));
   c.fillStyle = gr;
   c.beginPath();
   if (typeof c.roundRect === 'function') c.roundRect(x, y, w, h, r); else c.rect(x, y, w, h);
@@ -86,7 +87,7 @@ function plate(c: CanvasRenderingContext2D, x: number, y: number, w: number, h: 
   c.strokeStyle = 'rgba(0,0,0,0.55)';
   c.lineWidth = Math.max(1, SPX * 0.03);
   c.stroke();
-  c.strokeStyle = 'rgba(255,255,255,0.28)';
+  c.strokeStyle = 'rgba(235,225,190,0.18)';
   c.lineWidth = 1;
   c.beginPath(); c.moveTo(x + r, y + 1.5); c.lineTo(x + w - r, y + 1.5); c.stroke();
 }
@@ -96,8 +97,9 @@ function armor(c: CanvasRenderingContext2D, pts: [number, number][], base: strin
   let minY = Infinity, maxY = -Infinity;
   for (const p of pts) { minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]); }
   const gr = c.createLinearGradient(0, lightDir < 0 ? minY : maxY, 0, lightDir < 0 ? maxY : minY);
-  gr.addColorStop(0, shade(base, 0.2));
-  gr.addColorStop(1, shade(base, -0.26));
+  gr.addColorStop(0, shade(base, 0.12));
+  gr.addColorStop(0.55, shade(base, -0.06));
+  gr.addColorStop(1, shade(base, -0.36));
   c.fillStyle = gr;
   c.beginPath();
   c.moveTo(pts[0][0], pts[0][1]);
@@ -111,8 +113,8 @@ function armor(c: CanvasRenderingContext2D, pts: [number, number][], base: strin
 
 // Chenille : bande sombre, galets, maillons.
 function tracks(c: CanvasRenderingContext2D, x: number, y: number, len: number, wd: number) {
-  plate(c, x, y, len, wd, wd * 0.3, '#1c2024');
-  c.fillStyle = '#33393f';
+  plate(c, x, y, len, wd, wd * 0.3, '#121614');
+  c.fillStyle = '#252b27';
   const n = Math.max(3, Math.floor(len / (wd * 0.9)));
   for (let k = 0; k < n; k++) {
     c.beginPath();
@@ -129,9 +131,9 @@ function tracks(c: CanvasRenderingContext2D, x: number, y: number, len: number, 
 // Canon : fût cylindrique en dégradé + frein de bouche.
 function barrel(c: CanvasRenderingContext2D, x: number, y: number, len: number, thick: number, brake = true) {
   const gr = c.createLinearGradient(0, y - thick / 2, 0, y + thick / 2);
-  gr.addColorStop(0, '#b9c2c9');
-  gr.addColorStop(0.5, '#7d8790');
-  gr.addColorStop(1, '#3c434a');
+  gr.addColorStop(0, '#929b94');
+  gr.addColorStop(0.5, '#5d665f');
+  gr.addColorStop(1, '#252b29');
   c.fillStyle = gr;
   c.fillRect(x, y - thick / 2, len, thick);
   c.strokeStyle = 'rgba(0,0,0,0.5)';
@@ -183,6 +185,142 @@ function weather(c: CanvasRenderingContext2D, x: number, y: number, w: number, h
       c.beginPath(); c.arc(gx, gy, 1 + rng() * 2.5, 0, Math.PI * 2); c.fill();
     }
   }
+}
+
+// Passe commune de direction artistique : assombrit, unifie et détaille les
+// sprites déjà dessinés. Elle ne change que les pixels précalculés, jamais les
+// données de gameplay.
+function industrialFinish(
+  c: CanvasRenderingContext2D,
+  x: number, y: number, w: number, h: number,
+  seed: number,
+  intensity = 1,
+) {
+  const rng = mulberry32(seed * 97 + 31);
+  c.save();
+  c.globalCompositeOperation = 'destination-over';
+  const shadow = c.createRadialGradient(x + w * 0.6, y + h * 0.72, 1, x + w * 0.58, y + h * 0.72, Math.max(w, h) * 0.55);
+  shadow.addColorStop(0, `rgba(0,0,0,${0.42 * intensity})`);
+  shadow.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = shadow;
+  c.beginPath();
+  c.ellipse(x + w * 0.58, y + h * 0.72, w * 0.46, h * 0.22, -0.08, 0, Math.PI * 2);
+  c.fill();
+  c.restore();
+
+  c.save();
+  c.globalCompositeOperation = 'source-atop';
+
+  const tone = c.createLinearGradient(x, y, x + w, y + h);
+  tone.addColorStop(0, `rgba(226,220,188,${0.045 * intensity})`);
+  tone.addColorStop(0.34, `rgba(39,45,37,${0.12 * intensity})`);
+  tone.addColorStop(0.72, `rgba(10,13,12,${0.2 * intensity})`);
+  tone.addColorStop(1, `rgba(0,0,0,${0.36 * intensity})`);
+  c.fillStyle = tone;
+  c.fillRect(x, y, w, h);
+
+  // Arêtes et renforts ponctuels, pas de quadrillage systématique.
+  c.strokeStyle = `rgba(0,0,0,${0.34 * intensity})`;
+  c.lineWidth = Math.max(1, SPX * 0.022);
+  const ribs = Math.max(3, Math.min(8, Math.floor((w + h) / 42)));
+  for (let i = 0; i < ribs; i++) {
+    const horizontal = rng() < 0.55;
+    const ax = x + w * (0.12 + rng() * 0.68);
+    const ay = y + h * (0.18 + rng() * 0.58);
+    const len = (horizontal ? w : h) * (0.12 + rng() * 0.22);
+    c.beginPath();
+    if (horizontal) {
+      c.moveTo(ax, ay);
+      c.lineTo(Math.min(x + w * 0.9, ax + len), ay + (rng() - 0.5) * 2);
+    } else {
+      c.moveTo(ax, ay);
+      c.lineTo(ax + (rng() - 0.5) * 2, Math.min(y + h * 0.88, ay + len));
+    }
+    c.stroke();
+    c.strokeStyle = `rgba(226,220,188,${0.06 * intensity})`;
+    c.lineWidth = 1;
+    c.stroke();
+    c.strokeStyle = `rgba(0,0,0,${0.34 * intensity})`;
+    c.lineWidth = Math.max(1, SPX * 0.022);
+  }
+
+  const rivets = Math.max(6, Math.floor((w * h) / 1100));
+  for (let i = 0; i < rivets; i++) {
+    const clusterX = x + w * (0.14 + rng() * 0.72);
+    const clusterY = y + h * (0.16 + rng() * 0.68);
+    const cluster = rng() < 0.7 ? 2 + Math.floor(rng() * 3) : 1;
+    for (let j = 0; j < cluster; j++) {
+      const rx = clusterX + (j - (cluster - 1) / 2) * (2.8 + rng() * 1.7);
+      const ry = clusterY + (rng() - 0.5) * 2.5;
+      c.fillStyle = `rgba(218,211,178,${0.13 + rng() * 0.11})`;
+      c.beginPath();
+      c.arc(rx, ry, 0.75 + rng() * 0.55, 0, Math.PI * 2);
+      c.fill();
+      c.fillStyle = `rgba(0,0,0,${0.18 + rng() * 0.12})`;
+      c.beginPath();
+      c.arc(rx + 0.7, ry + 0.7, 0.65, 0, Math.PI * 2);
+      c.fill();
+    }
+  }
+
+  c.strokeStyle = `rgba(235,224,190,${0.07 * intensity})`;
+  c.lineWidth = Math.max(1, SPX * 0.015);
+  for (let i = 0; i < 11; i++) {
+    const sx = x + rng() * w;
+    const sy = y + rng() * h;
+    c.beginPath();
+    c.moveTo(sx, sy);
+    c.lineTo(sx + (rng() - 0.5) * 12, sy + (rng() - 0.5) * 12);
+    c.stroke();
+  }
+
+  c.strokeStyle = `rgba(12,10,7,${0.13 * intensity})`;
+  c.lineWidth = Math.max(1, SPX * 0.018);
+  for (let i = 0; i < 5; i++) {
+    const cx = x + w * (0.18 + rng() * 0.64);
+    const cy = y + h * (0.2 + rng() * 0.58);
+    c.beginPath();
+    c.moveTo(cx, cy);
+    c.quadraticCurveTo(cx + (rng() - 0.5) * w * 0.12, cy + h * (0.04 + rng() * 0.08), cx + (rng() - 0.5) * w * 0.16, cy + h * (0.1 + rng() * 0.12));
+    c.stroke();
+  }
+
+  const grime = c.createRadialGradient(x + w * 0.42, y + h * 0.62, 1, x + w * 0.42, y + h * 0.62, Math.max(w, h) * 0.5);
+  grime.addColorStop(0, `rgba(92,76,42,${0.08 * intensity})`);
+  grime.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = grime;
+  c.fillRect(x, y, w, h);
+
+  const lamps = Math.max(2, Math.min(8, Math.floor((w + h) / 36)));
+  for (let i = 0; i < lamps; i++) {
+    const lx = x + w * (0.12 + rng() * 0.76);
+    const ly = y + h * (0.22 + rng() * 0.62);
+    const rr = 1.4 + rng() * 1.4;
+    c.fillStyle = `rgba(255,174,64,${0.08 * intensity})`;
+    c.beginPath(); c.arc(lx, ly, rr * 3.2, 0, Math.PI * 2); c.fill();
+    c.fillStyle = shade(INDUSTRIAL_ACCENT, 0.18);
+    c.beginPath(); c.arc(lx, ly, rr, 0, Math.PI * 2); c.fill();
+  }
+
+  c.fillStyle = `rgba(0,0,0,${0.12 * intensity})`;
+  c.fillRect(x, y + h * 0.82, w, h * 0.18);
+
+  c.strokeStyle = `rgba(184,143,52,${0.18 * intensity})`;
+  c.lineWidth = Math.max(1, SPX * 0.017);
+  const hazardY = y + h * (0.76 + rng() * 0.08);
+  for (let i = 0; i < 4; i++) {
+    const hx = x + w * (0.14 + rng() * 0.68);
+    c.beginPath();
+    c.moveTo(hx, hazardY);
+    c.lineTo(hx + w * 0.035, hazardY - h * 0.018);
+    c.stroke();
+  }
+
+  c.strokeStyle = `rgba(0,0,0,${0.45 * intensity})`;
+  c.lineWidth = Math.max(1, SPX * 0.022);
+  c.strokeRect(x + 1, y + 1, Math.max(0, w - 2), Math.max(0, h - 2));
+
+  c.restore();
 }
 
 export class Renderer {
@@ -1543,9 +1681,29 @@ export class Renderer {
       c.beginPath(); c.moveTo(x1, y1); c.lineTo(x2, y2); c.stroke();
     };
 
+    // ===== NOUVELLE DA : acier blindé sombre + accents d'équipe + lumières chaudes.
+    const px3 = (s: string): [number, number, number] => s.startsWith('#')
+      ? [parseInt(s.slice(1, 3), 16), parseInt(s.slice(3, 5), 16), parseInt(s.slice(5, 7), 16)]
+      : (() => { const m = s.match(/(\d+)\D+(\d+)\D+(\d+)/); return m ? [+m[1], +m[2], +m[3]] : [128, 128, 128]; })();
+    const mix = (a: string, b: string, t: number): string => {
+      const A = px3(a), Bc = px3(b);
+      return `rgb(${Math.round(A[0] + (Bc[0] - A[0]) * t)},${Math.round(A[1] + (Bc[1] - A[1]) * t)},${Math.round(A[2] + (Bc[2] - A[2]) * t)})`;
+    };
+    const STEEL = '#2c333d';                  // acier blindé sombre (corps dominant)
+    const steel = (base: string) => mix(base, STEEL, 0.62);
+    const accent = col;                       // couleur d'équipe = accent fort
+    const accentDark = mix(col, '#000000', 0.32);
+    // rivets aux quatre coins d'un panneau
+    const rivets = (x: number, y: number, w: number, h: number, inset = 4) => {
+      c.fillStyle = 'rgba(0,0,0,0.5)';
+      for (const [rx, ry] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
+        c.beginPath(); c.arc(x + rx * (w / 2 - inset), y + ry * (h / 2 - inset), 1.3, 0, Math.PI * 2); c.fill();
+      }
+    };
+
     // ================= SOL (inchangé : dalles, marquages, clôtures…)
 
-    const apron = (x: number, y: number, w: number, h: number, base = '#73787c', r = 5) => {
+    const apron = (x: number, y: number, w: number, h: number, base = '#3d4248', r = 5) => {
       c.fillStyle = 'rgba(0,0,0,0.22)';
       this.rr(c, x - w / 2 + 2, y - h / 2 + 3, w, h, r); c.fill();
       const gr = c.createLinearGradient(0, y - h / 2, 0, y + h / 2);
@@ -1642,53 +1800,87 @@ export class Renderer {
       opt: { r?: number; win?: number; seams?: number } = {},
     ) => {
       const r = opt.r ?? 3;
+      const B = steel(base);               // corps en acier blindé sombre
       const fy = y + h / 2 - e; // haut de la façade = bord sud du toit
-      // ombre portée au sol, vers le sud-est
-      c.fillStyle = 'rgba(8,10,8,0.30)';
-      this.rr(c, x - w / 2 + e * 0.5, y - h / 2 + e * 0.26, w, h, r + 4); c.fill();
-      // façade sud
+      // ombre portée au sol, vers le sud-est (plus dense)
+      c.fillStyle = 'rgba(4,6,9,0.42)';
+      this.rr(c, x - w / 2 + e * 0.5, y - h / 2 + e * 0.30, w, h, r + 4); c.fill();
+      // ===== façade sud : acier sombre biseauté + panneaux blindés
       const fGr = c.createLinearGradient(0, fy, 0, fy + e);
-      fGr.addColorStop(0, shade(base, -0.04));
-      fGr.addColorStop(0.8, shade(base, -0.36));
-      fGr.addColorStop(1, shade(base, -0.55));
+      fGr.addColorStop(0, shade(B, 0.08));
+      fGr.addColorStop(0.12, shade(B, -0.05));
+      fGr.addColorStop(0.85, shade(B, -0.44));
+      fGr.addColorStop(1, shade(B, -0.62));
       c.fillStyle = fGr;
       c.fillRect(x - w / 2, fy, w, e);
-      const seams = opt.seams ?? Math.max(1, Math.floor(e / 16));
-      c.strokeStyle = 'rgba(0,0,0,0.24)';
-      c.lineWidth = 1;
-      for (let i = 1; i <= seams; i++) line(x - w / 2 + 1, fy + (i * e) / (seams + 1), x + w / 2 - 1, fy + (i * e) / (seams + 1));
-      // fenêtres éclairées en bande haute
+      const panels = Math.max(2, Math.round(w / 22));
+      for (let i = 1; i < panels; i++) {
+        c.strokeStyle = 'rgba(0,0,0,0.32)'; c.lineWidth = 1;
+        line(x - w / 2 + (i * w) / panels, fy + 1, x - w / 2 + (i * w) / panels, fy + e - 1);
+      }
+      const seams = opt.seams ?? Math.max(1, Math.floor(e / 15));
+      for (let i = 1; i <= seams; i++) {
+        const yy = fy + (i * e) / (seams + 1);
+        c.strokeStyle = 'rgba(0,0,0,0.28)'; c.lineWidth = 1; line(x - w / 2 + 1, yy, x + w / 2 - 1, yy);
+        c.strokeStyle = 'rgba(255,255,255,0.05)'; line(x - w / 2 + 1, yy + 1, x + w / 2 - 1, yy + 1);
+      }
+      // ===== fenêtres CHAUDES émissives (rangées) avec halo
       if (opt.win) {
-        c.fillStyle = 'rgba(255,222,140,0.5)';
-        for (let i = 0; i < opt.win; i++) {
-          c.fillRect(x - w / 2 + ((i + 0.5) * w) / opt.win - 2.4, fy + e * 0.16, 4.8, Math.min(7, e * 0.22));
+        const rows = e > 30 ? 2 : 1;
+        for (let rw = 0; rw < rows; rw++) {
+          const wy = fy + e * (0.22 + rw * 0.34);
+          const wh = Math.max(3, Math.min(6, e * 0.16));
+          for (let i = 0; i < opt.win; i++) {
+            const wx = x - w / 2 + ((i + 0.5) * w) / opt.win - 2.1;
+            c.fillStyle = 'rgba(255,150,44,0.20)'; c.fillRect(wx - 2.2, wy - 2, 8.6, wh + 4);
+            c.fillStyle = 'rgba(255,198,104,0.96)'; c.fillRect(wx, wy, 4.2, wh);
+            c.fillStyle = 'rgba(255,240,210,0.9)'; c.fillRect(wx + 1, wy, 1.2, wh);
+          }
         }
       }
+      // bande d'accent d'équipe en pied de façade
+      const ab = Math.max(3, e * 0.1);
+      c.fillStyle = accentDark; c.fillRect(x - w / 2, fy + e - ab, w, ab);
+      c.fillStyle = 'rgba(255,255,255,0.12)'; c.fillRect(x - w / 2, fy + e - ab, w, 1);
       // plinthe + liseré est (profondeur)
-      c.fillStyle = 'rgba(0,0,0,0.3)';
+      c.fillStyle = 'rgba(0,0,0,0.4)';
       c.fillRect(x - w / 2, y + h / 2 - 3, w, 3);
-      c.fillStyle = 'rgba(0,0,0,0.26)';
+      c.fillStyle = 'rgba(0,0,0,0.32)';
       c.fillRect(x + w / 2 - Math.max(2, e * 0.08), fy, Math.max(2, e * 0.08), e);
-      c.strokeStyle = 'rgba(0,0,0,0.45)';
-      c.lineWidth = 1.2;
+      c.strokeStyle = 'rgba(0,0,0,0.5)';
+      c.lineWidth = 1.3;
       c.strokeRect(x - w / 2, fy, w, e);
-      // toit
+      // ===== toit : acier sombre, panneaux, chevron d'équipe, rivets, témoin
       const roof = c.createLinearGradient(0, y - h / 2 - e, 0, y + h / 2 - e);
-      roof.addColorStop(0, shade(base, 0.3));
-      roof.addColorStop(0.5, shade(base, 0.08));
-      roof.addColorStop(1, shade(base, -0.1));
+      roof.addColorStop(0, shade(B, 0.24));
+      roof.addColorStop(0.5, shade(B, 0.0));
+      roof.addColorStop(1, shade(B, -0.18));
       c.fillStyle = roof;
       this.rr(c, x - w / 2, y - h / 2 - e, w, h, r); c.fill();
-      c.strokeStyle = 'rgba(0,0,0,0.55)';
+      c.strokeStyle = 'rgba(0,0,0,0.2)'; c.lineWidth = 1;
+      for (let i = 1; i < panels; i++) line(x - w / 2 + (i * w) / panels, y - h / 2 - e + 2, x - w / 2 + (i * w) / panels, y + h / 2 - e - 2);
+      // chevron d'accent d'équipe (lecture immédiate de la faction)
+      const cs = Math.min(w, h) * 0.17, cyr = y - e;
+      c.fillStyle = accent;
+      c.beginPath();
+      c.moveTo(x - cs, cyr + cs * 0.55); c.lineTo(x, cyr - cs * 0.5); c.lineTo(x + cs, cyr + cs * 0.55);
+      c.lineTo(x + cs * 0.5, cyr + cs * 0.55); c.lineTo(x, cyr + cs * 0.02); c.lineTo(x - cs * 0.5, cyr + cs * 0.55);
+      c.closePath(); c.fill();
+      c.strokeStyle = 'rgba(0,0,0,0.6)';
       c.lineWidth = 1.6;
-      c.stroke();
-      c.strokeStyle = 'rgba(255,255,255,0.35)';
+      this.rr(c, x - w / 2, y - h / 2 - e, w, h, r); c.stroke();
+      c.strokeStyle = 'rgba(255,255,255,0.42)';
       c.lineWidth = 1.4;
       line(x - w / 2 + r, fy, x + w / 2 - r, fy);
+      rivets(x, y - e, w, h, 5);
+      // bloc d'équipement + témoin rouge clignotant
+      c.fillStyle = shade(B, -0.22); c.fillRect(x + w * 0.18, y - e - 3, 7, 6);
+      c.fillStyle = 'rgba(255,90,74,0.95)'; c.beginPath(); c.arc(x + w * 0.18 + 3.5, y - e - 3, 1.4, 0, Math.PI * 2); c.fill();
     };
 
     // baraquement à toit deux pans : façade + pan sud clair + pan nord sombre
     const gableVol = (x: number, y: number, w: number, h: number, e: number, base: string) => {
+      base = steel(base);
       const fy = y + h / 2 - e;
       c.fillStyle = 'rgba(8,10,8,0.30)';
       this.rr(c, x - w / 2 + e * 0.5, y - h / 2 + e * 0.26, w, h, 4); c.fill();
@@ -1718,6 +1910,7 @@ export class Renderer {
 
     // cylindre vertical (cuve, cheminée, tour) — pied au sol en (x,y)
     const cyl = (x: number, y: number, rad: number, e: number, base: string, mouth = 0, band = false) => {
+      base = mix(base, STEEL, 0.42);
       c.fillStyle = 'rgba(8,10,8,0.30)';
       c.beginPath(); c.ellipse(x + e * 0.4, y + e * 0.16, rad * 1.05, rad * 0.5, 0, 0, Math.PI * 2); c.fill();
       const gr = c.createLinearGradient(x - rad, 0, x + rad, 0);
@@ -1795,6 +1988,7 @@ export class Renderer {
 
     // citerne horizontale couchée est-ouest, posée au sol en y
     const hTankV = (x: number, y: number, len: number, dia: number, base: string) => {
+      base = mix(base, STEEL, 0.4);
       c.fillStyle = 'rgba(8,10,8,0.30)';
       this.rr(c, x - len / 2 + dia * 0.3, y - dia * 0.2, len, dia * 0.55, dia * 0.27); c.fill();
       const gr = c.createLinearGradient(0, y - dia, 0, y);
@@ -2084,117 +2278,454 @@ export class Renderer {
       c.fill();
     }
 
+    const industrialBlock = (x: number, y: number, w: number, h: number, e: number, base: string) => {
+      base = steel(base);
+      const fy = y + h / 2 - e;
+      c.fillStyle = 'rgba(0,0,0,0.3)';
+      c.fillRect(x - w / 2 + e * 0.28, y - h / 2 + e * 0.16, w, h);
+      c.fillStyle = shade(base, -0.48);
+      c.fillRect(x - w / 2, fy, w, e);
+      c.fillStyle = shade(base, -0.68);
+      c.fillRect(x + w / 2 - Math.max(3, e * 0.12), fy, Math.max(3, e * 0.12), e);
+      const top = c.createLinearGradient(0, y - h / 2 - e, 0, y + h / 2 - e);
+      top.addColorStop(0, shade(base, 0.2));
+      top.addColorStop(0.55, shade(base, -0.02));
+      top.addColorStop(1, shade(base, -0.25));
+      c.fillStyle = top;
+      c.fillRect(x - w / 2, y - h / 2 - e, w, h);
+      c.strokeStyle = 'rgba(0,0,0,0.68)';
+      c.lineWidth = 1.4;
+      c.strokeRect(x - w / 2, fy, w, e);
+      c.strokeRect(x - w / 2, y - h / 2 - e, w, h);
+      c.strokeStyle = 'rgba(230,224,190,0.12)';
+      c.lineWidth = 1;
+      line(x - w / 2 + 2, y - h / 2 - e + 2, x + w / 2 - 2, y - h / 2 - e + 2);
+    };
+
+    const techPlate = (x: number, y: number, w: number, h: number, base = '#20261f') => {
+      c.fillStyle = base;
+      c.fillRect(x - w / 2, y - h / 2, w, h);
+      c.strokeStyle = 'rgba(0,0,0,0.68)';
+      c.lineWidth = 1.1;
+      c.strokeRect(x - w / 2, y - h / 2, w, h);
+      c.strokeStyle = 'rgba(230,224,190,0.12)';
+      c.lineWidth = 1;
+      line(x - w / 2 + 1, y - h / 2 + 1, x + w / 2 - 1, y - h / 2 + 1);
+    };
+
+    const ventPanel = (x: number, y: number, w: number, h: number, n = 5) => {
+      techPlate(x, y, w, h, '#121714');
+      c.strokeStyle = 'rgba(130,136,124,0.58)';
+      c.lineWidth = 1;
+      for (let i = 1; i < n; i++) line(x - w / 2 + (i * w) / n, y - h / 2 + 2, x - w / 2 + (i * w) / n, y + h / 2 - 2);
+    };
+
+    const tinyRivets = (x: number, y: number, w: number, n: number) => {
+      c.fillStyle = 'rgba(218,211,178,0.2)';
+      for (let i = 0; i < n; i++) {
+        c.beginPath();
+        c.arc(x - w / 2 + ((i + 0.5) * w) / n, y, 1, 0, Math.PI * 2);
+        c.fill();
+      }
+    };
+
+    const warmLamp = (x: number, y: number, r = 1.9) => {
+      c.fillStyle = 'rgba(255,174,64,0.1)';
+      c.beginPath(); c.arc(x, y, r * 2.7, 0, Math.PI * 2); c.fill();
+      c.fillStyle = '#d79a42';
+      c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
+    };
+
+    const grimeStreaks = (x: number, y: number, w: number, h: number, seedOffset: number, count: number) => {
+      const r2 = mulberry32(seed * 31 + seedOffset);
+      for (let i = 0; i < count; i++) {
+        const sx2 = x - w / 2 + r2() * w;
+        const sy2 = y - h / 2 + r2() * h;
+        c.strokeStyle = `rgba(12,10,7,${0.14 + r2() * 0.14})`;
+        c.lineWidth = 1;
+        c.beginPath();
+        c.moveTo(sx2, sy2);
+        c.lineTo(sx2 + (r2() - 0.5) * w * 0.08, sy2 + (r2() - 0.5) * h * 0.05);
+        c.stroke();
+      }
+    };
+
     // ---- une silhouette et une HAUTEUR uniques par bâtiment
     switch (type) {
-      // ============ QG : centre de commandement imposant, tour haute + radar
+      // ============ QG : forteresse de commandement inspirée de la référence
       case 'hq': {
-        apron(0, 4, W * 1.05, H * 0.96, '#787d81');
-        helipad(-W * 0.34, H * 0.3, W * 0.12);
-        lane(W * 0.12, H * 0.4, W * 0.12, H * 0.52);
-        // ferme d'antennes ouest (très haute)
-        antenna(-W * 0.4, -H * 0.06, H * 0.52, W * 0.07);
-        antenna(-W * 0.3, 0, H * 0.34, W * 0.05);
-        // tour de commandement nord-est (la plus haute structure de la base)
-        volume(W * 0.27, -H * 0.16, W * 0.26, H * 0.26, H * 0.38, '#2c343b', { win: 3, seams: 3 });
-        glass(W * 0.27, -H * 0.295, W * 0.2, 6, true);
-        dish(W * 0.27, -H * 0.55, W * 0.14, -0.25);
-        // aile nord-ouest
-        volume(-W * 0.06, -H * 0.06, W * 0.5, H * 0.26, H * 0.2, '#39414a', { win: 4 });
-        dish(-W * 0.16, -H * 0.33, W * 0.07, -0.6);
-        // corps principal sud
-        volume(W * 0.1, H * 0.18, W * 0.66, H * 0.34, H * 0.23, '#3d454e', { win: 5, seams: 2 });
-        star(W * 0.1, -H * 0.04, W * 0.075);
-        teamMark(W * 0.1, H * 0.21, W * 0.4, 5);
-        door(W * 0.1, H * 0.305, W * 0.2, H * 0.1, '#caa536');
-        antenna(W * 0.44, H * 0.08, H * 0.3, W * 0.05);
-        sandbags(-W * 0.1, H * 0.42, W * 0.2, 0.1);
-        sandbags(W * 0.32, H * 0.44, W * 0.2, -0.08);
-        flag(-W * 0.46, H * 0.12, H * 0.24);
+        const trim = '#b88f34';
+        const slab = (pts: [number, number][], fill: string, stroke = 'rgba(0,0,0,0.52)') => {
+          c.fillStyle = fill;
+          c.beginPath();
+          c.moveTo(pts[0][0], pts[0][1]);
+          for (let i = 1; i < pts.length; i++) c.lineTo(pts[i][0], pts[i][1]);
+          c.closePath();
+          c.fill();
+          c.strokeStyle = stroke;
+          c.lineWidth = 1.4;
+          c.stroke();
+        };
+        const hardBlock = (x: number, y: number, w: number, d: number, e: number, base: string) => {
+          const fy = y + d / 2 - e;
+          c.fillStyle = 'rgba(0,0,0,0.34)';
+          c.fillRect(x - w / 2 + e * 0.32, y - d / 2 + e * 0.18, w, d);
+
+          c.fillStyle = shade(base, -0.48);
+          c.fillRect(x - w / 2, fy, w, e);
+          c.fillStyle = shade(base, -0.68);
+          c.fillRect(x + w / 2 - Math.max(4, e * 0.12), fy, Math.max(4, e * 0.12), e);
+
+          const top = c.createLinearGradient(0, y - d / 2 - e, 0, y + d / 2 - e);
+          top.addColorStop(0, shade(base, 0.22));
+          top.addColorStop(0.48, shade(base, 0.02));
+          top.addColorStop(1, shade(base, -0.22));
+          c.fillStyle = top;
+          c.fillRect(x - w / 2, y - d / 2 - e, w, d);
+
+          c.strokeStyle = 'rgba(0,0,0,0.72)';
+          c.lineWidth = 1.6;
+          c.strokeRect(x - w / 2, fy, w, e);
+          c.strokeRect(x - w / 2, y - d / 2 - e, w, d);
+
+          c.strokeStyle = 'rgba(230,224,190,0.13)';
+          c.lineWidth = 1;
+          line(x - w / 2 + 2, y - d / 2 - e + 2, x + w / 2 - 2, y - d / 2 - e + 2);
+        };
+        const platePanel = (x: number, y: number, w: number, h: number, base = '#252b25') => {
+          c.fillStyle = base;
+          c.fillRect(x - w / 2, y - h / 2, w, h);
+          c.strokeStyle = 'rgba(0,0,0,0.7)';
+          c.lineWidth = 1.1;
+          c.strokeRect(x - w / 2, y - h / 2, w, h);
+          c.strokeStyle = 'rgba(230,224,190,0.12)';
+          c.lineWidth = 1;
+          line(x - w / 2 + 1, y - h / 2 + 1, x + w / 2 - 1, y - h / 2 + 1);
+        };
+        const rivets = (x: number, y: number, w: number, n: number) => {
+          c.fillStyle = 'rgba(218,211,178,0.22)';
+          for (let i = 0; i < n; i++) {
+            c.beginPath();
+            c.arc(x - w / 2 + ((i + 0.5) * w) / n, y, 1.1, 0, Math.PI * 2);
+            c.fill();
+          }
+        };
+        const light = (x: number, y: number, r = 2.2) => {
+          c.fillStyle = 'rgba(255,174,64,0.1)';
+          c.beginPath(); c.arc(x, y, r * 2.8, 0, Math.PI * 2); c.fill();
+          c.fillStyle = '#d79a42';
+          c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
+        };
+        const vent = (x: number, y: number, w: number, h: number, n = 5) => {
+          platePanel(x, y, w, h, '#121714');
+          c.strokeStyle = 'rgba(125,132,120,0.6)';
+          c.lineWidth = 1;
+          for (let i = 1; i < n; i++) line(x - w / 2 + (i * w) / n, y - h / 2 + 2, x - w / 2 + (i * w) / n, y + h / 2 - 2);
+        };
+        const stair = (x: number, y: number, w: number, h: number) => {
+          slab([[x - w / 2, y - h / 2], [x + w / 2, y - h / 2], [x + w * 0.35, y + h / 2], [x - w * 0.35, y + h / 2]], '#242a26');
+          c.strokeStyle = 'rgba(210,205,175,0.24)';
+          c.lineWidth = 1;
+          for (let i = 1; i < 5; i++) {
+            const yy = y - h / 2 + (i * h) / 5;
+            line(x - w / 2 + i * w * 0.03, yy, x + w / 2 - i * w * 0.03, yy);
+          }
+        };
+
+        // Dalle découpée et sale, proche d'une base industrielle lourde.
+        slab([
+          [-W * 0.52, -H * 0.14], [-W * 0.42, -H * 0.34], [W * 0.46, -H * 0.34],
+          [W * 0.52, H * 0.18], [W * 0.4, H * 0.33], [W * 0.22, H * 0.33],
+          [W * 0.17, H * 0.49], [-W * 0.17, H * 0.49], [-W * 0.22, H * 0.33],
+          [-W * 0.52, H * 0.32],
+        ], '#3f433e');
+        c.fillStyle = 'rgba(18,15,12,0.18)';
+        for (const [gx, gy, gw, gh] of [
+          [-0.38, 0.25, 0.16, 0.07], [0.28, 0.25, 0.18, 0.08], [0.02, -0.29, 0.24, 0.05],
+          [-0.12, 0.39, 0.16, 0.035], [0.22, -0.24, 0.18, 0.04],
+        ] as const) c.fillRect(W * gx, H * gy, W * gw, H * gh);
+        lane(0, H * 0.48, W * 0.3, H * 0.58);
+        c.strokeStyle = 'rgba(184,143,52,0.5)';
+        c.lineWidth = 1.4;
+        line(-W * 0.42, H * 0.31, W * 0.42, H * 0.31);
+        line(-W * 0.4, -H * 0.29, W * 0.4, -H * 0.29);
+
+        // Corps bas : volumes nets sans arrondis, plus béton/métal.
+        hardBlock(-W * 0.27, H * 0.1, W * 0.29, H * 0.46, H * 0.31, '#30362f');
+        hardBlock(W * 0.27, H * 0.1, W * 0.29, H * 0.46, H * 0.31, '#2e352e');
+        hardBlock(0, H * 0.16, W * 0.58, H * 0.46, H * 0.38, '#3a4038');
+
+        // Façade principale : blindage, porte, escaliers, lumière et marquage.
+        door(0, H * 0.39, W * 0.25, H * 0.18, trim);
+        stair(0, H * 0.49, W * 0.2, H * 0.16);
+        slab([[-W * 0.18, H * 0.25], [W * 0.18, H * 0.25], [W * 0.12, H * 0.34], [-W * 0.12, H * 0.34]], '#171c18');
+        teamMark(0, H * 0.28, W * 0.31, 5);
+        light(-W * 0.16, H * 0.34);
+        light(W * 0.16, H * 0.34);
+        hazard(0, H * 0.52, W * 0.28, 5);
+
+        // Casser les grands aplats : contreforts, trappes, fenêtres, rivets.
+        for (const x2 of [-0.38, -0.25, -0.14, 0.14, 0.25, 0.38]) {
+          platePanel(W * x2, H * 0.19, W * 0.075, H * 0.26, '#20261f');
+          rivets(W * x2, H * 0.07, W * 0.055, 3);
+          c.fillStyle = 'rgba(255,180,75,0.55)';
+          c.fillRect(W * x2 - W * 0.025, H * 0.12, W * 0.05, 4);
+        }
+        for (const [px2, py2, ww, hh] of [
+          [-0.34, -0.04, 0.1, 0.055], [-0.23, -0.06, 0.085, 0.045], [0.22, -0.06, 0.1, 0.045],
+          [0.34, -0.02, 0.085, 0.055], [-0.08, 0.02, 0.1, 0.055], [0.1, 0.02, 0.085, 0.055],
+        ] as const) vent(W * px2, H * py2, W * ww, H * hh, 5);
+
+        // Niveau supérieur : toit encombré, pas une surface vide.
+        hardBlock(0, -H * 0.09, W * 0.5, H * 0.31, H * 0.28, '#4b5148');
+        slab([[-W * 0.32, -H * 0.25], [W * 0.24, -H * 0.25], [W * 0.27, -H * 0.08], [-W * 0.29, -H * 0.08]], '#343b34');
+        roofVents(-W * 0.12, -H * 0.24, W * 0.28, 7);
+        platePanel(W * 0.1, -H * 0.19, W * 0.18, H * 0.09, '#1f251f');
+        platePanel(-W * 0.32, -H * 0.16, W * 0.15, H * 0.08, '#1f251f');
+        vent(W * 0.29, -H * 0.12, W * 0.14, H * 0.075, 6);
+        vent(-W * 0.04, -H * 0.27, W * 0.16, H * 0.065, 6);
+        pipe(-W * 0.38, -H * 0.1, W * 0.26, -H * 0.04, 3, W * 0.1);
+        pipe(-W * 0.1, -H * 0.31, W * 0.28, -H * 0.2, 2.5, -W * 0.08);
+        hTankV(W * 0.02, -H * 0.12, W * 0.16, H * 0.075, '#5e665f');
+        hTankV(-W * 0.2, -H * 0.1, W * 0.14, H * 0.07, '#585f59');
+
+        // Tour centrale : silhouette dure, vitrages petits, dôme technique.
+        hardBlock(0, -H * 0.27, W * 0.22, H * 0.22, H * 0.38, '#394139');
+        cyl(0, -H * 0.38, W * 0.075, H * 0.2, '#656c62', 0.2);
+        glass(0, -H * 0.48, W * 0.19, 7, true);
+        c.fillStyle = '#252b25';
+        c.beginPath(); c.ellipse(0, -H * 0.6, W * 0.09, H * 0.035, 0, 0, Math.PI * 2); c.fill();
+        c.strokeStyle = 'rgba(230,224,190,0.4)';
+        c.lineWidth = 1.4;
+        c.beginPath(); c.ellipse(0, -H * 0.6, W * 0.09, H * 0.035, 0, 0, Math.PI * 2); c.stroke();
+
+        // Énorme parabole haute : nervures visibles, pied industriel.
+        c.strokeStyle = '#111613';
+        c.lineWidth = 5;
+        line(W * 0.22, -H * 0.27, W * 0.34, -H * 0.55);
+        line(W * 0.44, -H * 0.27, W * 0.34, -H * 0.55);
+        line(W * 0.22, -H * 0.27, W * 0.44, -H * 0.27);
+        c.strokeStyle = 'rgba(230,224,190,0.18)';
+        c.lineWidth = 1.6;
+        line(W * 0.27, -H * 0.33, W * 0.41, -H * 0.33);
+        line(W * 0.29, -H * 0.44, W * 0.39, -H * 0.44);
+        hardBlock(W * 0.33, -H * 0.21, W * 0.18, H * 0.15, H * 0.13, '#2b322c');
+        c.save();
+        c.translate(W * 0.35, -H * 0.59);
+        c.rotate(-0.62);
+        c.fillStyle = '#222822';
+        c.beginPath(); c.ellipse(0, 0, W * 0.18, W * 0.078, 0, Math.PI * 0.1, Math.PI * 1.9); c.fill();
+        c.strokeStyle = '#9da398';
+        c.lineWidth = 2;
+        c.stroke();
+        c.strokeStyle = 'rgba(230,224,190,0.38)';
+        c.lineWidth = 1;
+        for (const a of [-0.6, -0.3, 0, 0.3, 0.6]) {
+          c.beginPath();
+          c.moveTo(0, 0);
+          c.lineTo(Math.cos(a) * W * 0.16, Math.sin(a) * W * 0.068);
+          c.stroke();
+        }
+        c.beginPath(); c.ellipse(0, 0, W * 0.105, W * 0.043, 0, 0, Math.PI * 2); c.stroke();
+        c.fillStyle = '#101410';
+        c.beginPath(); c.arc(0, 0, W * 0.025, 0, Math.PI * 2); c.fill();
+        c.restore();
+
+        // Tour de gauche avec panneau radar rectangulaire.
+        hardBlock(-W * 0.4, -H * 0.02, W * 0.14, H * 0.22, H * 0.35, '#30372f');
+        c.strokeStyle = '#151a16';
+        c.lineWidth = 3.4;
+        line(-W * 0.4, -H * 0.28, -W * 0.42, -H * 0.52);
+        c.save();
+        c.translate(-W * 0.42, -H * 0.56);
+        c.rotate(-0.55);
+        platePanel(0, 0, W * 0.16, H * 0.055, '#72786d');
+        rivets(0, 0, W * 0.13, 4);
+        c.restore();
+        antenna(-W * 0.3, -H * 0.22, H * 0.42, W * 0.045);
+        antenna(-W * 0.14, -H * 0.32, H * 0.38, W * 0.04);
+        antenna(W * 0.46, -H * 0.03, H * 0.28, W * 0.04);
+        dish(-W * 0.18, -H * 0.38, W * 0.06, -0.25);
+
+        // modules, caisses et quais autour pour retrouver le côté "base vivante".
+        hTankV(-W * 0.27, H * 0.35, W * 0.15, H * 0.085, '#676f68');
+        hTankV(W * 0.27, H * 0.35, W * 0.15, H * 0.085, '#676f68');
+        container(-W * 0.45, H * 0.29, W * 0.11, H * 0.08, '#343a36', 4);
+        container(-W * 0.35, H * 0.39, W * 0.1, H * 0.075, '#6d5536', 4);
+        container(W * 0.41, H * 0.33, W * 0.12, H * 0.085, '#343a36', 4);
+        container(W * 0.48, H * 0.22, W * 0.085, H * 0.07, '#72533c', 3);
+        truck(W * 0.34, H * 0.43, W * 0.13, -0.02);
+        flag(-W * 0.47, H * 0.05, H * 0.22);
+        sandbags(-W * 0.24, H * 0.46, W * 0.19, 0.06);
+        sandbags(W * 0.24, H * 0.46, W * 0.19, -0.06);
+
+        // Salissures ciblées et micro-détails pour casser l'effet "sprite lisse".
+        const hqRng = mulberry32(997);
+        for (let i = 0; i < 32; i++) {
+          const sx2 = -W * 0.42 + hqRng() * W * 0.84;
+          const sy2 = -H * 0.24 + hqRng() * H * 0.68;
+          c.strokeStyle = `rgba(12,10,7,${0.18 + hqRng() * 0.14})`;
+          c.lineWidth = 1;
+          c.beginPath();
+          c.moveTo(sx2, sy2);
+          c.lineTo(sx2 + (hqRng() - 0.5) * W * 0.09, sy2 + (hqRng() - 0.5) * H * 0.045);
+          c.stroke();
+        }
+        for (let i = 0; i < 18; i++) {
+          c.fillStyle = `rgba(45,34,22,${0.12 + hqRng() * 0.1})`;
+          c.beginPath();
+          c.ellipse(-W * 0.42 + hqRng() * W * 0.84, -H * 0.18 + hqRng() * H * 0.62, W * (0.012 + hqRng() * 0.025), H * 0.01, hqRng() * Math.PI, 0, Math.PI * 2);
+          c.fill();
+        }
         break;
       }
 
       // ============ Centrale T1 : petit site (hall bas + cheminée + transfos)
       case 'power': {
-        apron(0, 0, W * 0.98, H * 0.95, '#74797d');
-        cyl(-W * 0.34, -H * 0.26, 5, H * 0.4, '#9aa1a7', 0.6);
-        fence(W * 0.22, 0, W * 0.42, H * 0.78);
-        volume(W * 0.22, -H * 0.16, W * 0.22, H * 0.16, 9, '#565c61');
-        volume(W * 0.22, H * 0.14, W * 0.22, H * 0.16, 9, '#565c61');
-        c.strokeStyle = '#23272b';
-        c.lineWidth = 1.2;
-        for (const oy of [-H * 0.16, H * 0.14]) {
-          for (const ox of [-W * 0.05, W * 0.0, W * 0.05]) line(W * 0.22 + ox, oy - 9, W * 0.22 + ox, oy - 22);
+        apron(0, 0, W * 0.96, H * 0.92, '#4d524c', 4);
+        c.fillStyle = 'rgba(18,15,12,0.18)';
+        c.fillRect(-W * 0.43, H * 0.3, W * 0.86, H * 0.08);
+        c.fillRect(W * 0.12, -H * 0.34, W * 0.22, H * 0.06);
+
+        // salle turbine blindée + salle de contrôle basse.
+        industrialBlock(-W * 0.18, H * 0.08, W * 0.48, H * 0.34, H * 0.2, '#3a4038');
+        industrialBlock(-W * 0.2, -H * 0.13, W * 0.34, H * 0.18, H * 0.13, '#444b43');
+        door(-W * 0.2, H * 0.22, W * 0.15, H * 0.11, '#b88f34');
+        teamMark(-W * 0.2, H * 0.1, W * 0.13, 4);
+        for (const gx of [-0.35, -0.26, -0.12, -0.03]) {
+          ventPanel(W * gx, H * 0.02, W * 0.075, H * 0.07, 4);
+          tinyRivets(W * gx, H * -0.04, W * 0.055, 3);
         }
-        c.fillStyle = '#d8dde0';
-        for (const oy of [-H * 0.16, H * 0.14]) {
-          for (const ox of [-W * 0.05, W * 0.0, W * 0.05]) {
-            c.beginPath(); c.arc(W * 0.22 + ox, oy - 22, 1.8, 0, Math.PI * 2); c.fill();
+
+        // transformateurs, isolateurs et lignes haute tension.
+        for (const [tx, ty] of [[0.22, -0.18], [0.22, 0.1]] as const) {
+          industrialBlock(W * tx, H * ty, W * 0.2, H * 0.15, H * 0.08, '#333a33');
+          c.strokeStyle = '#141915';
+          c.lineWidth = 1.4;
+          for (const ox of [-0.05, 0, 0.05]) line(W * (tx + ox), H * ty - H * 0.08, W * (tx + ox), H * ty - H * 0.22);
+          c.fillStyle = '#bec5bb';
+          for (const ox of [-0.05, 0, 0.05]) {
+            c.beginPath(); c.arc(W * (tx + ox), H * ty - H * 0.22, 1.8, 0, Math.PI * 2); c.fill();
           }
         }
-        gableVol(-W * 0.17, H * 0.08, W * 0.46, H * 0.3, 16, '#454c46');
-        door(-W * 0.17, H * 0.18, W * 0.16, 11, '#caa536');
-        hazard(W * 0.22, H * 0.43, W * 0.34, H * 0.05);
-        teamMark(-W * 0.17, H * 0.1, W * 0.12, 4);
+        c.strokeStyle = 'rgba(190,190,170,0.55)';
+        c.lineWidth = 1;
+        line(W * 0.17, -H * 0.4, W * 0.27, -H * 0.4);
+        line(W * 0.17, -H * 0.12, W * 0.27, -H * 0.12);
+        line(W * 0.17, H * 0.16, W * 0.27, H * 0.16);
+
+        // cheminée et conduites : lecture immédiate "production d'énergie".
+        cyl(-W * 0.39, -H * 0.18, W * 0.055, H * 0.42, '#787f78', 0.58);
+        pipe(-W * 0.36, H * 0.02, -W * 0.06, -H * 0.08, 4, W * 0.08);
+        pipe(-W * 0.02, H * 0.06, W * 0.22, H * 0.1, 4, -W * 0.04);
+        hTankV(W * 0.02, H * 0.28, W * 0.24, H * 0.09, '#626a62');
+        hazard(W * 0.2, H * 0.39, W * 0.36, H * 0.045);
+        warmLamp(-W * 0.35, H * 0.16);
+        warmLamp(W * 0.33, H * 0.27);
+        grimeStreaks(0, H * 0.05, W * 0.82, H * 0.74, 201, 20);
         break;
       }
 
       // ============ Centrale T2 : tours de refroidissement massives
       case 'power2': {
-        apron(0, 0, W * 1.0, H * 0.98, '#6f7478');
-        coolTower(-W * 0.2, -H * 0.02, W * 0.21, H * 0.52);
-        coolTower(W * 0.26, -H * 0.06, W * 0.17, H * 0.43);
-        cyl(W * 0.42, H * 0.06, W * 0.05, H * 0.55, '#c6cbcf', 0.55, true);
-        pipe(-W * 0.2, H * 0.06, -W * 0.06, H * 0.2, 5, 4);
-        pipe(W * 0.26, H * 0.0, W * 0.1, H * 0.2, 5, -4);
-        volume(0, H * 0.3, W * 0.84, H * 0.28, H * 0.22, '#3c4348', { win: 6, seams: 2 });
-        glass(0, H * 0.0, W * 0.5, 5, false);
-        hazard(0, H * 0.41, W * 0.6, H * 0.05);
-        teamMark(-W * 0.3, H * 0.27, W * 0.16, 5);
+        apron(0, 0, W * 1.0, H * 0.96, '#4a504a', 4);
+        coolTower(-W * 0.24, -H * 0.04, W * 0.19, H * 0.5);
+        coolTower(W * 0.23, -H * 0.06, W * 0.16, H * 0.42);
+        cyl(W * 0.42, H * 0.04, W * 0.047, H * 0.52, '#8b928b', 0.55, true);
+
+        industrialBlock(0, H * 0.28, W * 0.78, H * 0.25, H * 0.2, '#343b36');
+        door(W * 0.02, H * 0.37, W * 0.18, H * 0.1, '#b88f34');
+        teamMark(-W * 0.28, H * 0.27, W * 0.15, 5);
+        for (const gx of [-0.22, -0.08, 0.12, 0.28]) ventPanel(W * gx, H * 0.17, W * 0.1, H * 0.06, 5);
+        roofVents(W * 0.08, H * 0.03, W * 0.46, 8);
+
+        pipe(-W * 0.24, H * 0.04, -W * 0.06, H * 0.22, 5, 4);
+        pipe(W * 0.23, H * -0.02, W * 0.1, H * 0.21, 5, -4);
+        pipe(W * 0.32, H * 0.12, W * 0.42, H * 0.2, 4, W * 0.03);
+        hTankV(-W * 0.02, H * 0.07, W * 0.24, H * 0.08, '#5f675f');
+        hTankV(W * 0.25, H * 0.1, W * 0.2, H * 0.075, '#626a62');
+        hazard(0, H * 0.42, W * 0.56, H * 0.045);
+        warmLamp(-W * 0.42, H * 0.22);
+        warmLamp(W * 0.42, H * 0.3);
+        grimeStreaks(0, H * 0.08, W * 0.88, H * 0.78, 202, 24);
         break;
       }
 
       // ============ Raffinerie T1 : extraction (chevalet, citernes couchées)
       case 'refinery': {
-        c.fillStyle = 'rgba(58,46,30,0.5)';
-        c.beginPath(); c.ellipse(-W * 0.22, -H * 0.02, W * 0.26, H * 0.2, 0.2, 0, Math.PI * 2); c.fill();
-        c.fillStyle = '#241d14';
-        c.beginPath(); c.ellipse(-W * 0.26, -H * 0.05, W * 0.13, H * 0.09, 0.2, 0, Math.PI * 2); c.fill();
+        apron(W * 0.08, H * 0.06, W * 0.72, H * 0.82, '#4f514a', 4);
+        c.fillStyle = 'rgba(58,46,30,0.55)';
+        c.beginPath(); c.ellipse(-W * 0.28, -H * 0.02, W * 0.24, H * 0.19, 0.2, 0, Math.PI * 2); c.fill();
+        c.fillStyle = '#21180f';
+        c.beginPath(); c.ellipse(-W * 0.3, -H * 0.04, W * 0.12, H * 0.08, 0.2, 0, Math.PI * 2); c.fill();
         c.fillStyle = '#d4af37';
-        for (let k = 0; k < 8; k++) {
-          c.fillRect(-W * 0.26 + (rng() - 0.5) * W * 0.2, -H * 0.05 + (rng() - 0.5) * H * 0.12, 2, 2);
-        }
-        apron(W * 0.16, H * 0.08, W * 0.6, H * 0.74, '#75726a');
-        flare(W * 0.42, -H * 0.16, H * 0.42);
-        hTankV(W * 0.2, -H * 0.08, W * 0.46, H * 0.16, '#9aa0a5');
-        hTankV(W * 0.26, H * 0.12, W * 0.4, H * 0.14, '#a8763e');
-        pumpjack(-W * 0.24, -H * 0.02, W * 0.52);
-        pipe(-W * 0.12, H * 0.06, W * 0.0, -H * 0.14, 4, 8);
-        pipe(W * 0.2, -H * 0.08, W * 0.24, H * 0.22, 4, -6);
-        volume(W * 0.08, H * 0.34, W * 0.42, H * 0.18, 18, '#4c5046');
-        door(W * 0.08, H * 0.38, W * 0.18, 10, '#caa536');
-        teamMark(W * 0.08, H * 0.3, W * 0.14, 4);
+        for (let k = 0; k < 10; k++) c.fillRect(-W * 0.3 + (rng() - 0.5) * W * 0.18, -H * 0.04 + (rng() - 0.5) * H * 0.1, 2, 2);
+
+        // Unité de traitement : bâtiment compact, blindé, couvert de panneaux.
+        industrialBlock(W * 0.08, H * 0.28, W * 0.42, H * 0.22, H * 0.2, '#3b4038');
+        door(W * 0.08, H * 0.38, W * 0.17, H * 0.1, '#b88f34');
+        teamMark(W * 0.08, H * 0.29, W * 0.14, 4);
+        for (const gx of [-0.08, 0.08, 0.22]) ventPanel(W * gx, H * 0.17, W * 0.08, H * 0.055, 4);
+        tinyRivets(W * 0.08, H * 0.08, W * 0.34, 7);
+
+        // Extraction et convoyage minerai.
+        pumpjack(-W * 0.28, -H * 0.02, W * 0.48);
+        c.strokeStyle = '#151a16';
+        c.lineWidth = 6;
+        line(-W * 0.13, H * 0.03, W * 0.06, H * 0.18);
+        c.strokeStyle = 'rgba(190,170,105,0.48)';
+        c.lineWidth = 2;
+        line(-W * 0.13, H * 0.03, W * 0.06, H * 0.18);
+
+        // Cuves et tuyauterie, lisibles à distance.
+        flare(W * 0.42, -H * 0.18, H * 0.4);
+        hTankV(W * 0.2, -H * 0.1, W * 0.42, H * 0.14, '#81887f');
+        hTankV(W * 0.25, H * 0.08, W * 0.34, H * 0.12, '#8d6539');
+        cyl(W * 0.38, H * 0.22, W * 0.055, H * 0.18, '#777f78', 0.12);
+        pipe(-W * 0.14, H * 0.05, W * 0.01, -H * 0.14, 4, 8);
+        pipe(W * 0.2, -H * 0.1, W * 0.24, H * 0.2, 4, -6);
+        pipe(W * 0.36, H * 0.05, W * 0.1, H * 0.25, 3, W * 0.04);
+
+        // Quai de chargement raffinerie.
+        hazard(W * 0.08, H * 0.47, W * 0.36, H * 0.045);
+        truck(W * 0.34, H * 0.38, W * 0.14, -0.02);
+        warmLamp(W * 0.29, H * 0.28);
+        warmLamp(-W * 0.02, H * 0.36);
+        grimeStreaks(W * 0.06, H * 0.1, W * 0.74, H * 0.76, 301, 24);
         break;
       }
 
       // ============ Raffinerie T2 : complexe à plusieurs niveaux (bacs, colonnes)
       case 'refinery2': {
-        apron(0, 0, W * 1.04, H * 1.0, '#6e7276');
-        flare(W * 0.46, -H * 0.24, H * 0.5);
-        cyl(-W * 0.26, -H * 0.08, W * 0.16, H * 0.24, '#9aa0a5', 0.12);
-        cyl(W * 0.08, -H * 0.16, W * 0.13, H * 0.2, '#a8763e', 0.12);
-        // escalier hélicoïdal du grand bac
-        c.strokeStyle = '#1f2428';
+        apron(0, 0, W * 1.02, H * 0.98, '#4c514b', 4);
+        flare(W * 0.45, -H * 0.24, H * 0.48);
+
+        // Bacs de stockage et traitement multi-niveaux.
+        cyl(-W * 0.28, -H * 0.1, W * 0.15, H * 0.25, '#81887f', 0.12);
+        cyl(W * 0.04, -H * 0.17, W * 0.12, H * 0.21, '#8d6539', 0.12);
+        cyl(-W * 0.32, H * 0.22, W * 0.11, H * 0.17, '#7b837c', 0.12);
+        c.strokeStyle = '#151a16';
         c.lineWidth = 2;
-        line(-W * 0.41, -H * 0.16, -W * 0.12, -H * 0.28);
-        column(W * 0.3, H * 0.04, W * 0.05, H * 0.46);
-        column(W * 0.42, H * 0.08, W * 0.04, H * 0.36);
-        cyl(-W * 0.3, H * 0.24, W * 0.12, H * 0.17, '#8f9499', 0.12);
-        for (const off of [-3, 0, 3]) pipe(-W * 0.26, -H * 0.1 + off, W * 0.27, -H * 0.06 + off, 3, 5);
-        pipe(-W * 0.3, H * 0.24, -W * 0.08, H * 0.32, 4, 4);
-        volume(W * 0.08, H * 0.36, W * 0.5, H * 0.18, 18, '#444a44', { win: 4 });
-        hazard(W * 0.08, H * 0.4, W * 0.4, H * 0.04);
-        truck(-W * 0.34, H * 0.42, W * 0.16, 0);
-        teamMark(W * 0.08, H * 0.31, W * 0.18, 4);
+        line(-W * 0.42, -H * 0.18, -W * 0.14, -H * 0.28);
+        line(-W * 0.38, H * 0.16, -W * 0.22, H * 0.08);
+
+        column(W * 0.28, H * 0.03, W * 0.05, H * 0.44);
+        column(W * 0.39, H * 0.08, W * 0.04, H * 0.35);
+        industrialBlock(W * 0.08, H * 0.35, W * 0.48, H * 0.18, H * 0.18, '#384039');
+        door(W * 0.08, H * 0.41, W * 0.16, H * 0.09, '#b88f34');
+        teamMark(W * 0.08, H * 0.31, W * 0.17, 4);
+        for (const gx of [-0.08, 0.08, 0.24]) ventPanel(W * gx, H * 0.24, W * 0.08, H * 0.05, 4);
+
+        // Réseau de pipelines et zones de chargement.
+        for (const off of [-3, 0, 3]) pipe(-W * 0.27, -H * 0.12 + off, W * 0.25, -H * 0.06 + off, 3, 5);
+        pipe(-W * 0.32, H * 0.22, -W * 0.08, H * 0.32, 4, 4);
+        pipe(W * 0.04, -H * 0.18, W * 0.34, H * 0.03, 3, -W * 0.04);
+        hTankV(W * 0.16, H * 0.08, W * 0.24, H * 0.085, '#606861');
+        hazard(W * 0.08, H * 0.46, W * 0.42, H * 0.04);
+        truck(-W * 0.34, H * 0.42, W * 0.15, 0);
+        warmLamp(-W * 0.42, H * 0.3);
+        warmLamp(W * 0.34, H * 0.28);
+        grimeStreaks(0, H * 0.08, W * 0.9, H * 0.78, 302, 30);
         break;
       }
 
@@ -2498,6 +3029,7 @@ export class Renderer {
       }
     }
     weather(c, -W / 2, -H / 2, W, H, seed);
+    industrialFinish(c, -W / 2, -H / 2 - H * 0.35, W, H * 1.55, seed, 1.1);
     return cv;
   }
 
@@ -2569,6 +3101,15 @@ export class Renderer {
     const c = cv.getContext('2d')!;
     c.translate(cv.width / 2, cv.height / 2);
     return [cv, c];
+  }
+
+  private unitVisualScale(type: string, def: { armor: string; isAir?: boolean }) {
+    if (def.armor === 'inf') return 1.04;
+    if (def.isAir) return type === 'cargoheli' || type === 'transportheli' ? 1.1 : 1.08;
+    if (type === 'harvester' || type === 'mobilecmd') return 1.16;
+    if (type === 'heavytank' || type === 'heavyarty' || type === 'tankdestroyer') return 1.15;
+    if (type === 'artillery' || type === 'tank') return 1.12;
+    return 1.08;
   }
 
   private bakeUnit(type: string, col: string): { body: HTMLCanvasElement; turret?: HTMLCanvasElement } {
@@ -2712,6 +3253,7 @@ export class Renderer {
           break;
       }
       weather(c, -r, -r, r * 2, r * 2, type.length * 17);
+      industrialFinish(c, -r * 1.35, -r * 1.35, r * 2.7, r * 2.7, type.length * 19, 0.55);
       return { body: cv };
     }
 
@@ -2763,6 +3305,7 @@ export class Renderer {
         c.fillStyle = gr2;
         c.beginPath(); c.ellipse(Tz * 0.24, 0, Tz * 0.13, Tz * 0.06, 0, 0, Math.PI * 2); c.fill();
       }
+      industrialFinish(c, -Tz * 0.78, -Tz * 0.56, Tz * 1.56, Tz * 1.12, type.length * 29, 0.75);
       return { body: cv };
     }
 
@@ -2770,6 +3313,29 @@ export class Renderer {
     const [cv, c] = this.newSprite(3);
     const seed = type.length * 31 + 7;
     let turretCv: HTMLCanvasElement | undefined;
+    const lamp = (x: number, y: number, rr = 2.2, color = '#d7c77b') => {
+      c.fillStyle = 'rgba(0,0,0,0.45)';
+      c.beginPath(); c.arc(x + 0.6, y + 0.8, rr * 1.2, 0, Math.PI * 2); c.fill();
+      const gr = c.createRadialGradient(x - rr * 0.25, y - rr * 0.25, 0.4, x, y, rr);
+      gr.addColorStop(0, '#fff7c0'); gr.addColorStop(1, color);
+      c.fillStyle = gr;
+      c.beginPath(); c.arc(x, y, rr, 0, Math.PI * 2); c.fill();
+    };
+    const whip = (x: number, y: number, len: number) => {
+      c.strokeStyle = '#11161a';
+      c.lineWidth = 1.4;
+      c.beginPath(); c.moveTo(x, y); c.quadraticCurveTo(x - len * 0.2, y - len * 0.45, x + len * 0.1, y - len); c.stroke();
+      c.fillStyle = '#e0344a';
+      c.beginPath(); c.arc(x + len * 0.1, y - len, 1.5, 0, Math.PI * 2); c.fill();
+    };
+    const armorBolts = (x: number, y: number, w: number, h: number, count: number) => {
+      c.fillStyle = 'rgba(230,235,232,0.18)';
+      for (let k = 0; k < count; k++) {
+        const px = x + ((k + 0.5) * w) / count;
+        c.beginPath(); c.arc(px, y, 1.2, 0, Math.PI * 2); c.fill();
+        c.beginPath(); c.arc(px, y + h, 1.2, 0, Math.PI * 2); c.fill();
+      }
+    };
 
     if (type === 'jeep') {
       const L = r * 2.3, Wd = r * 1.35;
@@ -2785,6 +3351,12 @@ export class Renderer {
       plate(c, -L * 0.46, -Wd * 0.28, L * 0.3, Wd * 0.56, 3, HULL_DARK); // plateau arrière
       c.fillStyle = '#2c3136';
       c.beginPath(); c.arc(-L * 0.44, 0, Wd * 0.2, 0, Math.PI * 2); c.fill(); // roue de secours
+      c.strokeStyle = '#14191e';
+      c.lineWidth = 2;
+      c.strokeRect(-L * 0.12, -Wd * 0.38, L * 0.28, Wd * 0.76);
+      lamp(L * 0.5, -Wd * 0.24, 2.1);
+      lamp(L * 0.5, Wd * 0.24, 2.1);
+      whip(-L * 0.38, -Wd * 0.24, Wd * 0.7);
       greebles(c, -L * 0.4, -Wd * 0.4, L * 0.3, Wd * 0.8, seed, 4);
       weather(c, -L / 2, -Wd / 2, L, Wd, seed);
     } else if (type === 'tank' || type === 'heavytank') {
@@ -2797,6 +3369,9 @@ export class Renderer {
         [L * 0.22, Wd * 0.28], [-L * 0.48, Wd * 0.28],
       ], HULL_MID);
       armor(c, [[L * 0.2, -Wd * 0.26], [L * 0.47, 0], [L * 0.2, Wd * 0.26]], col); // glacis d'équipe
+      plate(c, -L * 0.16, -Wd * 0.18, L * 0.24, Wd * 0.12, 2, '#2a3036');
+      plate(c, -L * 0.16, Wd * 0.06, L * 0.24, Wd * 0.12, 2, '#2a3036');
+      armorBolts(-L * 0.42, -Wd * 0.31, L * 0.72, Wd * 0.62, heavy ? 8 : 6);
       c.strokeStyle = 'rgba(0,0,0,0.4)'; c.lineWidth = 1; // grilles moteur
       for (let k = 0; k < 4; k++) {
         c.beginPath();
@@ -2814,6 +3389,8 @@ export class Renderer {
         barrel(tc, tr * 0.4, Wd * 0.13, L * 0.78, 5);
         plate(tc, -tr, -tr * 0.85, tr * 2, tr * 1.7, tr * 0.4, HULL_DARK);
         plate(tc, -tr * 0.62, -tr * 0.55, tr * 1.24, tr * 1.1, tr * 0.3, col);
+        tc.fillStyle = '#20262b';
+        tc.fillRect(-tr * 0.2, -tr * 0.85, tr * 0.38, tr * 0.16);
       } else {
         barrel(tc, tr * 0.3, 0, L * 0.8, 5.5);
         const gr2 = tc.createRadialGradient(-tr * 0.3, -tr * 0.3, 2, 0, 0, tr);
@@ -2827,6 +3404,9 @@ export class Renderer {
         tc.beginPath(); tc.arc(0, 0, tr * 0.66, 0, Math.PI * 2); tc.fill();
         tc.fillStyle = 'rgba(255,255,255,0.4)';
         tc.beginPath(); tc.arc(-tr * 0.2, -tr * 0.2, tr * 0.18, 0, Math.PI * 2); tc.fill(); // écoutille
+        tc.strokeStyle = '#151a1f';
+        tc.lineWidth = 1.2;
+        tc.beginPath(); tc.arc(-tr * 0.2, -tr * 0.2, tr * 0.25, 0, Math.PI * 2); tc.stroke();
       }
       turretCv = tcv;
     } else if (type === 'artillery' || type === 'heavyarty') {
@@ -2850,6 +3430,9 @@ export class Renderer {
       c.fillStyle = '#e8c84a';
       c.fillRect(-L * 0.62, -Wd * 0.52, L * 0.16, Wd * 0.14);
       c.fillRect(-L * 0.62, Wd * 0.38, L * 0.16, Wd * 0.14);
+      c.fillStyle = '#1d2227';
+      c.fillRect(-L * 0.45, -Wd * 0.42, L * 0.18, Wd * 0.18);
+      c.fillRect(-L * 0.45, Wd * 0.24, L * 0.18, Wd * 0.18);
       // berceau + cylindres de recul + canon
       plate(c, -L * 0.12, -Wd * 0.2, L * 0.34, Wd * 0.4, 3, HULL_DARK);
       c.strokeStyle = '#9aa6b0'; c.lineWidth = 2;
@@ -2884,6 +3467,12 @@ export class Renderer {
       c.fillStyle = '#2c3136'; // cheminées
       c.beginPath(); c.arc(L * 0.3, -Wd * 0.4, 4.4, 0, Math.PI * 2); c.fill();
       c.beginPath(); c.arc(L * 0.3, Wd * 0.4, 4.4, 0, Math.PI * 2); c.fill();
+      c.strokeStyle = '#8c969f';
+      c.lineWidth = 2;
+      c.beginPath(); c.moveTo(-L * 0.15, -Wd * 0.36); c.lineTo(-L * 0.36, -Wd * 0.58); c.stroke();
+      c.beginPath(); c.moveTo(-L * 0.15, Wd * 0.36); c.lineTo(-L * 0.36, Wd * 0.58); c.stroke();
+      lamp(L * 0.62, -Wd * 0.28, 2.4, '#f0c44f');
+      lamp(L * 0.62, Wd * 0.28, 2.4, '#f0c44f');
       greebles(c, -L * 0.4, -Wd * 0.28, L * 0.2, Wd * 0.56, seed, 4);
       weather(c, -L / 2, -Wd / 2, L, Wd, seed);
     } else if (type === 'tankdestroyer') {
@@ -2919,6 +3508,10 @@ export class Renderer {
       c.fillStyle = gr2;
       c.beginPath(); c.arc(0, 0, Wd * 0.26, 0, Math.PI * 2); c.fill(); // dôme
       c.strokeStyle = 'rgba(0,0,0,0.4)'; c.lineWidth = 1; c.stroke();
+      whip(-L * 0.25, -Wd * 0.25, Wd * 0.9);
+      c.strokeStyle = '#13191f';
+      c.lineWidth = 1.4;
+      c.beginPath(); c.arc(0, 0, Wd * 0.36, -0.35, 0.35); c.stroke();
       greebles(c, -L * 0.3, -Wd * 0.4, L * 0.5, Wd * 0.8, seed, 4);
       weather(c, -L / 2, -Wd / 2, L, Wd, seed);
     } else if (type === 'mobilecmd') {
@@ -2938,8 +3531,17 @@ export class Renderer {
       c.beginPath(); c.arc(-L * 0.18, -Wd * 0.6, Wd * 0.12, 0, Math.PI * 2); c.stroke();
       c.fillStyle = '#e8c84a';
       c.fillRect(L * 0.3, -Wd * 0.42, L * 0.11, Wd * 0.84);
+      whip(-L * 0.38, -Wd * 0.38, Wd * 0.9);
+      whip(-L * 0.28, Wd * 0.38, Wd * 0.75);
+      lamp(L * 0.48, -Wd * 0.24, 2.3, '#d7c77b');
+      lamp(L * 0.48, Wd * 0.24, 2.3, '#d7c77b');
       greebles(c, -L * 0.45, -Wd * 0.42, L * 0.75, Wd * 0.84, seed, 8);
       weather(c, -L / 2, -Wd / 2, L, Wd, seed);
+    }
+    industrialFinish(c, -T * 1.35, -T * 1.1, T * 2.7, T * 2.2, seed, 0.95);
+    if (turretCv) {
+      const tc = turretCv.getContext('2d')!;
+      industrialFinish(tc, -T * 1.1, -T * 1.1, T * 2.2, T * 2.2, seed + 17, 0.85);
     }
     return { body: cv, turret: turretCv };
   }
@@ -2954,7 +3556,8 @@ export class Renderer {
     const px = sx(ox ?? u.x), py = sy(oy ?? u.y);
     const col = PLAYER_COLORS[u.owner];
     const spr = this.unitSprites(u.type, u.owner);
-    const s = z / SPX;
+    const visualScale = this.unitVisualScale(u.type, def);
+    const s = (z / SPX) * visualScale;
 
     if (selected) {
       ctx.fillStyle = 'rgba(255,255,255,0.055)';
@@ -2995,10 +3598,10 @@ export class Renderer {
       ctx.drawImage(img, -img.width / 2 * s, -img.height / 2 * s, img.width * s, img.height * s);
       // surcouche : remplissage de la benne du récolteur (sur le dessus seulement)
       if (dy === -lift && u.type === 'harvester' && u.cargo > 1) {
-        const L = def.radius * 2.7 * z, Wd = def.radius * 2.1 * z;
+        const L = def.radius * 2.7 * z * visualScale, Wd = def.radius * 2.1 * z * visualScale;
         const fillF = Math.min(1, u.cargo / 320);
         ctx.fillStyle = u.cargoValue > u.cargo * 1.5 ? '#c43050' : '#e7c44a';
-        this.rr(ctx, -L * 0.42, -Wd * 0.27, L * 0.52 * fillF, Wd * 0.54, z * 0.05);
+        this.rr(ctx, -L * 0.42, -Wd * 0.27, L * 0.52 * fillF, Wd * 0.54, z * 0.05 * visualScale);
         ctx.fill();
       }
       ctx.restore();
@@ -3577,6 +4180,34 @@ export class Renderer {
 
   // --------------------------------------------------------------- bâtiments
 
+  private buildingVisualScale(type: string) {
+    switch (type) {
+      case 'hq':
+        return 1.14;
+      case 'factory2':
+      case 'refinery2':
+      case 'power2':
+      case 'lab':
+        return 1.17;
+      case 'factory':
+      case 'refinery':
+      case 'airport':
+      case 'helipad':
+      case 'radarcenter':
+        return 1.14;
+      case 'barracks2':
+      case 'tech':
+      case 'radar':
+        return 1.12;
+      case 'turret':
+      case 'atgun':
+      case 'aa':
+        return 1.08;
+      default:
+        return 1.1;
+    }
+  }
+
   // Rendu via sprite courbe pré-cuit + surcouches animées.
   private drawBuildingSprite(
     ctx: CanvasRenderingContext2D, g: Game, b: Building,
@@ -3588,7 +4219,8 @@ export class Renderer {
     const col = PLAYER_COLORS[b.owner];
     const cx = px + bw / 2, cy = py + bh / 2;
     const spr = this.buildingSprite(b.type, b.owner);
-    const s = z / 44;
+    const visualScale = this.buildingVisualScale(b.type);
+    const s = (z / 44) * visualScale;
     const sw = spr.width * s, sh = spr.height * s;
     const bx0 = cx - sw / 2, by0 = cy - sh / 2;
     const drawBuildProgress = (progress: number, fill: string) => {
@@ -3785,13 +4417,23 @@ export class Renderer {
     // Elles ne s'activent qu'à la fin du chantier (feedback de mise en service).
     if (b.built) switch (b.type) {
       case 'hq': {
-        // feu anticollision rouge en tête du mât ouest
+        // feux anticollision sur les mâts et veille chaude de la tour de commandement
         const blink = 0.35 + 0.65 * Math.max(0, Math.sin(g.time * 3.2));
         ctx.fillStyle = `rgba(224,52,60,${blink})`;
-        ctx.beginPath(); ctx.arc(cx - bw * 0.4, cy - bh * 0.58, Math.max(1.2, z * 0.06), 0, Math.PI * 2); ctx.fill();
-        // veille lumineuse de la baie vitrée en tête de tour
+        ctx.beginPath(); ctx.arc(cx - bw * 0.46, cy - bh * 0.62, Math.max(1.2, z * 0.06), 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(cx - bw * 0.18, cy - bh * 0.64, Math.max(1.1, z * 0.05), 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(cx + bw * 0.54, cy - bh * 0.4, Math.max(1.1, z * 0.05), 0, Math.PI * 2); ctx.fill();
         ctx.fillStyle = `rgba(255,222,140,${0.18 + 0.1 * Math.sin(g.time * 1.8)})`;
-        ctx.fillRect(cx + bw * 0.17, cy - bh * 0.32, bw * 0.2, bh * 0.05);
+        ctx.fillRect(cx - bw * 0.11, cy - bh * 0.39, bw * 0.22, bh * 0.05);
+        ctx.fillStyle = `rgba(255,184,80,${0.12 + 0.08 * Math.sin(g.time * 2.1)})`;
+        ctx.fillRect(cx - bw * 0.12, cy + bh * 0.16, bw * 0.24, bh * 0.06);
+        const sweep = g.time * 2.2;
+        ctx.strokeStyle = `rgba(230,236,220,${0.2 + 0.12 * Math.sin(g.time * 2.7)})`;
+        ctx.lineWidth = Math.max(1.2, z * 0.045);
+        ctx.beginPath();
+        ctx.moveTo(cx + bw * 0.36, cy - bh * 0.6);
+        ctx.lineTo(cx + bw * 0.36 + Math.cos(sweep) * bw * 0.12, cy - bh * 0.6 + Math.sin(sweep) * bh * 0.07);
+        ctx.stroke();
         break;
       }
       case 'power': {
@@ -4082,33 +4724,37 @@ export class Renderer {
     ctx.strokeStyle = '#dfe5ea';
     switch (b.type) {
       case 'hq': {
-        // centre de commandement : bloc blindé, hélisurface, antennes, radar
-        ctx.fillStyle = '#353b42';
-        this.rr(ctx, px + bw * 0.16, py + bh * 0.18, bw * 0.5, bh * 0.5, z * 0.08); ctx.fill();
-        ctx.fillStyle = 'rgba(255,255,255,0.1)';
-        this.rr(ctx, px + bw * 0.16, py + bh * 0.18, bw * 0.5, bh * 0.14, z * 0.08); ctx.fill();
-        // hélisurface
-        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-        ctx.lineWidth = Math.max(1, z * 0.06);
-        ctx.beginPath(); ctx.arc(px + bw * 0.74, py + bh * 0.72, z * 0.5, 0, Math.PI * 2); ctx.stroke();
-        ctx.font = `bold ${Math.max(7, z * 0.55)}px sans-serif`;
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillStyle = 'rgba(255,255,255,0.6)';
-        ctx.fillText('H', px + bw * 0.74, py + bh * 0.72);
-        // mâts d'antennes + feux clignotants
+        // QG de secours : bunker élargi, porte blindée, antennes et grand radar
+        ctx.fillStyle = '#20251f';
+        this.rr(ctx, px + bw * 0.08, py + bh * 0.16, bw * 0.84, bh * 0.62, z * 0.08); ctx.fill();
+        ctx.fillStyle = '#3b433a';
+        this.rr(ctx, px + bw * 0.16, py + bh * 0.2, bw * 0.68, bh * 0.42, z * 0.06); ctx.fill();
+        ctx.fillStyle = '#161a17';
+        this.rr(ctx, px + bw * 0.39, py + bh * 0.53, bw * 0.22, bh * 0.18, z * 0.04); ctx.fill();
+        ctx.fillStyle = 'rgba(184,143,52,0.7)';
+        ctx.fillRect(px + bw * 0.4, py + bh * 0.58, bw * 0.2, z * 0.08);
+        ctx.fillStyle = '#485146';
+        this.rr(ctx, px + bw * 0.36, py + bh * 0.04, bw * 0.28, bh * 0.22, z * 0.05); ctx.fill();
+        ctx.fillStyle = `rgba(255,220,130,${0.25 + 0.12 * Math.sin(g.time * 2)})`;
+        ctx.fillRect(px + bw * 0.4, py + bh * 0.11, bw * 0.2, bh * 0.04);
         ctx.strokeStyle = '#c9d1d9';
         ctx.lineWidth = Math.max(1, z * 0.05);
-        ctx.beginPath(); ctx.moveTo(px + bw * 0.26, py + bh * 0.42); ctx.lineTo(px + bw * 0.26, py + bh * 0.1); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(px + bw * 0.5, py + bh * 0.4); ctx.lineTo(px + bw * 0.56, py + bh * 0.14); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(px + bw * 0.17, py + bh * 0.44); ctx.lineTo(px + bw * 0.14, py - bh * 0.06); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(px + bw * 0.34, py + bh * 0.24); ctx.lineTo(px + bw * 0.34, py - bh * 0.08); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(px + bw * 0.76, py + bh * 0.36); ctx.lineTo(px + bw * 0.82, py + bh * 0.03); ctx.stroke();
         ctx.fillStyle = `rgba(255,80,80,${0.5 + 0.5 * Math.sin(g.time * 4)})`;
-        ctx.beginPath(); ctx.arc(px + bw * 0.26, py + bh * 0.1, Math.max(1.2, z * 0.07), 0, Math.PI * 2); ctx.fill();
-        // petit radar tournant
+        ctx.beginPath(); ctx.arc(px + bw * 0.14, py - bh * 0.06, Math.max(1.2, z * 0.07), 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#242a25';
+        ctx.beginPath(); ctx.ellipse(px + bw * 0.7, py + bh * 0.1, z * 0.42, z * 0.17, -0.45, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = '#d0d4c8';
+        ctx.lineWidth = Math.max(1, z * 0.05);
+        ctx.beginPath(); ctx.ellipse(px + bw * 0.7, py + bh * 0.1, z * 0.42, z * 0.17, -0.45, 0, Math.PI * 2); ctx.stroke();
         const ha = g.time * 2;
-        ctx.strokeStyle = 'rgba(220,230,235,0.62)';
+        ctx.strokeStyle = 'rgba(230,236,220,0.62)';
         ctx.lineWidth = Math.max(1.2, z * 0.06);
-        ctx.beginPath(); ctx.moveTo(px + bw * 0.4, py + bh * 0.58); ctx.lineTo(px + bw * 0.4 + Math.cos(ha) * z * 0.3, py + bh * 0.58 + Math.sin(ha) * z * 0.22); ctx.stroke();
-        ctx.fillStyle = '#d6dee5';
-        ctx.beginPath(); ctx.arc(px + bw * 0.4, py + bh * 0.58, z * 0.09, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.moveTo(px + bw * 0.7, py + bh * 0.1); ctx.lineTo(px + bw * 0.7 + Math.cos(ha) * z * 0.38, py + bh * 0.1 + Math.sin(ha) * z * 0.2); ctx.stroke();
+        ctx.fillStyle = '#b88f34';
+        ctx.fillRect(px + bw * 0.16, py + bh * 0.68, bw * 0.68, z * 0.05);
         break;
       }
       case 'power': {
