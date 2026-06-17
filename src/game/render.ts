@@ -3584,22 +3584,23 @@ export class Renderer {
       ctx.beginPath(); ctx.arc(px, py, (def.radius + 0.3) * z, 0, Math.PI * 2); ctx.stroke();
     }
 
-    // ----- OMBRE DE CONTACT DOUCE (dégradé radial), sous le véhicule. Une seule
-    // ombre, pas de copie sombre dupliquée → fini l'effet de « double ombre ».
+    // ----- OMBRE PROJETÉE AU SOL : direction FIXE selon la lumière (nord-ouest →
+    // ombre vers le sud-est), INDÉPENDANTE de l'orientation du véhicule. Elle ne
+    // tourne donc pas avec lui : c'est une vraie ombre au sol, pas un élément
+    // accroché. Ellipse douce aplatie, déportée vers le SE.
     {
       const inf = def.armor === 'inf';
-      const rxS = (inf ? def.radius * 1.05 : def.radius * 1.34 * visualScale) * z;
-      const ryS = (inf ? def.radius * 0.64 : def.radius * 0.74 * visualScale) * z;
+      const rad = (inf ? def.radius * 1.05 : def.radius * 1.3 * visualScale) * z;
       ctx.save();
-      ctx.translate(px + z * 0.07, py + z * 0.1);
-      if (!inf) ctx.rotate(u.dir);
-      ctx.scale(1, ryS / Math.max(0.001, rxS));
-      const sg = ctx.createRadialGradient(0, 0, rxS * 0.2, 0, 0, rxS);
-      sg.addColorStop(0, 'rgba(0,0,0,0.38)');
-      sg.addColorStop(0.65, 'rgba(0,0,0,0.26)');
+      ctx.translate(px + rad * 0.34, py + rad * 0.40);   // décalage SE (= sens de la lumière)
+      ctx.rotate(Math.PI * 0.25);                        // allongement FIXE vers le SE (pas u.dir)
+      ctx.scale(1.15, 0.5);
+      const sg = ctx.createRadialGradient(0, 0, rad * 0.2, 0, 0, rad);
+      sg.addColorStop(0, 'rgba(0,0,0,0.4)');
+      sg.addColorStop(0.6, 'rgba(0,0,0,0.26)');
       sg.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = sg;
-      ctx.beginPath(); ctx.arc(0, 0, rxS, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(0, 0, rad, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
     }
 
