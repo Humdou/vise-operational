@@ -3601,18 +3601,19 @@ export class Renderer {
       ctx.fill();
     }
 
-    // flancs (deux tranches sombres) puis corps au sommet
-    for (const [img, dy] of [
-      [spr.side, 0],
-      [spr.side, -lift * 0.5],
-      [spr.body, -lift],
-    ] as [HTMLCanvasElement, number][]) {
+    // Volume SANS flottement : une tranche sombre légèrement décalée vers l'ombre
+    // (sud-est) fait office de base, puis le corps est dessiné CENTRÉ sur la
+    // position de l'unité — l'ombre reste donc bien sous le véhicule.
+    for (const [img, ddx, ddy] of [
+      [spr.side, z * 0.05, lift * 0.55],
+      [spr.body, 0, 0],
+    ] as [HTMLCanvasElement, number, number][]) {
       ctx.save();
-      ctx.translate(px, py + dy);
+      ctx.translate(px + ddx, py + ddy);
       ctx.rotate(u.dir);
       ctx.drawImage(img, -img.width / 2 * s, -img.height / 2 * s, img.width * s, img.height * s);
-      // surcouche : remplissage de la benne du récolteur (sur le dessus seulement)
-      if (dy === -lift && u.type === 'harvester' && u.cargo > 1) {
+      // benne du récolteur (sur le corps uniquement)
+      if (img === spr.body && u.type === 'harvester' && u.cargo > 1) {
         const L = def.radius * 2.7 * z * visualScale, Wd = def.radius * 2.1 * z * visualScale;
         const fillF = Math.min(1, u.cargo / 320);
         ctx.fillStyle = u.cargoValue > u.cargo * 1.5 ? '#c43050' : '#e7c44a';
@@ -3639,10 +3640,10 @@ export class Renderer {
       }
       const pivot = -def.radius * 0.12 * z;
       const tx2 = px + Math.cos(u.dir) * pivot, ty2 = py + Math.sin(u.dir) * pivot;
-      // la tourelle coiffe le volume : flanc sombre puis dessus, encore plus haut
+      // la tourelle coiffe le corps (corps désormais centré) : légère surépaisseur
       for (const [img, dy] of [
-        [spr.turretSide ?? spr.turret, -lift * 0.55],
-        [spr.turret, -lift - z * 0.05],
+        [spr.turretSide ?? spr.turret, z * 0.02],
+        [spr.turret, -z * 0.05],
       ] as [HTMLCanvasElement, number][]) {
         ctx.save();
         ctx.translate(tx2, ty2 + dy);
