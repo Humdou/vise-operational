@@ -1689,8 +1689,8 @@ export class Renderer {
       const A = px3(a), Bc = px3(b);
       return `rgb(${Math.round(A[0] + (Bc[0] - A[0]) * t)},${Math.round(A[1] + (Bc[1] - A[1]) * t)},${Math.round(A[2] + (Bc[2] - A[2]) * t)})`;
     };
-    const STEEL = '#2c333d';                  // acier blindé sombre (corps dominant)
-    const steel = (base: string) => mix(base, STEEL, 0.62);
+    const STEEL = '#222831';                  // acier blindé charbon (corps dominant)
+    const steel = (base: string) => mix(base, STEEL, 0.76);
     const accent = col;                       // couleur d'équipe = accent fort
     const accentDark = mix(col, '#000000', 0.32);
     // rivets aux quatre coins d'un panneau
@@ -1824,17 +1824,18 @@ export class Renderer {
         c.strokeStyle = 'rgba(0,0,0,0.28)'; c.lineWidth = 1; line(x - w / 2 + 1, yy, x + w / 2 - 1, yy);
         c.strokeStyle = 'rgba(255,255,255,0.05)'; line(x - w / 2 + 1, yy + 1, x + w / 2 - 1, yy + 1);
       }
-      // ===== fenêtres CHAUDES émissives (rangées) avec halo
+      // ===== fenêtres CHAUDES émissives (rangées) avec halo — lecture « vivant »
       if (opt.win) {
-        const rows = e > 30 ? 2 : 1;
+        const rows = e > 34 ? 2 : 1;
         for (let rw = 0; rw < rows; rw++) {
-          const wy = fy + e * (0.22 + rw * 0.34);
-          const wh = Math.max(3, Math.min(6, e * 0.16));
+          const wy = fy + e * (0.2 + rw * 0.34);
+          const wh = Math.max(4, Math.min(8, e * 0.2));
           for (let i = 0; i < opt.win; i++) {
-            const wx = x - w / 2 + ((i + 0.5) * w) / opt.win - 2.1;
-            c.fillStyle = 'rgba(255,150,44,0.20)'; c.fillRect(wx - 2.2, wy - 2, 8.6, wh + 4);
-            c.fillStyle = 'rgba(255,198,104,0.96)'; c.fillRect(wx, wy, 4.2, wh);
-            c.fillStyle = 'rgba(255,240,210,0.9)'; c.fillRect(wx + 1, wy, 1.2, wh);
+            const wx = x - w / 2 + ((i + 0.5) * w) / opt.win - 2.8;
+            c.fillStyle = 'rgba(255,150,40,0.30)'; c.fillRect(wx - 3, wy - 3, 11, wh + 6);
+            c.fillStyle = 'rgba(255,170,60,0.6)'; c.fillRect(wx - 1, wy - 1, 7, wh + 2);
+            c.fillStyle = 'rgba(255,210,128,1)'; c.fillRect(wx, wy, 5, wh);
+            c.fillStyle = 'rgba(255,245,220,1)'; c.fillRect(wx + 1.2, wy, 1.6, wh);
           }
         }
       }
@@ -3580,11 +3581,25 @@ export class Renderer {
     // véhicule au sol, le corps clair est dessiné plus haut à l'écran.
     const lift = (def.armor === 'inf' ? 0.1 : u.type === 'harvester' ? 0.2 : 0.16) * z;
 
-    // ombre au sol, projetée vers le sud-est (lumière nord-ouest)
-    ctx.fillStyle = 'rgba(0,0,0,0.34)';
-    ctx.beginPath();
-    ctx.ellipse(px + z * 0.14, py + z * 0.16, def.radius * 1.22 * z, def.radius * 0.82 * z, 0, 0, Math.PI * 2);
-    ctx.fill();
+    // ombre au sol : ellipse ORIENTÉE selon le véhicule et dimensionnée à son
+    // empreinte réelle (visualScale) → l'ombre suit la carrosserie au lieu d'un
+    // disque axial qui « flottait » à côté des véhicules allongés/tournés.
+    if (def.armor !== 'inf') {
+      const rxS = def.radius * 1.32 * visualScale * z;
+      const ryS = def.radius * 0.78 * visualScale * z;
+      ctx.save();
+      ctx.translate(px + z * 0.1, py + z * 0.13);
+      ctx.rotate(u.dir);
+      ctx.fillStyle = 'rgba(0,0,0,0.32)';
+      ctx.beginPath(); ctx.ellipse(0, 0, rxS, ryS, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    } else {
+      // infanterie : petite ombre ronde simple
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      ctx.beginPath();
+      ctx.ellipse(px + z * 0.08, py + z * 0.12, def.radius * 1.1 * z, def.radius * 0.7 * z, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
     // flancs (deux tranches sombres) puis corps au sommet
     for (const [img, dy] of [
