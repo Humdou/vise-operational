@@ -195,18 +195,23 @@ function industrialFinish(
   x: number, y: number, w: number, h: number,
   seed: number,
   intensity = 1,
+  bakedShadow = true,   // false pour les sprites qui TOURNENT (véhicules/tourelles/
+                        // infanterie) : sinon l'ombre cuite pivote avec eux. Leur
+                        // ombre est gérée au rendu (projetée au sol, direction fixe).
 ) {
   const rng = mulberry32(seed * 97 + 31);
-  c.save();
-  c.globalCompositeOperation = 'destination-over';
-  const shadow = c.createRadialGradient(x + w * 0.6, y + h * 0.72, 1, x + w * 0.58, y + h * 0.72, Math.max(w, h) * 0.55);
-  shadow.addColorStop(0, `rgba(0,0,0,${0.42 * intensity})`);
-  shadow.addColorStop(1, 'rgba(0,0,0,0)');
-  c.fillStyle = shadow;
-  c.beginPath();
-  c.ellipse(x + w * 0.58, y + h * 0.72, w * 0.46, h * 0.22, -0.08, 0, Math.PI * 2);
-  c.fill();
-  c.restore();
+  if (bakedShadow) {
+    c.save();
+    c.globalCompositeOperation = 'destination-over';
+    const shadow = c.createRadialGradient(x + w * 0.6, y + h * 0.72, 1, x + w * 0.58, y + h * 0.72, Math.max(w, h) * 0.55);
+    shadow.addColorStop(0, `rgba(0,0,0,${0.42 * intensity})`);
+    shadow.addColorStop(1, 'rgba(0,0,0,0)');
+    c.fillStyle = shadow;
+    c.beginPath();
+    c.ellipse(x + w * 0.58, y + h * 0.72, w * 0.46, h * 0.22, -0.08, 0, Math.PI * 2);
+    c.fill();
+    c.restore();
+  }
 
   c.save();
   c.globalCompositeOperation = 'source-atop';
@@ -3262,7 +3267,7 @@ export class Renderer {
           break;
       }
       weather(c, -r, -r, r * 2, r * 2, type.length * 17);
-      industrialFinish(c, -r * 1.35, -r * 1.35, r * 2.7, r * 2.7, type.length * 19, 0.55);
+      industrialFinish(c, -r * 1.35, -r * 1.35, r * 2.7, r * 2.7, type.length * 19, 0.55, false);
       return { body: cv };
     }
 
@@ -3314,7 +3319,7 @@ export class Renderer {
         c.fillStyle = gr2;
         c.beginPath(); c.ellipse(Tz * 0.24, 0, Tz * 0.13, Tz * 0.06, 0, 0, Math.PI * 2); c.fill();
       }
-      industrialFinish(c, -Tz * 0.78, -Tz * 0.56, Tz * 1.56, Tz * 1.12, type.length * 29, 0.75);
+      industrialFinish(c, -Tz * 0.78, -Tz * 0.56, Tz * 1.56, Tz * 1.12, type.length * 29, 0.75, false);
       return { body: cv };
     }
 
@@ -3547,10 +3552,10 @@ export class Renderer {
       greebles(c, -L * 0.45, -Wd * 0.42, L * 0.75, Wd * 0.84, seed, 8);
       weather(c, -L / 2, -Wd / 2, L, Wd, seed);
     }
-    industrialFinish(c, -T * 1.35, -T * 1.1, T * 2.7, T * 2.2, seed, 0.95);
+    industrialFinish(c, -T * 1.35, -T * 1.1, T * 2.7, T * 2.2, seed, 0.95, false);
     if (turretCv) {
       const tc = turretCv.getContext('2d')!;
-      industrialFinish(tc, -T * 1.1, -T * 1.1, T * 2.2, T * 2.2, seed + 17, 0.85);
+      industrialFinish(tc, -T * 1.1, -T * 1.1, T * 2.2, T * 2.2, seed + 17, 0.85, false);
     }
     return { body: cv, turret: turretCv };
   }
