@@ -3590,14 +3590,16 @@ export class Renderer {
     // accroché. Ellipse douce aplatie, déportée vers le SE.
     {
       const inf = def.armor === 'inf';
-      const rad = (inf ? def.radius * 1.05 : def.radius * 1.3 * visualScale) * z;
+      const rad = (inf ? def.radius * 1.0 : def.radius * 1.2 * visualScale) * z;
       ctx.save();
-      ctx.translate(px + rad * 0.34, py + rad * 0.40);   // décalage SE (= sens de la lumière)
-      ctx.rotate(Math.PI * 0.25);                        // allongement FIXE vers le SE (pas u.dir)
-      ctx.scale(1.15, 0.5);
-      const sg = ctx.createRadialGradient(0, 0, rad * 0.2, 0, 0, rad);
-      sg.addColorStop(0, 'rgba(0,0,0,0.4)');
-      sg.addColorStop(0.6, 'rgba(0,0,0,0.26)');
+      // Ombre au sol SOUS le véhicule : ellipse plate (aplatie sur le plan du
+      // sol), à peine déportée vers le sud-est. PAS de rotation → elle ne ressort
+      // pas « à droite » et ne tourne pas avec le véhicule.
+      ctx.translate(px + z * 0.12, py + z * 0.14);
+      ctx.scale(1, 0.46);
+      const sg = ctx.createRadialGradient(0, 0, rad * 0.25, 0, 0, rad);
+      sg.addColorStop(0, 'rgba(0,0,0,0.34)');
+      sg.addColorStop(0.7, 'rgba(0,0,0,0.2)');
       sg.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = sg;
       ctx.beginPath(); ctx.arc(0, 0, rad, 0, Math.PI * 2); ctx.fill();
