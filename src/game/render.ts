@@ -1634,6 +1634,92 @@ export class Renderer {
     return cv;
   }
 
+  // -------------------------------------------- halo de sol travaillé
+  //
+  // Pour que le bâtiment ne paraisse plus « posé » sur une texture, on dessine
+  // SOUS lui une zone de terrain remué qui l'épouse : terre tassée irrégulière
+  // (jamais un rectangle), poussière, traces de circulation, et surtout une
+  // bande d'occlusion sombre qui hugge le pied du bâtiment (le contact mur/sol
+  // qui donne le poids et l'ancrage). Le terrain « remonte » vers le bâtiment
+  // au lieu de s'arrêter net. Cuit une fois par type, en niveaux d'alpha
+  // (translucide) pour laisser transparaître le biome dessous → cohérent
+  // partout (herbe, roche, neige) sans plaque visible.
+  private groundDecalCache = new Map<string, HTMLCanvasElement>();
+  private groundDecal(type: string): HTMLCanvasElement {
+    let cv = this.groundDecalCache.get(type);
+    if (cv) return cv;
+    const B = 44;
+    const def = BUILDINGS[type as keyof typeof BUILDINGS];
+    const fw = def.w * B, fh = def.h * B;       // emprise au sol en px
+    const M = B * 0.95;                          // débord fondu autour de l'emprise
+    cv = document.createElement('canvas');
+    cv.width = Math.ceil(fw + M * 2);
+    cv.height = Math.ceil(fh + M * 2);
+    const c = cv.getContext('2d')!;
+    c.translate(cv.width / 2, cv.height / 2);
+    const rng = mulberry32(type.length * 131 + 7);
+
+    // rayons de base de l'aire travaillée (ellipse inscrite + débord)
+    const rx = fw / 2 + M * 0.62, ry = fh / 2 + M * 0.62;
+    // contour irrégulier : ellipse perturbée par bruit → aucun bord droit
+    const N = 40;
+    const noiseR: number[] = [];
+    for (let i = 0; i < N; i++) noiseR.push(0.82 + rng() * 0.34);
+    // lissage du bruit pour éviter les pics anguleux
+    const smooth = noiseR.map((_, i) =>
+      (noiseR[(i - 1 + N) % N] + noiseR[i] * 2 + noiseR[(i + 1) % N]) / 4);
+    const path = () => {
+      c.beginPath();
+      for (let i = 0; i <= N; i++) {
+        const a = (i % N) / N * Math.PI * 2;
+        const k = smooth[i % N];
+        const x = Math.cos(a) * rx * k, y = Math.sin(a) * ry * k;
+        if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
+      }
+      c.closePath();
+    };
+
+    // 1) lavis de terre remuée + bande de contact sombre près du pied.
+    c.save();
+    path(); c.clip();
+    const g = c.createRadialGradient(0, 0, Math.min(rx, ry) * 0.2, 0, 0, Math.max(rx, ry));
+    g.addColorStop(0, 'rgba(58,50,38,0.34)');     // sous le bâtiment : terre tassée
+    g.addColorStop(0.52, 'rgba(40,33,24,0.52)');  // contact/ombre au pied : poids
+    g.addColorStop(0.78, 'rgba(64,56,42,0.30)');
+    g.addColorStop(1, 'rgba(74,66,50,0)');         // se fond dans le terrain
+    c.fillStyle = g;
+    c.fillRect(-cv.width / 2, -cv.height / 2, cv.width, cv.height);
+
+    // 2) poussière / terre claire mouchetée, plus dense vers les bords usés
+    for (let i = 0; i < 90; i++) {
+      const a = rng() * Math.PI * 2, rr = Math.sqrt(rng());
+      const x = Math.cos(a) * rx * rr, y = Math.sin(a) * ry * rr;
+      const sz = 1 + rng() * 2.4;
+      const light = rng() > 0.5;
+      c.fillStyle = light
+        ? `rgba(122,108,84,${0.05 + rng() * 0.10})`
+        : `rgba(28,22,15,${0.06 + rng() * 0.12})`;
+      c.beginPath(); c.ellipse(x, y, sz, sz * 0.7, 0, 0, Math.PI * 2); c.fill();
+    }
+
+    // 3) traces de circulation : ornières estompées partant du pied vers le sud
+    //    (côté façade/sortie d'unités) → on devine l'usage du site.
+    c.strokeStyle = 'rgba(30,24,16,0.16)';
+    c.lineWidth = B * 0.16;
+    c.lineCap = 'round';
+    for (let t = 0; t < 2; t++) {
+      const ox = (t === 0 ? -1 : 1) * fw * 0.16;
+      c.beginPath();
+      c.moveTo(ox, fh * 0.1);
+      c.bezierCurveTo(ox + (rng() - 0.5) * 20, fh * 0.4, ox + (rng() - 0.5) * 28, ry * 0.7, ox * 1.4 + (rng() - 0.5) * 30, ry * 1.02);
+      c.stroke();
+    }
+    c.restore();
+
+    this.groundDecalCache.set(type, cv);
+    return cv;
+  }
+
   // Miniature pour le menu de construction : généré à partir du SPRITE RÉEL du
   // bâtiment (recadré sur son contenu, mis à l'échelle dans un carré) → l'icône
   // est exactement l'apparence en jeu. Renvoie un data-URL PNG, mis en cache.
@@ -1710,16 +1796,15 @@ export class Renderer {
 
     const apron = (x: number, y: number, w: number, h: number, base = '#3d4248', r = 5) => {
       base = mix(base, '#2e333a', 0.58);   // béton militaire sombre (tous les socles)
-      c.fillStyle = 'rgba(0,0,0,0.22)';
-      this.rr(c, x - w / 2 + 2, y - h / 2 + 3, w, h, r); c.fill();
+      // Plus d'ombre portée décalée ni de contour dur : le socle ne doit PAS se
+      // lire comme une plaque posée. C'est le halo de sol travaillé (composite)
+      // qui assure désormais la transition avec le terrain. Ici on garde juste
+      // une aire de béton à faible contraste, sans bord franc.
       const gr = c.createLinearGradient(0, y - h / 2, 0, y + h / 2);
-      gr.addColorStop(0, shade(base, 0.07));
-      gr.addColorStop(1, shade(base, -0.13));
+      gr.addColorStop(0, shade(base, 0.04));
+      gr.addColorStop(1, shade(base, -0.08));
       c.fillStyle = gr;
       this.rr(c, x - w / 2, y - h / 2, w, h, r); c.fill();
-      c.strokeStyle = 'rgba(0,0,0,0.38)';
-      c.lineWidth = 1.4;
-      c.stroke();
       c.strokeStyle = 'rgba(0,0,0,0.13)';
       c.lineWidth = 1;
       const nx = Math.max(2, Math.round(w / 26)), ny = Math.max(2, Math.round(h / 26));
@@ -4263,16 +4348,25 @@ export class Renderer {
       ctx.restore();
     };
 
-    // Ombre d'assise commune : les sprites pré-cuits ont du volume, mais cette
-    // ellipse les ancre toujours au terrain courant, quelle que soit la taille.
+    // ===== ANCRAGE AU TERRAIN (le bâtiment fait partie du monde, pas posé dessus)
+    // 1) halo de sol travaillé : terre tassée irrégulière + poussière + traces +
+    //    occlusion de contact au pied. Le terrain « remonte » épouser le bâtiment.
+    //    Centré sur l'emprise (et non sur le sprite agrandi), échelle z/44.
+    const decal = this.groundDecal(b.type);
+    const ds = z / 44;
+    const dw = decal.width * ds, dh = decal.height * ds;
+    ctx.drawImage(decal, cx - dw / 2, cy - dh / 2, dw, dh);
+    // 2) ombre portée directionnelle douce (lumière NO → cast SE) pour le volume.
+    //    Discrète : c'est le halo qui assure le contact ; ceci ne fait qu'allonger
+    //    l'ombre du bâtiment sur le sol.
     ctx.save();
-    const shadowGrad = ctx.createRadialGradient(cx + z * 0.16, py + bh * 0.72, 0, cx + z * 0.16, py + bh * 0.72, Math.max(bw, bh) * 0.72);
-    shadowGrad.addColorStop(0, 'rgba(0,0,0,0.28)');
-    shadowGrad.addColorStop(0.62, 'rgba(0,0,0,0.12)');
+    const shadowGrad = ctx.createRadialGradient(cx + z * 0.18, py + bh * 0.74, 0, cx + z * 0.18, py + bh * 0.74, Math.max(bw, bh) * 0.7);
+    shadowGrad.addColorStop(0, 'rgba(0,0,0,0.18)');
+    shadowGrad.addColorStop(0.6, 'rgba(0,0,0,0.08)');
     shadowGrad.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = shadowGrad;
     ctx.beginPath();
-    ctx.ellipse(cx + z * 0.16, py + bh * 0.72, bw * 0.62, bh * 0.42, 0, 0, Math.PI * 2);
+    ctx.ellipse(cx + z * 0.18, py + bh * 0.74, bw * 0.58, bh * 0.4, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
 
