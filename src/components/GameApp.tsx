@@ -490,7 +490,7 @@ function GameScreen({ settings, mp, onEnd, onQuit }: {
     const sync = mp ? new NetGame(game, mp.lobby.transport, mp.lobby.isHost, mp.localPlayer, mp.payload.slots) : null;
     if (mp) mpDebugSetPlayerContext(mp.localPlayer, mp.payload.slots);
     if (sync) {
-      // hôte : un joueur déconnecté est repris par une IA (host-side)
+      // hôte : un joueur déconnecté (après délai de grâce) est repris par une IA
       sync.onPeerLost = player => {
         if (!aiOwned.has(player)) {
           aiOwned.add(player);
@@ -499,6 +499,16 @@ function GameScreen({ settings, mp, onEnd, onQuit }: {
           setNetNote(`${game.players[player].name} : joueur déconnecté, une IA reprend sa base.`);
           window.setTimeout(() => setNetNote(null), 6000);
         }
+      };
+      // ... et la récupère s'il revient (reconnexion courte)
+      sync.onPeerBack = player => {
+        if (!aiOwned.has(player)) return;
+        aiOwned.delete(player);
+        const i = ais.findIndex(a => a.pid === player);
+        if (i >= 0) ais.splice(i, 1);
+        game.players[player].name = game.players[player].name.replace(/ \(IA\)$/, '');
+        setNetNote(`${game.players[player].name} est de retour et reprend sa base.`);
+        window.setTimeout(() => setNetNote(null), 6000);
       };
     }
     // chat de partie : on continue d'utiliser le canal du salon
@@ -589,17 +599,29 @@ function GameScreen({ settings, mp, onEnd, onQuit }: {
       raf = requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);
-    // onglet caché : rAF est gelé, on continue la simulation (multijoueur
-    // surtout : l'hôte doit sceller ET avancer ; les événements sonores
-    // sont purgés pour ne pas s'accumuler).
-    const bgTimer = window.setInterval(() => {
+    // Onglet caché : rAF est gelé, on continue la simulation (l'hôte doit
+    // avancer et diffuser ; les événements sonores sont purgés). Le ticker
+    // vit dans un Web Worker : les navigateurs étranglent les timers des
+    // PAGES cachées (≥ 1 s, jusqu'à 1/min) — ce qui ralentissait toute la
+    // partie quand l'hôte changeait d'onglet — mais pas ceux des workers.
+    const bgTick = () => {
       if (!document.hidden) return;
       const now = performance.now();
       const dt = Math.max(0, Math.min(0.2, (now - last) / 1000));
       last = now;
       simStep(now, dt);
       game.events.length = 0;
-    }, 100);
+    };
+    let bgWorker: Worker | null = null;
+    let bgTimer = 0;
+    try {
+      const src = URL.createObjectURL(new Blob(['setInterval(function(){postMessage(0)},100)'], { type: 'text/javascript' }));
+      bgWorker = new Worker(src);
+      URL.revokeObjectURL(src);
+      bgWorker.onmessage = bgTick;
+    } catch {
+      bgTimer = window.setInterval(bgTick, 100);   // repli : CSP stricte, etc.
+    }
 
     const hudTimer = setInterval(() => setTick(t => t + 1), 180);
 
@@ -616,7 +638,8 @@ function GameScreen({ settings, mp, onEnd, onQuit }: {
     return () => {
       cancelAnimationFrame(raf);
       clearInterval(hudTimer);
-      clearInterval(bgTimer);
+      bgWorker?.terminate();
+      if (bgTimer) clearInterval(bgTimer);
       window.removeEventListener('resize', resize);
       window.removeEventListener('keydown', keyPause);
       controls.detach();

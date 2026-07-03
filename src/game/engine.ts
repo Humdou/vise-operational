@@ -64,6 +64,11 @@ export interface Unit {
   transportedBy?: number;
   // animation de sortie de bâtiment — purement visuel, jamais lu par le gameplay
   exitFx?: { x: number; y: number; t0: number };
+  // correction post-snapshot (client multijoueur) : écart restant entre la
+  // position affichée et la position autoritative, résorbé en ~200 ms pour
+  // éviter les téléportations à chaque snapshot. x/y/dir incluent déjà cet
+  // écart ; la décroissance les ramène vers la valeur autoritative.
+  corrX?: number; corrY?: number; corrD?: number;
   // aviation
   airState?: 'pad' | 'fly' | 'return';
   padBuildingId?: number;
@@ -357,22 +362,33 @@ export class Game {
   // sérialise QUE l'état de gameplay : projectiles/effets/brouillard sont
   // cosmétiques et régénérés. Le brouillard et l'énergie sont recalculés.
   serialize(): Snapshot {
+    // Les flottants sont arrondis (2 décimales ≈ 1/100 de tuile) : le JSON
+    // d'un snapshot est 2 à 3× plus petit, la précision reste invisible.
+    const r2 = (v: number) => Math.round(v * 100) / 100;
+    const rOrder = (o: Order): Order =>
+      (o.x !== undefined || o.y !== undefined)
+        ? { ...o, x: o.x !== undefined ? r2(o.x) : undefined, y: o.y !== undefined ? r2(o.y) : undefined }
+        : o;
     return {
-      t: this.time, nextId: this.nextId, over: this.over, winner: this.winner,
-      players: this.players.map(p => ({ ore: p.ore, up: { ...p.upgrades }, def: p.defeated })),
+      t: r2(this.time), nextId: this.nextId, over: this.over, winner: this.winner,
+      players: this.players.map(p => ({ ore: r2(p.ore), up: { ...p.upgrades }, def: p.defeated })),
       units: this.units.filter(u => !u.dead).map(u => ({
-        i: u.id, o: u.owner, ty: u.type, x: u.x, y: u.y, d: u.dir, h: u.hp,
-        or: u.order, cg: u.cargo, cv: u.cargoValue, ul: u.unloadT, cd: u.cd,
+        i: u.id, o: u.owner, ty: u.type,
+        x: r2(u.x - (u.corrX ?? 0)), y: r2(u.y - (u.corrY ?? 0)), d: r2(u.dir - (u.corrD ?? 0)),
+        h: r2(u.hp),
+        or: rOrder(u.order), cg: r2(u.cargo), cv: r2(u.cargoValue), ul: r2(u.unloadT), cd: r2(u.cd),
         ei: u.engageId, eb: u.engageIsBuilding,
-        as: u.airState, pb: u.padBuildingId, am: u.ammo, rt: u.rearmT,
+        as: u.airState, pb: u.padBuildingId, am: u.ammo, rt: u.rearmT !== undefined ? r2(u.rearmT) : undefined,
         ps: u.passengers && u.passengers.length ? [...u.passengers] : undefined,
         tb: u.transportedBy,
       })),
       buildings: this.buildings.filter(b => !b.dead).map(b => ({
-        i: b.id, o: b.owner, ty: b.type, tx: b.tx, ty2: b.ty, h: b.hp,
-        bu: b.built, pr: b.progress, q: b.queue, ra: b.rally, rp: b.repairOn, cd: b.cd, ei: b.engageId,
+        i: b.id, o: b.owner, ty: b.type, tx: b.tx, ty2: b.ty, h: r2(b.hp),
+        bu: b.built, pr: Math.round(b.progress * 1000) / 1000,
+        q: b.queue.map(it => ({ ...it, t: r2(it.t) })),
+        ra: b.rally, rp: b.repairOn, cd: r2(b.cd), ei: b.engageId,
       })),
-      nodes: this.nodes.map(n => ({ i: n.id, a: n.amount })),
+      nodes: this.nodes.map(n => ({ i: n.id, a: Math.round(n.amount) })),
     };
   }
 
@@ -385,8 +401,16 @@ export class Game {
     }
     for (const ns of s.nodes) { const n = this.nodeById.get(ns.i); if (n) n.amount = ns.a; }
 
-    // unités : reconstruire liste + index
-    this.units = []; this.unitById.clear();
+    // unités : reconstruire liste + index. Les unités déjà connues gardent
+    // leur continuité VISUELLE (position affichée conservée, écart résorbé en
+    // ~200 ms par update) et leur chemin si l'ordre n'a pas changé — sinon
+    // chaque snapshot ferait téléporter puis re-pathfinder toute l'armée.
+    const prevById = this.unitById;
+    this.units = []; this.unitById = new Map();
+    const sameOrder = (a: Order, b: Order) =>
+      a.kind === b.kind && a.targetId === b.targetId && a.nodeId === b.nodeId
+      && a.targetIsBuilding === b.targetIsBuilding
+      && Math.abs((a.x ?? 0) - (b.x ?? 0)) < 0.05 && Math.abs((a.y ?? 0) - (b.y ?? 0)) < 0.05;
     for (const us of s.units) {
       const def = UNITS[us.ty];
       let maxHp = def.hp;
@@ -401,6 +425,20 @@ export class Game {
         passengers: us.ps ? [...us.ps] : undefined,
         transportedBy: us.tb,
       };
+      const old = prevById.get(us.i);
+      if (old && old.type === us.ty) {
+        const dx = old.x - us.x, dy = old.y - us.y;
+        if (dx * dx + dy * dy < 9) {   // au-delà de ~3 tuiles : vraie téléportation, on assume le saut
+          u.x = old.x; u.y = old.y; u.corrX = dx; u.corrY = dy;
+          let dd = old.dir - us.d;
+          while (dd > Math.PI) dd -= Math.PI * 2;
+          while (dd < -Math.PI) dd += Math.PI * 2;
+          u.dir = us.d + dd; u.corrD = dd;
+        }
+        if (old.path && sameOrder(old.order, us.or)) {
+          u.path = old.path; u.pathI = old.pathI; u.repathT = old.repathT; u.stuckT = old.stuckT;
+        }
+      }
       this.units.push(u); this.unitById.set(u.id, u);
     }
 
@@ -428,9 +466,12 @@ export class Game {
         }
     }
 
-    this.projectiles = []; this.effects = [];
+    // Projectiles et effets sont cosmétiques et auto-expirants : on les
+    // CONSERVE (les vider 6×/s faisait clignoter tous les combats côté
+    // client). Le brouillard n'est pas recalculé ici : le cycle périodique
+    // d'update le rafraîchit en ≤ 0,5 s, et le recalcul complet à chaque
+    // snapshot était le principal coût CPU du multijoueur sur mobile.
     this.recomputePower();
-    for (const p of this.players) if (!p.defeated) this.updateFog(p);
   }
 
   // --------------------------------------------------------------- requêtes
@@ -973,6 +1014,19 @@ export class Game {
     // quand des dizaines d'unités d'IA recalculent en même temps.
     this.pathBudget = 18;
     this.pathBudgetHuman = 14;
+
+    // résorption des corrections post-snapshot (client multijoueur) : la
+    // position affichée converge vers la position autoritative en ~200 ms
+    const corrKeep = Math.exp(-dt / 0.08);
+    for (const u of this.units) {
+      if (u.corrX === undefined && u.corrY === undefined && u.corrD === undefined) continue;
+      if (u.corrX) { const nc = Math.abs(u.corrX) < 0.01 ? 0 : u.corrX * corrKeep; u.x += nc - u.corrX; u.corrX = nc || undefined; }
+      else u.corrX = undefined;
+      if (u.corrY) { const nc = Math.abs(u.corrY) < 0.01 ? 0 : u.corrY * corrKeep; u.y += nc - u.corrY; u.corrY = nc || undefined; }
+      else u.corrY = undefined;
+      if (u.corrD) { const nc = Math.abs(u.corrD) < 0.01 ? 0 : u.corrD * corrKeep; u.dir += nc - u.corrD; u.corrD = nc || undefined; }
+      else u.corrD = undefined;
+    }
 
     prof.wrap('sim.hash', () => this.rebuildHash());
     prof.wrap('sim.production', () => this.updateProduction(dt));

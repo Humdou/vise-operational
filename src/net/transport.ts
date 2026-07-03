@@ -68,17 +68,26 @@ export class LocalTransport implements Transport {
       }
     };
     this.hello();
-    // battement de présence + purge des absents (3 s sans signe de vie)
+    // Purge des absents : large (10 s), car les navigateurs étranglent les
+    // timers des onglets cachés — un onglet en arrière-plan ne doit pas
+    // passer pour déconnecté. La fermeture réelle est signalée par 'bye'
+    // (pagehide ci-dessous), donc détectée immédiatement.
     this.beat = window.setInterval(() => {
       this.hello();
-      const cut = Date.now() - 3000;
+      const cut = Date.now() - 10_000;
       let changed = false;
       for (const [id, m] of this.members) if (m.seen < cut) { this.members.delete(id); changed = true; }
       if (changed) this.emitPresence();
     }, 1000);
+    window.addEventListener('pagehide', this.onPageHide);
   }
 
+  private onPageHide = () => {
+    this.post({ kind: 'bye', from: this.self });
+  };
+
   leave() {
+    window.removeEventListener('pagehide', this.onPageHide);
     if (this.bc) {
       this.post({ kind: 'bye', from: this.self });
       this.bc.close();

@@ -89,7 +89,7 @@ const UPGRADE_ORDER: UpgradeId[] = ['refining', 'ammo', 'armor', 'powerplus', 'o
 
 export class AIController {
   private g: Game;
-  private pid: number;
+  readonly pid: number;
   private p: DiffParams;
   private thinkT: number;
   private known = new Map<number, KnownBuilding>();

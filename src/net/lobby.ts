@@ -53,6 +53,7 @@ export class LobbyClient {
   private unsubs: (() => void)[] = [];
   private announcer: BroadcastChannel | null = null;
   private dirTimer: number | null = null;
+  private launchPayload: LaunchPayload | null = null;
   launched = false;
 
   private constructor(
@@ -118,6 +119,7 @@ export class LobbyClient {
     }));
     this.unsubs.push(t.on('chat', d => this.pushChat(d as ChatMessage)));
     this.unsubs.push(t.on('launch', d => {
+      if (this.launched) return;   // le lancement est re-diffusé (fiabilité) : dédupliquer
       this.launched = true;
       this.onLaunch?.(d as LaunchPayload);
     }));
@@ -126,7 +128,13 @@ export class LobbyClient {
     }));
 
     if (this.isHost) {
-      this.unsubs.push(t.on('hello_host', () => this.broadcastState()));
+      this.unsubs.push(t.on('hello_host', () => {
+        // un invité qui (re)demande l'état après le lancement a probablement
+        // raté le message 'launch' : on le lui renvoie au lieu de le laisser
+        // bloqué dans le salon.
+        if (this.launched && this.launchPayload) this.transport.send('launch', this.launchPayload);
+        else this.broadcastState();
+      }));
       this.unsubs.push(t.on('set_ready', (d, from) => {
         this.ready.set(from, Boolean((d as { ready: boolean }).ready));
         this.rebuildMembers();
@@ -274,7 +282,12 @@ export class LobbyClient {
       seed: payload.seed,
     });
     this.launched = true;
+    this.launchPayload = payload;
     this.transport.send('launch', payload);
+    // re-diffusions rapides : un 'launch' perdu laisserait un invité bloqué
+    // dans le salon (les invités dédupliquent via leur drapeau `launched`)
+    window.setTimeout(() => this.transport.send('launch', payload), 600);
+    window.setTimeout(() => this.transport.send('launch', payload), 1800);
     mpDebug('lobby.launch.sent', {
       source: 'LobbyClient.launch.afterSend',
       hostUid: this.me.id,
