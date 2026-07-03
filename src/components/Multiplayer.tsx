@@ -4,7 +4,8 @@
 // d'attente (paramètres, présence, chat, lancement) et panneau de chat
 // réutilisé en partie. Tout repose sur src/net/*.
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { netMode, currentIdentity, signIn, signUp, signOut, localSignIn } from '../net/auth';
+import { netMode, currentIdentity, signIn, signUp, signInGuest, signOut, localSignIn } from '../net/auth';
+import { sbHealth } from '../net/supabase';
 import { LobbyClient, listLobbies } from '../net/lobby';
 import type { NetIdentity, LobbyListing, LobbySettings, LaunchPayload, ChatMessage } from '../net/types';
 import { MAP_SIZES, THEMES, PLAYER_COUNT_CHOICES, MapSizeId, ThemeId, Difficulty } from '../game/data';
@@ -79,15 +80,36 @@ function AuthForm({ onDone }: { onDone: (id: NetIdentity) => void }) {
     }
   };
 
+  const guest = async () => {
+    setErr(null); setBusy(true);
+    try {
+      onDone(await signInGuest(pseudo.trim()));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="mp-card">
+      <h3>Jouer en ligne</h3>
+      <div className="mp-row">
+        <input
+          placeholder="Votre pseudo" value={pseudo} maxLength={16}
+          onChange={e => setPseudo(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && pseudo.trim() && !busy) void guest(); }}
+        />
+        <button className="launch-btn" disabled={busy || !pseudo.trim()} onClick={() => void guest()}>
+          {busy ? '…' : 'Jouer en invité'}
+        </button>
+      </div>
+      <p className="mp-hint">Aucun compte requis : un pseudo suffit pour créer ou rejoindre un salon.</p>
+
       <div className="mp-tabs">
         <button className={tab === 'in' ? 'on' : ''} onClick={() => setTab('in')}>Connexion</button>
         <button className={tab === 'up' ? 'on' : ''} onClick={() => setTab('up')}>Créer un compte</button>
       </div>
-      {tab === 'up' && (
-        <input placeholder="Pseudo (visible en partie)" value={pseudo} maxLength={16} onChange={e => setPseudo(e.target.value)} />
-      )}
       <input placeholder="E-mail" type="email" value={email} onChange={e => setEmail(e.target.value)} />
       <input
         placeholder="Mot de passe" type="password" value={pw}
@@ -98,7 +120,7 @@ function AuthForm({ onDone }: { onDone: (id: NetIdentity) => void }) {
       <button className="launch-btn" disabled={busy || !email || pw.length < 6} onClick={() => void submit()}>
         {busy ? '…' : tab === 'in' ? 'Se connecter' : 'Créer le compte'}
       </button>
-      {tab === 'up' && <p className="mp-hint">6 caractères minimum pour le mot de passe.</p>}
+      {tab === 'up' && <p className="mp-hint">6 caractères minimum pour le mot de passe. Le pseudo du haut sera votre nom en partie.</p>}
     </div>
   );
 }
@@ -190,6 +212,10 @@ export function ChatPanel({
 export function MultiplayerPanel({ onLaunch }: { onLaunch: (run: MpRun) => void }) {
   const [identity, setIdentity] = useState<NetIdentity | null>(null);
   const [checked, setChecked] = useState(false);
+  // santé du serveur : 'checking' (sonde en cours), 'ok', 'down' (re-sonde
+  // automatique toutes les 5 s — un projet Supabase qui sort de pause met
+  // 1 à 2 minutes à se réveiller, l'écran se débloque tout seul)
+  const [health, setHealth] = useState<'checking' | 'ok' | 'down'>(netMode() === 'supabase' ? 'checking' : 'ok');
   const [lobby, setLobby] = useState<LobbyClient | null>(null);
   const [, force] = useState(0);
   const refresh = useCallback(() => force(t => t + 1), []);
@@ -200,7 +226,26 @@ export function MultiplayerPanel({ onLaunch }: { onLaunch: (run: MpRun) => void 
   const [createName, setCreateName] = useState('');
 
   useEffect(() => {
+    // identité (bornée à 5 s dans sbCurrentUser : ne pend jamais) et santé
+    // du serveur sont sondées EN PARALLÈLE — l'écran affiche toujours un
+    // état honnête en quelques secondes.
     void currentIdentity().then(id => { setIdentity(id); setChecked(true); });
+    if (netMode() !== 'supabase') return;
+    let stop = false;
+    let timer = 0;
+    const probe = async () => {
+      const ok = await sbHealth(4000);
+      if (stop) return;
+      setHealth(ok ? 'ok' : 'down');
+      if (!ok) timer = window.setTimeout(() => void probe(), 5000);
+    };
+    void probe();
+    return () => { stop = true; clearTimeout(timer); };
+  }, []);
+
+  const retryHealth = useCallback(() => {
+    setHealth('checking');
+    void sbHealth(4000).then(ok => setHealth(ok ? 'ok' : 'down'));
   }, []);
 
   const reloadList = useCallback(() => {
@@ -244,7 +289,27 @@ export function MultiplayerPanel({ onLaunch }: { onLaunch: (run: MpRun) => void 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identity]);
 
-  if (!checked) return <div className="mp-card mp-hint">Vérification de la session…</div>;
+  // écran d'état honnête : jamais plus de ~5 s sans information claire
+  if (health === 'down') {
+    return (
+      <div className="mp-card">
+        <h3>Serveur multijoueur injoignable</h3>
+        <p className="mp-hint">
+          Le serveur ne répond pas. S’il sort de pause (offre gratuite Supabase),
+          il se réveille en 1 à 2 minutes — cette page réessaie automatiquement
+          toutes les 5 secondes.
+        </p>
+        <div className="mp-row">
+          <button className="launch-btn" onClick={retryHealth}>Réessayer maintenant</button>
+        </div>
+        <p className="mp-hint">
+          En attendant : le mode <b>solo</b> reste entièrement disponible, et
+          <code> ?net=local</code> permet de jouer entre onglets sans serveur.
+        </p>
+      </div>
+    );
+  }
+  if (!checked || health === 'checking') return <div className="mp-card mp-hint">Connexion au serveur multijoueur…</div>;
   if (!identity) return <AuthForm onDone={setIdentity} />;
 
   // ------------------------------------------------------------- salon ouvert

@@ -2,7 +2,7 @@
 //  - 'supabase' : comptes réels (e-mail + mot de passe + pseudo) ;
 //  - 'local'    : ?net=local — identité par onglet, sans compte (tests LAN) ;
 //  - 'off'      : multijoueur non configuré, seul le mode hors ligne existe.
-import { supabaseConfigured, sbCurrentUser, sbSignIn, sbSignUp, sbSignOut } from './supabase';
+import { supabaseConfigured, sbCurrentUser, sbSignIn, sbSignUp, sbSignInGuest, sbSignOut } from './supabase';
 import type { NetIdentity } from './types';
 
 export type NetMode = 'off' | 'local' | 'supabase';
@@ -39,6 +39,12 @@ export async function signIn(email: string, password: string): Promise<NetIdenti
 
 export async function signUp(email: string, password: string, pseudo: string): Promise<NetIdentity> {
   const u = await sbSignUp(email, password, pseudo);
+  return { id: u.id, pseudo: u.pseudo };
+}
+
+/** Mode invité (Supabase anonyme) : jouer en ligne avec un simple pseudo. */
+export async function signInGuest(pseudo: string): Promise<NetIdentity> {
+  const u = await sbSignInGuest(pseudo);
   return { id: u.id, pseudo: u.pseudo };
 }
 
