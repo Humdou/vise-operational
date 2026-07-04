@@ -4,6 +4,8 @@ import { applyCommand, CommandSink } from './commands';
 import { UNITS, BUILDINGS, BuildingTypeId, UnitTypeId } from './data';
 import { Camera, ViewState } from './render';
 import { Sfx } from './audio';
+import { Proj } from './proj';
+import { BUILDING_HEIGHTS } from './iso-buildings';
 
 interface PointerInfo { id: number; x: number; y: number; sx: number; sy: number; t: number }
 type OrderMarker = ViewState['orderMarkers'][number];
@@ -70,13 +72,24 @@ export class Controls {
   }
 
   // ------------------------------------------------------------- conversions
+  //
+  // TOUTE la conversion écran ↔ monde passe par la projection isométrique
+  // (src/game/proj.ts) : les clics correspondent exactement au rendu.
+
+  private proj(): Proj {
+    return new Proj(this.cam.x, this.cam.y, this.cam.zoom, this.canvas.width, this.canvas.height);
+  }
 
   private toWorld(px: number, py: number): { x: number; y: number } {
-    const W = this.canvas.width, H = this.canvas.height;
-    return {
-      x: (px * this.dpr - W / 2) / this.cam.zoom + this.cam.x,
-      y: (py * this.dpr - H / 2) / this.cam.zoom + this.cam.y,
-    };
+    return this.proj().toWorld(px * this.dpr, py * this.dpr);
+  }
+
+  /** Pan caméra exprimé en pixels ÉCRAN (le monde suit la vue iso). */
+  private panScreen(dxPx: number, dyPx: number) {
+    const d = this.proj().deltaToWorld(dxPx, dyPx);
+    this.cam.x += d.x;
+    this.cam.y += d.y;
+    this.clampCam();
   }
 
   private clampCam() {
@@ -213,10 +226,8 @@ export class Controls {
 
     if (e.pointerType === 'mouse') {
       if (this.panLast) {
-        this.cam.x -= (e.clientX - this.panLast.x) * this.dpr / this.cam.zoom;
-        this.cam.y -= (e.clientY - this.panLast.y) * this.dpr / this.cam.zoom;
+        this.panScreen(-(e.clientX - this.panLast.x) * this.dpr, -(e.clientY - this.panLast.y) * this.dpr);
         this.panLast = { x: e.clientX, y: e.clientY };
-        this.clampCam();
       }
       if (this.rightDrag) {
         if (!this.rightDrag.moved &&
@@ -224,9 +235,7 @@ export class Controls {
           this.rightDrag.moved = true;
         }
         if (this.rightDrag.moved) {
-          this.cam.x -= (e.clientX - this.rightDrag.x) * this.dpr / this.cam.zoom;
-          this.cam.y -= (e.clientY - this.rightDrag.y) * this.dpr / this.cam.zoom;
-          this.clampCam();
+          this.panScreen(-(e.clientX - this.rightDrag.x) * this.dpr, -(e.clientY - this.rightDrag.y) * this.dpr);
         }
         this.rightDrag.x = e.clientX;
         this.rightDrag.y = e.clientY;
@@ -256,10 +265,8 @@ export class Controls {
     }
     if (moved > 8) {
       if (!this.panLast) this.panLast = { x: info.sx, y: info.sy };
-      this.cam.x -= (e.clientX - this.panLast.x) * this.dpr / this.cam.zoom;
-      this.cam.y -= (e.clientY - this.panLast.y) * this.dpr / this.cam.zoom;
+      this.panScreen(-(e.clientX - this.panLast.x) * this.dpr, -(e.clientY - this.panLast.y) * this.dpr);
       this.panLast = { x: e.clientX, y: e.clientY };
-      this.clampCam();
     }
   }
 
@@ -395,6 +402,15 @@ export class Controls {
 
   // ------------------------------------------------------------------ select
 
+  // Picking en MÉTRIQUE ISO : la distance est mesurée dans le plan de l'écran
+  // (x écrasé ×1, y ×2 pour compenser l'aplatissement 2:1) → la zone cliquable
+  // correspond à l'ellipse VISIBLE de l'unité, pas à un disque top-down.
+  private isoDist(wx: number, wy: number, ex: number, ey: number): number {
+    const p = this.proj();
+    const a = p.toScreen(wx, wy), b = p.toScreen(ex, ey);
+    return Math.hypot((a.x - b.x) / p.z, ((a.y - b.y) * 2) / p.z);
+  }
+
   private pickUnit(wx: number, wy: number, ownOnly = false) {
     let best = null, bestD = 0.75;
     for (const u of this.g.units) {
@@ -402,13 +418,33 @@ export class Controls {
       if (u.transportedBy) continue;
       if (ownOnly && u.owner !== this.pov) continue;
       if (u.owner !== this.pov && !this.g.isVisibleTo(this.pov, u.x, u.y)) continue;
-      const d = Math.hypot(u.x - wx, u.y - wy);
+      const d = this.isoDist(wx, wy, u.x, u.y);
       if (d < bestD + UNITS[u.type].radius) { bestD = d; best = u; }
     }
     return best;
   }
 
+  // Un bâtiment se clique sur TOUT ce qu'on voit de lui : losange d'emprise +
+  // extrusion (façades/toit). Test des enveloppes écran du plus proche
+  // (devant) au plus lointain, puis repli sur la grille d'occupation au sol.
   private pickBuilding(wx: number, wy: number) {
+    const p = this.proj();
+    const spx = p.sx(wx, wy), spy = p.sy(wx, wy);
+    const cands: { b: Game['buildings'][number]; key: number }[] = [];
+    for (const b of this.g.buildings) {
+      if (b.dead) continue;
+      if (b.owner !== this.pov && !this.g.buildingVisibleTo(this.pov, b)) continue;
+      // pré-filtre grossier : à plus de (w+h+hauteur) tuiles du centre, inutile
+      if (Math.abs(b.tx + b.w / 2 - wx) + Math.abs(b.ty + b.h / 2 - wy) > b.w + b.h + 4) continue;
+      cands.push({ b, key: b.tx + b.w + b.ty + b.h });
+    }
+    cands.sort((a, b2) => b2.key - a.key);   // le plus « devant » d'abord
+    for (const { b } of cands) {
+      const hgt = BUILDING_HEIGHTS[b.type] ?? 1.2;
+      const poly = p.buildingScreenPoly(b.tx, b.ty, b.w, b.h, hgt);
+      if (Proj.pointInPoly(spx, spy, poly)) return b;
+    }
+    // repli : la tuile au sol (utile en cas de clic au ras du pied)
     const tx = Math.round(wx), ty = Math.round(wy);
     if (tx < 0 || ty < 0 || tx >= this.g.map.w || ty >= this.g.map.h) return null;
     const id = this.g.buildGrid[ty * this.g.map.w + tx];
@@ -422,7 +458,7 @@ export class Controls {
   private pickNode(wx: number, wy: number) {
     for (const n of this.g.nodes) {
       if (n.amount < 15) continue;
-      if (Math.hypot(n.tx - wx, n.ty - wy) < 0.8 && this.g.isExploredBy(this.pov, n.tx, n.ty)) return n;
+      if (this.isoDist(wx, wy, n.tx, n.ty) < 0.8 && this.g.isExploredBy(this.pov, n.tx, n.ty)) return n;
     }
     return null;
   }
@@ -440,14 +476,15 @@ export class Controls {
     const now = performance.now();
 
     if (unit) {
-      // double-clic : toutes les unités du même type à l'écran
+      // double-clic : toutes les unités du même type VISIBLES à l'écran
       if (now - this.lastClickT < 350 && unit.id === this.lastClickUnit) {
         const ids: number[] = [];
-        const vw = this.canvas.width / this.cam.zoom / 2, vh = this.canvas.height / this.cam.zoom / 2;
-    for (const u of this.g.units) {
-      if (u.dead || u.owner !== this.pov || u.type !== unit.type) continue;
-      if (u.transportedBy) continue;
-          if (Math.abs(u.x - this.cam.x) < vw && Math.abs(u.y - this.cam.y) < vh) ids.push(u.id);
+        const p = this.proj();
+        for (const u of this.g.units) {
+          if (u.dead || u.owner !== this.pov || u.type !== unit.type) continue;
+          if (u.transportedBy) continue;
+          const sp = p.toScreen(u.x, u.y);
+          if (sp.x >= 0 && sp.x <= this.canvas.width && sp.y >= 0 && sp.y <= this.canvas.height) ids.push(u.id);
         }
         this.selectUnits(ids);
         return;
@@ -479,13 +516,18 @@ export class Controls {
   }
 
   private selectBox(a: { x: number; y: number }, b: { x: number; y: number }, additive: boolean) {
-    const w0 = this.toWorld(Math.min(a.x, b.x), Math.min(a.y, b.y));
-    const w1 = this.toWorld(Math.max(a.x, b.x), Math.max(a.y, b.y));
+    // Sélection rectangle en ESPACE ÉCRAN : une unité est prise si sa position
+    // projetée tombe dans le rectangle tracé — exactement ce que voit le joueur.
+    const p = this.proj();
+    const x0 = Math.min(a.x, b.x) * this.dpr, x1 = Math.max(a.x, b.x) * this.dpr;
+    const y0 = Math.min(a.y, b.y) * this.dpr, y1 = Math.max(a.y, b.y) * this.dpr;
     const ids: number[] = additive ? [...this.selectedUnits] : [];
     for (const u of this.g.units) {
       if (u.transportedBy) continue;
       if (u.dead || u.owner !== this.pov) continue;
-      if (u.x >= w0.x && u.x <= w1.x && u.y >= w0.y && u.y <= w1.y && !ids.includes(u.id)) ids.push(u.id);
+      const sp = p.toScreen(u.x, u.y);
+      const lift = u.airState && u.airState !== 'pad' ? p.z * 1.1 : p.z * 0.15;
+      if (sp.x >= x0 && sp.x <= x1 && sp.y - lift >= y0 - p.z * 0.3 && sp.y <= y1 + p.z * 0.2 && !ids.includes(u.id)) ids.push(u.id);
     }
     // priorité aux unités de combat dans une sélection mixte
     const combat = ids.filter(id => {
@@ -779,22 +821,25 @@ export class Controls {
     }
   }
 
-  // appelé chaque frame : défilement aux bords + clavier
+  // appelé chaque frame : défilement aux bords + clavier — les directions
+  // sont des directions ÉCRAN (haut = haut de l'écran), converties en monde
+  // par la projection pour rester intuitives dans la vue iso.
   update(dt: number) {
-    const pan = 22 * dt * (40 / this.cam.zoom);
-    if (this.keys.has('arrowleft')) this.cam.x -= pan;
-    if (this.keys.has('arrowright')) this.cam.x += pan;
-    if (this.keys.has('arrowup')) this.cam.y -= pan;
-    if (this.keys.has('arrowdown')) this.cam.y += pan;
+    const panPx = 22 * dt * 40 * this.dpr;
+    let dx = 0, dy = 0;
+    if (this.keys.has('arrowleft')) dx -= panPx;
+    if (this.keys.has('arrowright')) dx += panPx;
+    if (this.keys.has('arrowup')) dy -= panPx;
+    if (this.keys.has('arrowdown')) dy += panPx;
     if (this.mouse.inside && this.pointers.size === 0) {
       const M = 14;
       const r = this.canvas.getBoundingClientRect();
-      if (this.mouse.x - r.left < M) this.cam.x -= pan;
-      if (r.right - this.mouse.x < M) this.cam.x += pan;
-      if (this.mouse.y - r.top < M) this.cam.y -= pan;
-      if (r.bottom - this.mouse.y < M) this.cam.y += pan;
+      if (this.mouse.x - r.left < M) dx -= panPx;
+      if (r.right - this.mouse.x < M) dx += panPx;
+      if (this.mouse.y - r.top < M) dy -= panPx;
+      if (r.bottom - this.mouse.y < M) dy += panPx;
     }
-    this.clampCam();
+    if (dx !== 0 || dy !== 0) this.panScreen(dx, dy);
   }
 
   getViewState(): ViewState {
