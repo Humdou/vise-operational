@@ -522,7 +522,7 @@ export class Renderer {
             r *= 1 - depth * 0.72; gn *= 1 - depth * 0.6; b = b * (1 - depth * 0.32) + depth * 26;
           } else {                   // haut-fond : turquoise plus clair
             const sh2 = 1 - depth;
-            r = r * (1 - sh2 * 0.25) + sh2 * 30; gn = gn * (1 - sh2 * 0.15) + sh2 * 70; b = b * (1 - sh2 * 0.1) + sh2 * 30;
+            r = r * (1 - sh2 * 0.3) + sh2 * 38; gn = gn * (1 - sh2 * 0.18) + sh2 * 92; b = b * (1 - sh2 * 0.1) + sh2 * 42;
           }
           const ripple = (grain(fx * 5, fy * 2.5) - 0.5) * 20;
           r += ripple * 0.4; gn += ripple * 0.6; b += ripple;
@@ -539,7 +539,7 @@ export class Renderer {
         const LEVELS = 9;
         const myL = Math.floor(e * LEVELS);
         // rampe de luminosité par palier : contraste fort entre étages
-        let relief = 0.60 + myL * (0.74 / LEVELS);
+        let relief = 0.68 + myL * (0.62 / LEVELS);
         if (t !== T_WATER) {
           // bord SUPÉRIEUR de falaise (domine l'est/le sud, côté éclairé) → liseré clair
           if (myL > Math.floor(hr * LEVELS)) relief += 0.28;
@@ -558,7 +558,7 @@ export class Renderer {
           const diff = SH[ay * W4 + ax] - e - s * 0.0085;
           if (diff > cast) cast = diff;
         }
-        const m = relief * (1 - Math.min(0.7, cast * 3.6));
+        const m = relief * (1 - Math.min(0.6, cast * 3.0));
         r *= m; gn *= m; b *= m;
 
         const o = i4 * 4;
@@ -687,7 +687,7 @@ export class Renderer {
       const LEVELS = 9;
       const rockBase = THEMES[g.map.theme].rock[0];
       const wallTop = shade(rockBase, -0.06);
-      const wallBot = shade(rockBase, -0.62);
+      const wallBot = shade(rockBase, -0.46);
       const lvl = (xx: number, yy: number) =>
         Math.floor((height[Math.max(0, Math.min(h - 1, yy)) * w + Math.max(0, Math.min(w - 1, xx))] ?? 0.5) * LEVELS);
       const wallRng = mulberry32(w * 613 + h * 271 + 5);
@@ -695,7 +695,8 @@ export class Renderer {
         tc.save();
         tc.translate(ax, ay);
         tc.transform(0.5, -0.5, 1, 1, 0, 0);   // inverse du cisaillement iso
-        // face
+        // face : colonnes rocheuses facettées (largeurs irrégulières, teintes
+        // alternées) — la paroi a du grain, pas un simple dégradé plat
         const gr2 = tc.createLinearGradient(0, 0, 0, hw);
         gr2.addColorStop(0, wallTop);
         gr2.addColorStop(0.25, shade(rockBase, -0.24));
@@ -704,6 +705,24 @@ export class Renderer {
         tc.beginPath();
         tc.moveTo(0, 0); tc.lineTo(bx, by); tc.lineTo(bx, by + hw); tc.lineTo(0, hw);
         tc.closePath(); tc.fill();
+        const nFac = 3 + ((jitterSalt * 5) % 3);
+        let tPrev = 0;
+        for (let f = 0; f < nFac; f++) {
+          const tNext = f === nFac - 1 ? 1 : (f + 1) / nFac + (wallRng() - 0.5) * 0.12;
+          const fx0 = bx * tPrev, fy0 = by * tPrev;
+          const fx1 = bx * tNext, fy1 = by * tNext;
+          const tone = (f % 2 === 0 ? -0.1 : 0.06) + (wallRng() - 0.5) * 0.08;
+          tc.fillStyle = shade(rockBase, -0.18 + tone);
+          tc.globalAlpha = 0.28;
+          tc.beginPath();
+          tc.moveTo(fx0, fy0 + hw * 0.12);
+          tc.lineTo(fx1, fy1 + hw * 0.1);
+          tc.lineTo(fx1 + (wallRng() - 0.5) * 2, fy1 + hw);
+          tc.lineTo(fx0 + (wallRng() - 0.5) * 2, fy0 + hw);
+          tc.closePath(); tc.fill();
+          tc.globalAlpha = 1;
+          tPrev = tNext;
+        }
         // strates horizontales + fissures verticales (relief de roche)
         tc.strokeStyle = 'rgba(0,0,0,0.30)'; tc.lineWidth = 1;
         for (let k = 1; k <= 2; k++) {
@@ -720,14 +739,25 @@ export class Renderer {
           tc.lineTo(xx + (wallRng() - 0.5) * 3, yy0 + hw * (0.72 + wallRng() * 0.25));
           tc.stroke();
         }
-        // lèvre supérieure éclairée (arête du plateau)
-        tc.strokeStyle = 'rgba(255,250,225,0.5)'; tc.lineWidth = Math.max(1, SS * 0.3);
+        // lèvre supérieure : arête claire + ombre du surplomb juste dessous
+        tc.strokeStyle = 'rgba(255,250,225,0.55)'; tc.lineWidth = Math.max(1.2, SS * 0.34);
         tc.beginPath(); tc.moveTo(0, 0.5); tc.lineTo(bx, by + 0.5); tc.stroke();
+        tc.strokeStyle = 'rgba(0,0,0,0.4)'; tc.lineWidth = Math.max(1, SS * 0.2);
+        tc.beginPath(); tc.moveTo(0, 0.5 + SS * 0.4); tc.lineTo(bx, by + 0.5 + SS * 0.4); tc.stroke();
         // occlusion au pied
         tc.fillStyle = 'rgba(4,6,10,0.30)';
         tc.beginPath();
         tc.moveTo(0, hw); tc.lineTo(bx, by + hw); tc.lineTo(bx, by + hw + SS * 1.2); tc.lineTo(0, hw + SS * 1.2);
         tc.closePath(); tc.fill();
+        // éboulis : cailloux tombés au pied (ancre le mur dans le sol)
+        for (let r2 = 0; r2 < 4; r2++) {
+          const t3 = wallRng();
+          const rx2 = bx * t3 + (wallRng() - 0.5) * 3;
+          const ry2 = by * t3 + hw + wallRng() * SS * 0.9;
+          const rs = 0.8 + wallRng() * 1.6;
+          tc.fillStyle = shade(rockBase, -0.3 + wallRng() * 0.25);
+          tc.beginPath(); tc.ellipse(rx2, ry2, rs * 1.3, rs * 0.8, wallRng(), 0, Math.PI * 2); tc.fill();
+        }
         tc.restore();
       };
       for (let ty = 0; ty < h; ty++)
@@ -1067,6 +1097,7 @@ export class Renderer {
     // Projection isométrique de la frame : LE convertisseur monde → écran.
     const proj = new Proj(cam.x, cam.y, z, W, H);
     this.lastGame = g;
+    if (this.lastPos.size > 2500) this.lastPos.clear();
 
     ctx.fillStyle = '#0a0d10';
     ctx.fillRect(0, 0, W, H);
@@ -1403,37 +1434,37 @@ export class Renderer {
       if (!revealAll && u.owner !== this.pov && !g.isVisibleTo(this.pov, u.x, u.y)) continue;
       const flying = u.airState !== 'pad';
       const px = proj.sx(u.x, u.y), py = proj.sy(u.x, u.y);
-      if (px < -80 || px > W + 80 || py < -120 || py > H + 80) continue;
-      // ombre au sol détachée : l'altitude se lit immédiatement (décalée vers
-      // le sud-est monde = bas de l'écran, direction de la lumière)
-      const shOff = flying ? 0.6 : 0.1;
+      if (px < -80 || px > W + 80 || py < -160 || py > H + 80) continue;
+      const defA = UNITS[u.type];
+      const vsA = this.unitVisualScale(u.type, defA);
+      const alt = flying ? z * 1.35 : z * 0.12;
+      // inclinaison en virage : on suit le cap d'une frame à l'autre
+      const pv = this.lastPos.get(u.id);
+      const dDir = pv ? Math.atan2(Math.sin(u.dir - pv.x), Math.cos(u.dir - pv.x)) : 0;
+      this.lastPos.set(u.id, { x: u.dir, y: 0, mu: 0 });
+      const bank = flying ? Math.max(-0.22, Math.min(0.22, dDir * 6)) : 0;
+      // ombre au sol : plus loin, plus petite et plus douce en altitude
+      const shOff = flying ? 0.95 : 0.12;
       const shx = proj.sx(u.x + shOff, u.y + shOff * 0.6), shy = proj.sy(u.x + shOff, u.y + shOff * 0.6);
-      ctx.fillStyle = flying ? 'rgba(0,0,0,0.22)' : 'rgba(0,0,0,0.3)';
+      ctx.fillStyle = flying ? 'rgba(0,0,0,0.16)' : 'rgba(0,0,0,0.3)';
       ctx.beginPath();
-      ctx.ellipse(shx, shy, z * (flying ? 0.5 : 0.6), z * (flying ? 0.24 : 0.3), 0, 0, Math.PI * 2);
+      ctx.ellipse(shx, shy, z * (flying ? 0.4 : 0.6) * vsA, z * (flying ? 0.18 : 0.3) * vsA, 0, 0, Math.PI * 2);
       ctx.fill();
-      const sprA = this.unitSprites(u.type, u.owner);
       // sortie de hangar : l'appareil se matérialise sur le pad (fondu rapide)
       let aIn = 1;
       if (u.exitFx) {
         const tIn = (g.time - u.exitFx.t0) / 0.6;
         if (tIn >= 0 && tIn < 1) aIn = 0.15 + 0.85 * tIn;
       }
-      const alt = flying ? z * 1.1 : z * 0.12;
-      // l'appareil est posé sur le plan du sol (même perspective que les
-      // véhicules) puis soulevé de son altitude en pixels écran
-      for (const [img, dy] of [
-        [sprA.side, -alt + z * 0.06],
-        [sprA.body, -alt],
-      ] as [HTMLCanvasElement, number][]) {
+      // fuselage : dir-sprite extrudé, éclairage écran fixe, léger roulis en virage
+      const aD = this.isoUnitDir(u.type, u.owner, Renderer.dirIndex(u.dir), 'body', 0.14 * SPX * ISO_ELEV);
+      if (aD) {
+        const sA = (z / SPX) * vsA * (0.85 + 0.15 * aIn);
         ctx.save();
         ctx.globalAlpha = aIn;
-        ctx.translate(px, py + dy);
-        ctx.transform(1, 0.5, -1, 0.5, 0, 0);
-        ctx.rotate(u.dir);
-        const sA = (z / SPX) * (0.85 + 0.15 * aIn);
-        ctx.scale(sA, sA);
-        ctx.drawImage(img, -img.width / 2, -img.height / 2, img.width, img.height);
+        ctx.translate(px, py - alt);
+        if (bank) ctx.rotate(bank);
+        ctx.drawImage(aD.cv, -aD.ax * sA, -aD.ay * sA + aD.cv.height * sA * 0.28, aD.cv.width * sA, aD.cv.height * sA);
         ctx.restore();
       }
       // rotor des hélicoptères : disque flou + pales (vitesse selon vol/pad)
@@ -2142,6 +2173,8 @@ export class Renderer {
 
   private lastGame: Game | null = null;
   private vignette: HTMLCanvasElement | null = null;
+  // suivi de position par unité : détection du mouvement RÉEL (animations)
+  private lastPos = new Map<number, { x: number; y: number; mu: number }>();
 
   // halo chaud générique (portes, flammes) : cuit une fois, teinte baked
   private warmGlowCv: HTMLCanvasElement | null = null;
@@ -2183,35 +2216,67 @@ export class Renderer {
   // vue RTS 2.5D l'infanterie doit être DEBOUT. Chaque type a une silhouette
   // procédurale distincte (casque, arme, équipement), cuite une fois par
   // équipe, orientée vers l'est (miroir horizontal pour l'ouest au runtime).
+  // Poses : 'idle' (arme basse, au repos), 'w0'-'w3' (cycle de marche 4 temps,
+  // jambes et bras articulés), 'fire' (arme épaulée, jambes campées).
   private infantryCache = new Map<string, HTMLCanvasElement>();
-  private infantrySprite(type: string, owner: number): HTMLCanvasElement {
-    const key = `inf:${type}:${owner}`;
+  private infantrySprite(type: string, owner: number, pose: string): HTMLCanvasElement {
+    const key = `inf:${type}:${owner}:${pose}`;
     let cv = this.infantryCache.get(key);
     if (!cv) {
-      cv = this.finishSprite(this.bakeInfantry(type, PLAYER_COLORS[owner]));
+      cv = this.finishSprite(this.bakeInfantry(type, PLAYER_COLORS[owner], pose));
       this.infantryCache.set(key, cv);
     }
     return cv;
   }
 
-  private bakeInfantry(type: string, team: string): HTMLCanvasElement {
+  private bakeInfantry(type: string, team: string, pose: string): HTMLCanvasElement {
     const cv = document.createElement('canvas');
-    cv.width = 30; cv.height = 44;
+    cv.width = 34; cv.height = 44;
     const c = cv.getContext('2d')!;
-    const cx = 14;                        // axe du corps (le canon dépasse à droite)
+    const cx = 15;                        // axe du corps (le canon dépasse à droite)
     const uniform = type === 'spy' ? '#8d8776' : type === 'elite' ? '#3a3f3c' : '#575e49';
     const uniformD = shade(uniform, -0.3);
     const helmet = type === 'engineer' ? '#d8a935' : type === 'elite' ? '#2c3130' : type === 'spy' ? '#6d6553' : '#49503f';
     const skin = '#c9a179';
     const o = (f: () => void) => { c.strokeStyle = 'rgba(0,0,0,0.55)'; c.lineWidth = 1; f(); };
 
-    // jambes + rangers
-    c.fillStyle = uniformD;
-    c.fillRect(cx - 5, 26, 4, 12);
-    c.fillRect(cx + 1, 26, 4, 12);
-    c.fillStyle = '#23261f';
-    c.fillRect(cx - 6, 37, 6, 4);
-    c.fillRect(cx + 1, 37, 6, 4);
+    // ---- SQUELETTE : phase de marche → jambes/bras articulés (le cœur de
+    // l'animation : plus de blocs rigides, de vraies foulées)
+    const wi = pose === 'w0' ? 0 : pose === 'w1' ? 1 : pose === 'w2' ? 2 : pose === 'w3' ? 3 : -1;
+    // cycle 4 temps : contact (jambes écartées) → passage (jambe levée) →
+    // contact miroir → passage miroir
+    const stride = wi === 0 ? 1 : wi === 2 ? -1 : 0;
+    const lift = wi === 1 || wi === 3 ? 1 : 0;
+    const lean = wi >= 0 ? 1.4 : pose === 'fire' ? 0.8 : 0;   // buste penché en mouvement
+    const hipY = 26, footY = 40;
+    const leg = (sw: number, lf: number, near: boolean) => {
+      // hanche → genou → pied, genou plié selon la levée
+      const hx = cx + (near ? 1.4 : -1.4) + lean * 0.4;
+      const fx2 = cx + sw * 6.2 + lean;
+      const fy2 = footY - lf * 3.2;
+      const kx = (hx + fx2) / 2 + 2.2 * lf + 0.8;
+      const ky = (hipY + fy2) / 2 - 0.6;
+      c.strokeStyle = near ? uniformD : shade(uniformD, -0.22);
+      c.lineCap = 'round';
+      c.lineWidth = 4.4;
+      c.beginPath(); c.moveTo(hx, hipY); c.lineTo(kx, ky); c.stroke();
+      c.lineWidth = 3.6;
+      c.beginPath(); c.moveTo(kx, ky); c.lineTo(fx2, fy2); c.stroke();
+      // ranger
+      c.fillStyle = near ? '#23261f' : '#191c16';
+      c.beginPath(); c.ellipse(fx2 + 1.6, fy2 + 0.6, 3.4, 1.9, 0, 0, Math.PI * 2); c.fill();
+    };
+    if (pose === 'fire') {
+      leg(-0.55, 0, false);           // jambe arrière ancrée
+      leg(0.72, 0, true);             // jambe avant fléchie (position de tir)
+    } else if (wi >= 0) {
+      leg(-stride, wi === 1 || wi === 3 ? 0 : lift, false);  // jambe opposée
+      leg(stride, wi === 1 || wi === 3 ? lift : 0, true);
+    } else {
+      leg(-0.14, 0, false);
+      leg(0.14, 0, true);
+    }
+    void lean;
     // torse (veste) + éclairage NO
     c.fillStyle = uniform;
     c.beginPath();
@@ -2248,13 +2313,16 @@ export class Renderer {
       c.fillStyle = 'rgba(255,250,230,0.28)';
       c.beginPath(); c.arc(cx - 1.4, 7.2, 4, Math.PI, Math.PI * 1.55); c.stroke();
     }
-    // équipement par type
+    // équipement par type — l'angle de l'arme suit la pose : baissée au repos,
+    // en joue au tir (avec léger recul), portée en marche
+    const aim = pose === 'fire' ? -0.02 : pose === 'idle' ? 0.36 : -0.08;
+    const recoil = pose === 'fire' ? -1.4 : 0;
     c.fillStyle = '#2f332c';
     if (type === 'bazooka' || type === 'rocketeer') {
       // tube sur l'épaule
       c.save();
-      c.translate(cx + 1, 13);
-      c.rotate(-0.22);
+      c.translate(cx + 1 + recoil, 13);
+      c.rotate(pose === 'fire' ? -0.34 : -0.22);
       c.fillStyle = type === 'rocketeer' ? '#3c4440' : '#4a4438';
       c.fillRect(-7, -2.6, 20, 5.2);
       c.fillStyle = '#1d201c';
@@ -2270,8 +2338,8 @@ export class Renderer {
       }
     } else if (type === 'sniper') {
       c.save();
-      c.translate(cx + 2, 19);
-      c.rotate(-0.12);
+      c.translate(cx + 2 + recoil, 19);
+      c.rotate(aim - 0.04);
       c.fillStyle = '#3c3a30';
       c.fillRect(-4, -1.1, 19, 2.2);        // long canon
       c.fillStyle = '#20241f';
@@ -2301,8 +2369,8 @@ export class Renderer {
     } else {
       // fusil d'assaut standard
       c.save();
-      c.translate(cx + 2, 19.5);
-      c.rotate(-0.1);
+      c.translate(cx + 2 + recoil, 19.5);
+      c.rotate(aim);
       c.fillStyle = '#41453a';
       c.fillRect(-5, -1.4, 14, 2.8);
       c.fillStyle = '#6d5230';
@@ -2326,7 +2394,9 @@ export class Renderer {
     const c = cv.getContext('2d')!;
     c.drawImage(src, 0, 0);
     c.globalCompositeOperation = 'source-atop';
-    c.fillStyle = 'rgba(8,10,16,0.55)';
+    // flanc à peine plus sombre que le toit : l'extrusion doit se lire sans
+    // transformer le véhicule en silhouette noire
+    c.fillStyle = 'rgba(12,15,20,0.34)';
     c.fillRect(0, 0, cv.width, cv.height);
     return cv;
   }
@@ -2338,18 +2408,81 @@ export class Renderer {
     const key = `${type}:${owner}`;
     let spr = this.spriteCache.get(key);
     if (!spr) {
+      // sprites BRUTS vue de dessus : la finition (contour, soleil) est
+      // appliquée par isoUnitDir APRÈS aplatissement, par direction — la
+      // lumière reste ainsi fixe à l'écran quand l'unité tourne.
       const baked = this.bakeUnit(type, PLAYER_COLORS[owner]);
-      const body = this.finishSprite(baked.body);
-      const turret = baked.turret ? this.finishSprite(baked.turret) : undefined;
       spr = {
-        body,
-        turret,
-        side: this.darkenSprite(body),
-        turretSide: turret ? this.darkenSprite(turret) : undefined,
+        body: baked.body,
+        turret: baked.turret,
+        side: this.darkenSprite(baked.body),
+        turretSide: baked.turret ? this.darkenSprite(baked.turret) : undefined,
       };
       this.spriteCache.set(key, spr);
     }
     return spr;
+  }
+
+  // ---------------------- sprites d'unités PRÉ-PROJETÉS par direction (24)
+  //
+  // Pour chaque (type, équipe, cap) : le sprite vue-de-dessus est aplati sur
+  // le plan iso, EXTRUDÉ (flancs empilés), détouré et éclairé par un soleil
+  // NORD-OUEST fixe à l'écran. Résultat : vraie silhouette 2.5D, éclairage
+  // cohérent quelle que soit l'orientation, et UN SEUL drawImage par unité
+  // par frame (au lieu de 5-7 dessins transformés). Cuisson paresseuse par
+  // direction (pas d'avalanche de bake).
+  private static readonly NDIR = 24;
+  private isoUnitCache = new Map<string, { cv: HTMLCanvasElement; ax: number; ay: number }>();
+
+  static dirIndex(dir: number): number {
+    const n = Renderer.NDIR;
+    return ((Math.round((dir / (Math.PI * 2)) * n) % n) + n) % n;
+  }
+
+  private isoUnitDir(
+    type: string, owner: number, di: number,
+    part: 'body' | 'turret', hullPx: number, tint?: string,
+  ): { cv: HTMLCanvasElement; ax: number; ay: number } | null {
+    const key = `${type}:${owner}:${part}:${di}:${Math.round(hullPx)}`;
+    const hit = this.isoUnitCache.get(key);
+    if (hit) return hit;
+    const spr = this.unitSprites(type, owner);
+    const src = part === 'body' ? spr.body : spr.turret;
+    const sideSrc = part === 'body' ? spr.side : spr.turretSide;
+    if (!src || !sideSrc) return null;
+    const th = (di / Renderer.NDIR) * Math.PI * 2;
+    // encombrement écran du sprite aplati : demi-diagonale × étendue iso
+    const rad = Math.hypot(src.width, src.height) / 2;
+    const W2 = Math.ceil(rad * 2.2 + 6);
+    const H2 = Math.ceil(rad * 1.15 + hullPx + 8);
+    const cv = document.createElement('canvas');
+    cv.width = W2; cv.height = H2;
+    const c = cv.getContext('2d')!;
+    const ax = W2 / 2, ay = H2 - 4;            // ancre = centre au sol de l'unité
+    const put = (img: HTMLCanvasElement, lift: number) => {
+      c.save();
+      c.translate(ax, ay - lift);
+      c.transform(1, 0.5, -1, 0.5, 0, 0);
+      c.rotate(th);
+      c.drawImage(img, -img.width / 2, -img.height / 2);
+      c.restore();
+    };
+    const steps = Math.max(2, Math.round(hullPx / 1.6));
+    for (let k = 0; k < steps; k++) put(sideSrc, (hullPx * k) / steps);
+    put(src, hullPx);
+    // teinte de famille (différencie visuellement les classes de véhicules)
+    if (tint) {
+      c.save();
+      c.globalCompositeOperation = 'source-atop';
+      c.globalAlpha = 0.13;
+      c.fillStyle = tint;
+      c.fillRect(0, 0, W2, H2);
+      c.restore();
+    }
+    const done = { cv: this.finishSprite(cv), ax, ay };
+    this.isoUnitCache.set(key, done);
+    if (this.isoUnitCache.size > 4000) this.isoUnitCache.clear();   // garde-fou mémoire
+    return done;
   }
 
   // Finition commune des sprites d'unités : CONTOUR sombre net (détache
@@ -2377,10 +2510,10 @@ export class Renderer {
     c.save();
     c.globalCompositeOperation = 'source-atop';
     const g2 = c.createLinearGradient(0, 0, out.width, out.height);
-    g2.addColorStop(0, 'rgba(255,248,222,0.20)');
-    g2.addColorStop(0.45, 'rgba(255,248,222,0)');
-    g2.addColorStop(0.62, 'rgba(0,0,0,0)');
-    g2.addColorStop(1, 'rgba(0,0,0,0.26)');
+    g2.addColorStop(0, 'rgba(255,248,222,0.30)');
+    g2.addColorStop(0.48, 'rgba(255,248,222,0)');
+    g2.addColorStop(0.66, 'rgba(0,0,0,0)');
+    g2.addColorStop(1, 'rgba(0,0,0,0.20)');
     c.fillStyle = g2;
     c.fillRect(0, 0, out.width, out.height);
     c.restore();
@@ -2858,18 +2991,7 @@ export class Renderer {
     const col = PLAYER_COLORS[u.owner];
     const spr = this.unitSprites(u.type, u.owner);
     const visualScale = this.unitVisualScale(u.type, def);
-    const sIso = (z / SPX) * visualScale;
 
-    // dessine une image posée sur le plan du sol, tournée d'un angle MONDE
-    const groundImg = (img: HTMLCanvasElement, cx: number, cy: number, ang: number, lift = 0) => {
-      ctx.save();
-      ctx.translate(cx, cy - lift);
-      ctx.transform(1, 0.5, -1, 0.5, 0, 0);
-      ctx.rotate(ang);
-      ctx.scale(sIso, sIso);
-      ctx.drawImage(img, -img.width / 2, -img.height / 2);
-      ctx.restore();
-    };
 
     if (selected) {
       const rr0 = (def.radius + 0.42) * z;
@@ -2898,39 +3020,69 @@ export class Renderer {
       ctx.drawImage(blob, px + z * 0.14 - rad * 1.25, py + z * 0.1 - rad * 0.62, rad * 2.5, rad * 1.24);
     }
 
-    // ----- infanterie : BILLBOARD DEBOUT (un soldat aplati au sol était
-    // illisible) — sprite vertical pré-cuit, miroir selon le cap, bob de marche
+    // ----- infanterie : BILLBOARD DEBOUT ANIMÉ — cycle de marche articulé
+    // (4 frames jambes/bras), pose de tir épaulée, repos arme basse. Le
+    // mouvement est détecté sur la POSITION réelle (pas l'ordre) : un soldat
+    // qui glisse sans bouger les jambes est banni.
     if (def.armor === 'inf') {
-      const inf = this.infantrySprite(u.type, u.owner);
+      const lp = this.lastPos.get(u.id);
+      const movedNow = lp ? Math.hypot(u.x - lp.x, u.y - lp.y) > 0.004 : false;
+      // hystérésis courte : évite le clignotement marche/repos aux micro-pauses
+      const mv = this.lastPos.get(u.id);
+      const movingUntil = movedNow ? g.time + 0.16 : (mv?.mu ?? 0);
+      this.lastPos.set(u.id, { x: u.x, y: u.y, mu: movingUntil });
+      const walking = g.time < movingUntil;
+      const wdefI = def.weapon;
+      const firing = !!(wdefI && u.engageId && u.cd > 0 && wdefI.cooldown - u.cd < 0.24);
+      const pose = firing ? 'fire'
+        : walking ? `w${Math.floor(((g.time * 7.5 + u.id * 0.63) % 1) * 4)}`
+        : 'idle';
+      const inf = this.infantrySprite(u.type, u.owner, pose);
       const hPx = z * 0.72 * visualScale;
       const s2 = hPx / 44;                                  // bake = 44 px de haut
-      const moving = u.order.kind !== 'idle';
-      const bob = moving ? Math.abs(Math.sin(g.time * 9 + u.id * 1.7)) * z * 0.035 : 0;
+      // respiration/houle légère au repos, à peine perceptible
+      const sway = pose === 'idle' ? Math.sin(g.time * 1.8 + u.id) * 0.5 * s2 : 0;
       const flip = Math.cos(u.dir) < -0.05 ? -1 : 1;        // regarde vers l'ouest → miroir
       ctx.save();
-      ctx.translate(px, py - bob);
+      ctx.translate(px, py + sway);
       ctx.scale(flip * s2, s2);
       ctx.drawImage(inf, -inf.width / 2, -inf.height + 3);
       ctx.restore();
+      // départ de coup : flash au bout de l'arme
+      if (firing && wdefI && wdefI.cooldown - u.cd < 0.09) {
+        const mx2 = px + flip * z * 0.34, my2 = py - hPx * 0.55;
+        ctx.save();
+        ctx.globalAlpha = 0.85;
+        ctx.drawImage(this.warmGlow(), mx2 - z * 0.16, my2 - z * 0.16, z * 0.32, z * 0.32);
+        ctx.restore();
+      }
       if (selected || u.hp < u.maxHp) {
         this.healthBar(ctx, px, py - hPx - z * 0.18, Math.max(12, def.radius * 2.2 * z), u.hp / u.maxHp, selected);
       }
       return;
     }
 
-    // ----- coque : PILE D'EXTRUSION (flancs sombres empilés sous le toit) —
-    // le véhicule a une vraie épaisseur par classe, pas un simple sticker.
+    // ----- coque : SPRITE DIRECTIONNEL pré-cuit (extrusion + contour + soleil
+    // écran FIXES) — un seul drawImage, silhouette et éclairage stables quelle
+    // que soit l'orientation du véhicule.
     const hullH = u.type === 'harvester' ? 0.3
       : def.isAir ? 0.14
       : def.armor === 'heavy' ? 0.24
       : u.type === 'artillery' || u.type === 'heavyarty' || u.type === 'tankdestroyer' ? 0.2
       : 0.15;
-    const hullPx = Math.max(2, hullH * z * ISO_ELEV * visualScale);
-    const steps = Math.max(2, Math.min(5, Math.round(hullPx / 2)));
-    for (let k2 = 0; k2 < steps; k2++) {
-      groundImg(spr.side, px, py - (hullPx * k2) / steps, u.dir);
+    const hullBake = hullH * SPX * ISO_ELEV;
+    const hullPx = hullH * z * ISO_ELEV * visualScale;
+    // teinte de famille : lourds gris-vert froid, récolteur/soutien sable,
+    // artillerie kaki — les classes se distinguent au premier coup d'œil
+    const tint = def.armor === 'heavy' ? '#4c5a66'
+      : u.type === 'harvester' || u.type === 'mobilecmd' ? '#a08a52'
+      : u.type === 'artillery' || u.type === 'heavyarty' ? '#6b6d4f'
+      : undefined;
+    const sD = (z / SPX) * visualScale;
+    const bodyD = this.isoUnitDir(u.type, u.owner, Renderer.dirIndex(u.dir), 'body', hullBake, tint);
+    if (bodyD) {
+      ctx.drawImage(bodyD.cv, px - bodyD.ax * sD, py - bodyD.ay * sD, bodyD.cv.width * sD, bodyD.cv.height * sD);
     }
-    groundImg(spr.body, px, py, u.dir, hullPx);
     if (u.type === 'harvester' && u.cargo > 1) {
       // benne de minerai : dessinée dans le repère sol du véhicule (sur le toit)
       ctx.save();
@@ -2945,9 +3097,9 @@ export class Renderer {
       ctx.restore();
     }
 
-    // ----- tourelle pivotante (angle monde, posée sur la coque)
+    // ----- tourelle pivotante : dir-sprite propre, posée SUR le toit
+    let tAng = u.dir;
     if (spr.turret) {
-      let tAng = u.dir;
       if (u.engageId) {
         const tgt = u.engageIsBuilding ? g.buildingById.get(u.engageId) : g.unitById.get(u.engageId);
         if (tgt) {
@@ -2963,9 +3115,24 @@ export class Renderer {
       const pivotW = -def.radius * 0.12; // recul du pivot le long du cap, en tuiles
       const tx2 = wx + Math.cos(u.dir) * pivotW, ty2 = wy + Math.sin(u.dir) * pivotW;
       const tpx = proj.sx(tx2, ty2), tpy = proj.sy(tx2, ty2);
-      // la tourelle est posée SUR le toit de la coque (hullPx) avec sa propre épaisseur
-      groundImg(spr.turretSide ?? spr.turret, tpx, tpy, tAng, hullPx);
-      groundImg(spr.turret, tpx, tpy, tAng, hullPx + Math.max(1.5, z * 0.07));
+      const tD = this.isoUnitDir(u.type, u.owner, Renderer.dirIndex(tAng), 'turret', SPX * 0.05, tint);
+      if (tD) {
+        ctx.drawImage(tD.cv, tpx - tD.ax * sD, tpy - hullPx - tD.ay * sD, tD.cv.width * sD, tD.cv.height * sD);
+      }
+    }
+
+    // ----- flash de tir : départ de coup au bout du canon (punch visuel)
+    const wdefV = def.weapon;
+    if (wdefV && u.engageId && u.cd > 0 && wdefV.cooldown - u.cd < 0.11) {
+      const mwx = wx + Math.cos(tAng) * def.radius * 1.05;
+      const mwy = wy + Math.sin(tAng) * def.radius * 1.05;
+      const mpx2 = proj.sx(mwx, mwy), mpy2 = proj.sy(mwx, mwy) - hullPx;
+      ctx.save();
+      ctx.globalAlpha = 0.9;
+      ctx.drawImage(this.warmGlow(), mpx2 - z * 0.3, mpy2 - z * 0.3, z * 0.6, z * 0.6);
+      ctx.fillStyle = 'rgba(255,248,215,0.95)';
+      ctx.beginPath(); ctx.arc(mpx2, mpy2, Math.max(1.5, z * 0.07), 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
     }
 
     {
