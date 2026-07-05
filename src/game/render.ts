@@ -43,9 +43,11 @@ export interface ViewState {
 
 // Matériau commun des coques (cohérence visuelle façon Planetary Annihilation) :
 // métal neutre + panneaux à la couleur de l'équipe + accents lumineux.
-const HULL_DARK = '#171b18';
-const HULL_MID = '#30372f';
-const HULL_LIGHT = '#485348';
+// Palette éclaircie (l'ancienne était presque noire : les véhicules se
+// lisaient comme des taches sombres en vue iso). Olive militaire mat.
+const HULL_DARK = '#252c24';
+const HULL_MID = '#41493c';
+const HULL_LIGHT = '#5d6a52';
 const INDUSTRIAL_ACCENT = '#b88f34';
 
 // Résolution des sprites pré-calculés (px par tuile) : le détail est "cuit"
@@ -537,7 +539,7 @@ export class Renderer {
         const LEVELS = 9;
         const myL = Math.floor(e * LEVELS);
         // rampe de luminosité par palier : contraste fort entre étages
-        let relief = 0.64 + myL * (0.62 / LEVELS);
+        let relief = 0.60 + myL * (0.74 / LEVELS);
         if (t !== T_WATER) {
           // bord SUPÉRIEUR de falaise (domine l'est/le sud, côté éclairé) → liseré clair
           if (myL > Math.floor(hr * LEVELS)) relief += 0.28;
@@ -547,16 +549,16 @@ export class Renderer {
           if (myL < Math.floor(hu * LEVELS)) relief -= 0.56;
         }
         // micro-pente continue (douceur à l'intérieur d'un palier)
-        relief += (-dxh - dyh) * 7;
+        relief += (-dxh - dyh) * 9;
         if (relief < 0.28) relief = 0.28; else if (relief > 1.82) relief = 1.82;
         // ombre PORTÉE longue : falaises/collines projettent loin vers le SE
         let cast = 0;
-        for (let s = 1; s <= 11; s++) {
+        for (let s = 1; s <= 14; s++) {
           const ax = sx2 - s, ay = sy - s; if (ax < 0 || ay < 0) break;
           const diff = SH[ay * W4 + ax] - e - s * 0.0085;
           if (diff > cast) cast = diff;
         }
-        const m = relief * (1 - Math.min(0.76, cast * 3.35));
+        const m = relief * (1 - Math.min(0.7, cast * 3.6));
         r *= m; gn *= m; b *= m;
 
         const o = i4 * 4;
@@ -737,12 +739,12 @@ export class Renderer {
           const myL = lvl(tx, ty);
           if (mask & 4) {   // face SUD (visible en bas-gauche à l'écran)
             const dL = Math.max(1, Math.min(3, myL - lvl(tx, ty + 1)));
-            const hw = tpx * (0.22 + 0.13 * dL);
+            const hw = tpx * (0.32 + 0.19 * dL);
             drawWall(px, py + tpx, tpx, 0.5 * tpx, hw, tx + ty * 3);
           }
           if (mask & 2) {   // face EST (visible en bas-droite à l'écran)
             const dL = Math.max(1, Math.min(3, myL - lvl(tx + 1, ty)));
-            const hw = tpx * (0.22 + 0.13 * dL);
+            const hw = tpx * (0.32 + 0.19 * dL);
             drawWall(px + tpx, py, -tpx, 0.5 * tpx, hw, tx * 2 + ty);
           }
         }
@@ -1118,6 +1120,31 @@ export class Renderer {
             ctx.beginPath(); ctx.arc(px + dx, py + dy, Math.max(0.8, sPx * 0.07), 0, Math.PI * 2); ctx.fill();
           }
         }
+      }
+      ctx.restore();
+    }
+
+    // ----- ÉCUME DE RIVAGE animée : vaguelettes qui lèchent la côte (les
+    // segments côtiers sont précalculés une fois ; par frame on ne dessine
+    // que ceux du viewport). Donne vie aux bords d'eau sans coût notable.
+    if (z >= 8) {
+      if (!this.shore) this.buildShore(g);
+      ctx.save();
+      ctx.lineCap = 'round';
+      for (const sgm of this.shore!) {
+        if (sgm.x < ab.x0 || sgm.x > ab.x1 || sgm.y < ab.y0 || sgm.y > ab.y1) continue;
+        const fi = Math.round(sgm.y) * mw + Math.round(sgm.x);
+        if (!revealAll && fog[Math.max(0, Math.min(fog.length - 1, fi))] === 0) continue;
+        const t2 = g.time * 1.15 + sgm.ph;
+        const pulse = 0.5 + 0.5 * Math.sin(t2);
+        const lap = 0.1 * Math.sin(t2 * 0.7 + sgm.ph);        // la vague avance/recule
+        const ox2 = sgm.nx * lap, oy2 = sgm.ny * lap;
+        ctx.strokeStyle = `rgba(236,248,252,${0.08 + 0.2 * pulse})`;
+        ctx.lineWidth = Math.max(1, z * (0.045 + 0.03 * pulse));
+        ctx.beginPath();
+        ctx.moveTo(proj.sx(sgm.x1 + ox2, sgm.y1 + oy2), proj.sy(sgm.x1 + ox2, sgm.y1 + oy2));
+        ctx.lineTo(proj.sx(sgm.x2 + ox2, sgm.y2 + oy2), proj.sy(sgm.x2 + ox2, sgm.y2 + oy2));
+        ctx.stroke();
       }
       ctx.restore();
     }
@@ -1720,7 +1747,18 @@ export class Renderer {
   private isoChunk(g: Game, S: number, cu: number, cv: number): HTMLCanvasElement | null {
     const key = `${S}:${cu}:${cv}`;
     const hit = this.isoChunks.get(key);
-    if (hit !== undefined) return hit;
+    if (hit !== undefined) {
+      // LRU : un chunk UTILISÉ doit rester chaud — sans ce rafraîchissement,
+      // les chunks visibles étaient évincés par âge et re-cuits en boucle
+      // (cause des carrés noirs : Safari peignait des canvas pas encore
+      // rasterisés sous cette avalanche de re-créations).
+      const idx = this.isoChunkLru.indexOf(key);
+      if (idx >= 0 && idx < this.isoChunkLru.length - 1) {
+        this.isoChunkLru.splice(idx, 1);
+        this.isoChunkLru.push(key);
+      }
+      return hit;
+    }
     const C = Renderer.CHUNK, P = Renderer.CHUNK_PAD;
     // AABB monde couvert par le chunk (+ marge de padding)
     const u0 = (cu * C - P) / S, u1 = ((cu + 1) * C + P) / S;
@@ -1747,11 +1785,26 @@ export class Renderer {
     }
     this.isoChunks.set(key, cvs);
     this.isoChunkLru.push(key);
-    if (this.isoChunkLru.length > 110) {
-      const old = this.isoChunkLru.splice(0, this.isoChunkLru.length - 110);
+    if (this.isoChunkLru.length > this.isoChunkCap) {
+      const old = this.isoChunkLru.splice(0, this.isoChunkLru.length - this.isoChunkCap);
       for (const k2 of old) this.isoChunks.delete(k2);
     }
     return cvs;
+  }
+
+  private isoChunkCap = 240;
+
+  /** Repli : blit affine direct du terrain, borné au rectangle écran donné
+   *  (utilisé pour les chunks pas encore cuits — budget de cuisson/frame). */
+  private drawGroundDirect(ctx: CanvasRenderingContext2D, proj: Proj, rx: number, ry: number, rw: number, rh: number) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(rx, ry, rw, rh);
+    ctx.clip();
+    const t = proj.groundTransform(this.tpx, true);
+    ctx.setTransform(t[0], t[1], t[2], t[3], t[4], t[5]);
+    ctx.drawImage(this.terrain!, 0, 0);
+    ctx.restore();
   }
 
   private drawIsoGround(ctx: CanvasRenderingContext2D, proj: Proj) {
@@ -1764,9 +1817,33 @@ export class Renderer {
     const V0 = (0 - proj.oy) / k, V1 = (proj.H - proj.oy) / k;
     const cu0 = Math.floor(U0 / C), cu1 = Math.floor(U1 / C);
     const cv0 = Math.floor(V0 / C), cv1 = Math.floor(V1 / C);
+    // plafond dynamique : TOUJOURS assez grand pour tout le viewport (avec
+    // marge ×3) — un cache plus petit que l'écran thrashait à chaque frame
+    const visible = (cu1 - cu0 + 1) * (cv1 - cv0 + 1);
+    this.isoChunkCap = Math.max(240, visible * 3);
+    // budget de cuisson par frame : au changement de palier de zoom, on ne
+    // re-cuit pas 100+ chunks dans la même frame (gel + artefacts Safari) —
+    // les chunks manquants passent par le blit direct cette frame-là.
+    let budget = 28;
     for (let cv = cv0; cv <= cv1; cv++) {
       for (let cu = cu0; cu <= cu1; cu++) {
-        const chunk = this.isoChunk(g, S, cu, cv);
+        const key = `${S}:${cu}:${cv}`;
+        let chunk = this.isoChunks.get(key);
+        if (chunk === undefined) {
+          if (budget > 0) {
+            budget--;
+            chunk = this.isoChunk(g, S, cu, cv);
+          } else {
+            this.drawGroundDirect(
+              ctx, proj,
+              proj.ox + cu * C * k, proj.oy + cv * C * k, C * k, C * k,
+            );
+            continue;
+          }
+        } else if (chunk) {
+          // rafraîchit la position LRU des chunks réellement affichés
+          this.isoChunk(g, S, cu, cv);
+        }
         if (!chunk) continue;
         ctx.drawImage(
           chunk, P, P, C, C,
@@ -1774,6 +1851,32 @@ export class Renderer {
         );
       }
     }
+  }
+
+  // segments côtiers (eau ↔ terre) pour l'écume animée, précalculés
+  private shore: { x: number; y: number; x1: number; y1: number; x2: number; y2: number; nx: number; ny: number; ph: number }[] | null = null;
+  private buildShore(g: Game) {
+    const { w, h, terrain } = g.map;
+    const list: NonNullable<typeof this.shore> = [];
+    const isLand = (x: number, y: number) =>
+      x >= 0 && y >= 0 && x < w && y < h && terrain[y * w + x] !== T_WATER;
+    for (let ty = 0; ty < h; ty++)
+      for (let tx = 0; tx < w; tx++) {
+        if (terrain[ty * w + tx] !== T_WATER) continue;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+          if (!isLand(tx + dx, ty + dy)) continue;
+          // arête partagée (tuiles centrées sur les entiers : bords à ±0.5)
+          const ex = tx + dx * 0.5, ey = ty + dy * 0.5;
+          list.push({
+            x: tx, y: ty,
+            x1: dx !== 0 ? ex : tx - 0.42, y1: dy !== 0 ? ey : ty - 0.42,
+            x2: dx !== 0 ? ex : tx + 0.42, y2: dy !== 0 ? ey : ty + 0.42,
+            nx: -dx, ny: -dy,               // normale vers l'eau (la vague recule)
+            ph: (tx * 13 + ty * 7) % 6.28,
+          });
+        }
+      }
+    this.shore = list;
   }
 
   private fogScreen: HTMLCanvasElement | null = null;
@@ -2085,7 +2188,7 @@ export class Renderer {
     const key = `inf:${type}:${owner}`;
     let cv = this.infantryCache.get(key);
     if (!cv) {
-      cv = this.bakeInfantry(type, PLAYER_COLORS[owner]);
+      cv = this.finishSprite(this.bakeInfantry(type, PLAYER_COLORS[owner]));
       this.infantryCache.set(key, cv);
     }
     return cv;
@@ -2236,15 +2339,52 @@ export class Renderer {
     let spr = this.spriteCache.get(key);
     if (!spr) {
       const baked = this.bakeUnit(type, PLAYER_COLORS[owner]);
+      const body = this.finishSprite(baked.body);
+      const turret = baked.turret ? this.finishSprite(baked.turret) : undefined;
       spr = {
-        body: baked.body,
-        turret: baked.turret,
-        side: this.darkenSprite(baked.body),
-        turretSide: baked.turret ? this.darkenSprite(baked.turret) : undefined,
+        body,
+        turret,
+        side: this.darkenSprite(body),
+        turretSide: turret ? this.darkenSprite(turret) : undefined,
       };
       this.spriteCache.set(key, spr);
     }
     return spr;
+  }
+
+  // Finition commune des sprites d'unités : CONTOUR sombre net (détache
+  // l'unité du terrain, style RA2) + passe de SOLEIL nord-ouest (toit éclairé
+  // côté NO, ombré côté SE) → volume et lisibilité, cuits une seule fois.
+  private finishSprite(src: HTMLCanvasElement): HTMLCanvasElement {
+    const out = document.createElement('canvas');
+    out.width = src.width; out.height = src.height;
+    const c = out.getContext('2d')!;
+    // silhouette noire
+    const sil = document.createElement('canvas');
+    sil.width = src.width; sil.height = src.height;
+    const sc = sil.getContext('2d')!;
+    sc.drawImage(src, 0, 0);
+    sc.globalCompositeOperation = 'source-in';
+    sc.fillStyle = 'rgba(8,10,8,0.85)';
+    sc.fillRect(0, 0, sil.width, sil.height);
+    // contour : silhouette décalée dans 4 directions
+    const o = Math.max(1, Math.round(SPX * 0.028));
+    for (const [dx, dy] of [[o, 0], [-o, 0], [0, o], [0, -o]] as const) {
+      c.drawImage(sil, dx, dy);
+    }
+    c.drawImage(src, 0, 0);
+    // soleil NO : éclaire le quadrant haut-gauche, assombrit le bas-droit
+    c.save();
+    c.globalCompositeOperation = 'source-atop';
+    const g2 = c.createLinearGradient(0, 0, out.width, out.height);
+    g2.addColorStop(0, 'rgba(255,248,222,0.20)');
+    g2.addColorStop(0.45, 'rgba(255,248,222,0)');
+    g2.addColorStop(0.62, 'rgba(0,0,0,0)');
+    g2.addColorStop(1, 'rgba(0,0,0,0.26)');
+    c.fillStyle = g2;
+    c.fillRect(0, 0, out.width, out.height);
+    c.restore();
+    return out;
   }
 
   private newSprite(tiles: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
@@ -2256,13 +2396,15 @@ export class Renderer {
   }
 
   private unitVisualScale(type: string, def: { armor: string; isAir?: boolean }) {
-    // Véhicules agrandis (lisibilité + détail visible) ; hitbox/gameplay inchangés.
-    if (def.armor === 'inf') return 1.1;
-    if (def.isAir) return type === 'cargoheli' || type === 'transportheli' ? 1.2 : 1.18;
-    if (type === 'harvester' || type === 'mobilecmd') return 1.32;
-    if (type === 'heavytank' || type === 'heavyarty' || type === 'tankdestroyer') return 1.3;
-    if (type === 'artillery' || type === 'tank') return 1.26;
-    return 1.22;
+    // Échelle VISUELLE cohérente avec les bâtiments iso (hitbox/gameplay
+    // inchangés). Les anciens ×1.22-1.32 hérités de la vue top-down
+    // faisaient paraître les véhicules énormes à côté des bâtiments.
+    if (def.armor === 'inf') return 1.0;
+    if (def.isAir) return type === 'cargoheli' || type === 'transportheli' ? 1.1 : 1.06;
+    if (type === 'harvester' || type === 'mobilecmd') return 1.16;
+    if (type === 'heavytank' || type === 'heavyarty' || type === 'tankdestroyer') return 1.12;
+    if (type === 'artillery' || type === 'tank') return 1.08;
+    return 1.04;
   }
 
   private bakeUnit(type: string, col: string): { body: HTMLCanvasElement; turret?: HTMLCanvasElement } {
@@ -2760,7 +2902,7 @@ export class Renderer {
     // illisible) — sprite vertical pré-cuit, miroir selon le cap, bob de marche
     if (def.armor === 'inf') {
       const inf = this.infantrySprite(u.type, u.owner);
-      const hPx = z * 0.8 * visualScale;
+      const hPx = z * 0.72 * visualScale;
       const s2 = hPx / 44;                                  // bake = 44 px de haut
       const moving = u.order.kind !== 'idle';
       const bob = moving ? Math.abs(Math.sin(g.time * 9 + u.id * 1.7)) * z * 0.035 : 0;
