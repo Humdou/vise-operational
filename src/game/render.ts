@@ -677,6 +677,77 @@ export class Renderer {
         }
       }
 
+    // ===== 3bis) PAROIS ROCHEUSES VERTICALES : le terrain est cisaillé par la
+    // projection affine ; en pré-appliquant la matrice INVERSE (U), ces murs
+    // apparaissent parfaitement VERTICAUX à l'écran — le relief devient une
+    // vraie marche 3D, pas une bande sombre plate. Cuit une fois : coût nul.
+    {
+      const LEVELS = 9;
+      const rockBase = THEMES[g.map.theme].rock[0];
+      const wallTop = shade(rockBase, -0.06);
+      const wallBot = shade(rockBase, -0.62);
+      const lvl = (xx: number, yy: number) =>
+        Math.floor((height[Math.max(0, Math.min(h - 1, yy)) * w + Math.max(0, Math.min(w - 1, xx))] ?? 0.5) * LEVELS);
+      const wallRng = mulberry32(w * 613 + h * 271 + 5);
+      const drawWall = (ax: number, ay: number, bx: number, by: number, hw: number, jitterSalt: number) => {
+        tc.save();
+        tc.translate(ax, ay);
+        tc.transform(0.5, -0.5, 1, 1, 0, 0);   // inverse du cisaillement iso
+        // face
+        const gr2 = tc.createLinearGradient(0, 0, 0, hw);
+        gr2.addColorStop(0, wallTop);
+        gr2.addColorStop(0.25, shade(rockBase, -0.24));
+        gr2.addColorStop(1, wallBot);
+        tc.fillStyle = gr2;
+        tc.beginPath();
+        tc.moveTo(0, 0); tc.lineTo(bx, by); tc.lineTo(bx, by + hw); tc.lineTo(0, hw);
+        tc.closePath(); tc.fill();
+        // strates horizontales + fissures verticales (relief de roche)
+        tc.strokeStyle = 'rgba(0,0,0,0.30)'; tc.lineWidth = 1;
+        for (let k = 1; k <= 2; k++) {
+          const yy = (hw * k) / 3 + (wallRng() - 0.5) * 2;
+          tc.beginPath(); tc.moveTo(1, yy); tc.lineTo(bx - 1, by + yy); tc.stroke();
+        }
+        const nCr = 3 + ((jitterSalt * 7) % 3);
+        for (let k = 0; k < nCr; k++) {
+          const t0 = (k + 0.3 + wallRng() * 0.5) / nCr;
+          const xx = bx * t0, yy0 = by * t0;
+          tc.strokeStyle = `rgba(0,0,0,${0.22 + wallRng() * 0.2})`;
+          tc.beginPath();
+          tc.moveTo(xx, yy0 + hw * (0.12 + wallRng() * 0.2));
+          tc.lineTo(xx + (wallRng() - 0.5) * 3, yy0 + hw * (0.72 + wallRng() * 0.25));
+          tc.stroke();
+        }
+        // lèvre supérieure éclairée (arête du plateau)
+        tc.strokeStyle = 'rgba(255,250,225,0.5)'; tc.lineWidth = Math.max(1, SS * 0.3);
+        tc.beginPath(); tc.moveTo(0, 0.5); tc.lineTo(bx, by + 0.5); tc.stroke();
+        // occlusion au pied
+        tc.fillStyle = 'rgba(4,6,10,0.30)';
+        tc.beginPath();
+        tc.moveTo(0, hw); tc.lineTo(bx, by + hw); tc.lineTo(bx, by + hw + SS * 1.2); tc.lineTo(0, hw + SS * 1.2);
+        tc.closePath(); tc.fill();
+        tc.restore();
+      };
+      for (let ty = 0; ty < h; ty++)
+        for (let tx = 0; tx < w; tx++) {
+          const i = ty * w + tx;
+          const mask = cliff[i] ?? 0;
+          if (!mask || terrain[i] === T_WATER) continue;
+          const px = tx * tpx, py = ty * tpx;
+          const myL = lvl(tx, ty);
+          if (mask & 4) {   // face SUD (visible en bas-gauche à l'écran)
+            const dL = Math.max(1, Math.min(3, myL - lvl(tx, ty + 1)));
+            const hw = tpx * (0.22 + 0.13 * dL);
+            drawWall(px, py + tpx, tpx, 0.5 * tpx, hw, tx + ty * 3);
+          }
+          if (mask & 2) {   // face EST (visible en bas-droite à l'écran)
+            const dL = Math.max(1, Math.min(3, myL - lvl(tx + 1, ty)));
+            const hw = tpx * (0.22 + 0.13 * dL);
+            drawWall(px + tpx, py, -tpx, 0.5 * tpx, hw, tx * 2 + ty);
+          }
+        }
+    }
+
     // ===== 4) ROUTES en RÉSEAU réaliste : tranchée d'assise sombre → terre
     // battue (largeur irrégulière) → bords usés → ornières jumelles → crête de
     // poussière → gravier/flaques. Tracées de centre à centre (pistes continues).
@@ -993,30 +1064,22 @@ export class Renderer {
 
     // Projection isométrique de la frame : LE convertisseur monde → écran.
     const proj = new Proj(cam.x, cam.y, z, W, H);
+    this.lastGame = g;
 
     ctx.fillStyle = '#0a0d10';
     ctx.fillRect(0, 0, W, H);
 
-    // ----- terrain : image monde pré-rendue, projetée sur le plan du sol par
-    // une transformation affine (le GPU fait la rotation/écrasement iso).
+    // ----- terrain : SOL ISO PRÉ-PROJETÉ par tuiles cachées. Un blit affine
+    // plein écran par frame est le chemin LENT de Canvas2D (Safari, mobile) ;
+    // on projette donc le terrain une seule fois par « chunk » de 256 px et
+    // par palier de zoom, puis chaque frame ne fait que des drawImage
+    // AXIS-ALIGNED (chemin rapide partout). Cache LRU, terrain immuable.
     if (!this.terrain) this.buildTerrain(g);
     const ab = proj.worldAABB(2);
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'medium';
     const _rt = prof.enabled ? performance.now() : 0;
-    {
-      const t = proj.groundTransform(this.tpx, true);
-      ctx.save();
-      ctx.setTransform(t[0], t[1], t[2], t[3], t[4], t[5]);
-      // rectangle source limité au visible (image potentiellement très grande)
-      const sx0 = Math.max(0, (ab.x0 + 0.5) * this.tpx), sy0 = Math.max(0, (ab.y0 + 0.5) * this.tpx);
-      const sx1 = Math.min(this.terrain!.width, (ab.x1 + 0.5) * this.tpx);
-      const sy1 = Math.min(this.terrain!.height, (ab.y1 + 0.5) * this.tpx);
-      if (sx1 > sx0 && sy1 > sy0) {
-        ctx.drawImage(this.terrain!, sx0, sy0, sx1 - sx0, sy1 - sy0, sx0, sy0, sx1 - sx0, sy1 - sy0);
-      }
-      ctx.restore();
-    }
+    this.drawIsoGround(ctx, proj);
     if (prof.enabled) prof.add('render.terrain', performance.now() - _rt);
 
     // bornes de culling en tuiles (AABB monde du viewport iso)
@@ -1346,6 +1409,29 @@ export class Renderer {
         ctx.drawImage(img, -img.width / 2, -img.height / 2, img.width, img.height);
         ctx.restore();
       }
+      // rotor des hélicoptères : disque flou + pales (vitesse selon vol/pad)
+      if (u.type === 'transportheli' || u.type === 'cargoheli') {
+        const ra = g.time * (flying ? 26 : 5) + u.id;
+        const rr2 = z * (u.type === 'cargoheli' ? 0.66 : 0.56);
+        ctx.save();
+        ctx.globalAlpha = aIn;
+        ctx.translate(px, py - alt - z * 0.16);
+        ctx.transform(1, 0.5, -1, 0.5, 0, 0);
+        ctx.strokeStyle = `rgba(215,220,214,${flying ? 0.3 : 0.16})`;
+        ctx.lineWidth = Math.max(1, z * 0.055);
+        ctx.beginPath(); ctx.arc(0, 0, rr2, 0, Math.PI * 2); ctx.stroke();
+        ctx.strokeStyle = 'rgba(235,238,232,0.85)';
+        ctx.lineWidth = Math.max(1, z * 0.045);
+        for (const a0 of [0, Math.PI / 2]) {
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(ra + a0) * rr2, Math.sin(ra + a0) * rr2);
+          ctx.lineTo(-Math.cos(ra + a0) * rr2, -Math.sin(ra + a0) * rr2);
+          ctx.stroke();
+        }
+        ctx.fillStyle = '#2c302c';
+        ctx.beginPath(); ctx.arc(0, 0, Math.max(1.5, z * 0.07), 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
       if (v.selectedUnits.includes(u.id)) {
         ctx.strokeStyle = '#fff';
         ctx.lineWidth = 1.5;
@@ -1435,17 +1521,24 @@ export class Renderer {
       ctx.fillRect(0, 0, W, H);
     }
 
-    // ----- étalonnage : vignettage doux + lumière zénithale (rendu "caméra")
-    const vg = ctx.createRadialGradient(W / 2, H * 0.46, Math.min(W, H) * 0.42, W / 2, H * 0.5, Math.max(W, H) * 0.78);
-    vg.addColorStop(0, 'rgba(0,0,0,0)');
-    vg.addColorStop(1, 'rgba(4,6,10,0.26)');
-    ctx.fillStyle = vg;
-    ctx.fillRect(0, 0, W, H);
-    const tl = ctx.createLinearGradient(0, 0, 0, H);
-    tl.addColorStop(0, 'rgba(255,250,235,0.045)');
-    tl.addColorStop(0.45, 'rgba(0,0,0,0)');
-    ctx.fillStyle = tl;
-    ctx.fillRect(0, 0, W, H);
+    // ----- étalonnage : vignettage + lumière zénithale PRÉ-CUITS (deux
+    // dégradés plein écran par frame coûtaient cher) → un seul drawImage.
+    if (!this.vignette || this.vignette.width !== W || this.vignette.height !== H) {
+      this.vignette = document.createElement('canvas');
+      this.vignette.width = W; this.vignette.height = H;
+      const vc = this.vignette.getContext('2d')!;
+      const vg = vc.createRadialGradient(W / 2, H * 0.46, Math.min(W, H) * 0.42, W / 2, H * 0.5, Math.max(W, H) * 0.78);
+      vg.addColorStop(0, 'rgba(0,0,0,0)');
+      vg.addColorStop(1, 'rgba(4,6,10,0.26)');
+      vc.fillStyle = vg;
+      vc.fillRect(0, 0, W, H);
+      const tl = vc.createLinearGradient(0, 0, 0, H);
+      tl.addColorStop(0, 'rgba(255,250,235,0.045)');
+      tl.addColorStop(0.45, 'rgba(0,0,0,0)');
+      vc.fillStyle = tl;
+      vc.fillRect(0, 0, W, H);
+    }
+    ctx.drawImage(this.vignette, 0, 0);
 
     this.drawOrderMarkers(ctx, g, v, proj);
     this.drawCommandCursor(ctx, g, v);
@@ -1612,6 +1705,79 @@ export class Renderer {
 
   // -------------------------------------------------------------- brouillard
 
+  // ------------------------------------------- sol iso pré-projeté (chunks)
+  //
+  // Espace « iso-px » : U = (x−y)·S, V = (x+y)·S/2 (S = px par tuile du
+  // palier). L'écran est U·(z/S) + ox — un simple zoom/translation → le
+  // contenu d'un chunk ne dépend QUE de son index et du palier : cache parfait.
+  private isoChunks = new Map<string, HTMLCanvasElement | null>();
+  private isoChunkLru: string[] = [];
+  private static readonly CHUNK = 256;
+  private static readonly CHUNK_PAD = 4;
+
+  private isoLod(z: number): number { return z < 16 ? 12 : z < 32 ? 24 : 48; }
+
+  private isoChunk(g: Game, S: number, cu: number, cv: number): HTMLCanvasElement | null {
+    const key = `${S}:${cu}:${cv}`;
+    const hit = this.isoChunks.get(key);
+    if (hit !== undefined) return hit;
+    const C = Renderer.CHUNK, P = Renderer.CHUNK_PAD;
+    // AABB monde couvert par le chunk (+ marge de padding)
+    const u0 = (cu * C - P) / S, u1 = ((cu + 1) * C + P) / S;
+    const v0 = ((cv * C - P) / S) * 2, v1 = (((cv + 1) * C + P) / S) * 2;   // v ici = x+y
+    const wx0 = (v0 + u0) / 2 - 0.6, wx1 = (v1 + u1) / 2 + 0.6;
+    const wy0 = (v0 - u1) / 2 - 0.6, wy1 = (v1 - u0) / 2 + 0.6;
+    const { w, h } = g.map;
+    let cvs: HTMLCanvasElement | null = null;
+    if (wx1 > -0.5 && wy1 > -0.5 && wx0 < w - 0.5 && wy0 < h - 0.5) {
+      cvs = document.createElement('canvas');
+      cvs.width = cvs.height = C + P * 2;
+      const c = cvs.getContext('2d')!;
+      c.imageSmoothingEnabled = true;
+      c.imageSmoothingQuality = 'high';
+      // monde → chunk : X = S(x−y) − cu·C + P ; Y = S(x+y)/2 − cv·C + P
+      // en px d'image terrain (ix = (x+0.5)·tpx) :
+      const k = S / this.tpx;
+      c.setTransform(k, k * 0.5, -k, k * 0.5, -cu * C + P, -cv * C + P - S * 0.5);
+      const sx0 = Math.max(0, (wx0 + 0.5) * this.tpx), sy0 = Math.max(0, (wy0 + 0.5) * this.tpx);
+      const sx1 = Math.min(this.terrain!.width, (wx1 + 0.5) * this.tpx);
+      const sy1 = Math.min(this.terrain!.height, (wy1 + 0.5) * this.tpx);
+      if (sx1 > sx0 && sy1 > sy0) c.drawImage(this.terrain!, sx0, sy0, sx1 - sx0, sy1 - sy0, sx0, sy0, sx1 - sx0, sy1 - sy0);
+      c.setTransform(1, 0, 0, 1, 0, 0);
+    }
+    this.isoChunks.set(key, cvs);
+    this.isoChunkLru.push(key);
+    if (this.isoChunkLru.length > 110) {
+      const old = this.isoChunkLru.splice(0, this.isoChunkLru.length - 110);
+      for (const k2 of old) this.isoChunks.delete(k2);
+    }
+    return cvs;
+  }
+
+  private drawIsoGround(ctx: CanvasRenderingContext2D, proj: Proj) {
+    const g = this.lastGame!;
+    const S = this.isoLod(proj.z);
+    const k = proj.z / S;
+    const C = Renderer.CHUNK, P = Renderer.CHUNK_PAD;
+    // rectangle visible en iso-px : U = (screen − ox)/k
+    const U0 = (0 - proj.ox) / k, U1 = (proj.W - proj.ox) / k;
+    const V0 = (0 - proj.oy) / k, V1 = (proj.H - proj.oy) / k;
+    const cu0 = Math.floor(U0 / C), cu1 = Math.floor(U1 / C);
+    const cv0 = Math.floor(V0 / C), cv1 = Math.floor(V1 / C);
+    for (let cv = cv0; cv <= cv1; cv++) {
+      for (let cu = cu0; cu <= cu1; cu++) {
+        const chunk = this.isoChunk(g, S, cu, cv);
+        if (!chunk) continue;
+        ctx.drawImage(
+          chunk, P, P, C, C,
+          proj.ox + cu * C * k, proj.oy + cv * C * k, C * k, C * k,
+        );
+      }
+    }
+  }
+
+  private fogScreen: HTMLCanvasElement | null = null;
+  private fogScreenCtx: CanvasRenderingContext2D | null = null;
   private fogBuiltAt = -1;
   private drawFog(g: Game, ctx: CanvasRenderingContext2D, proj: Proj) {
     const { w, h } = g.map;
@@ -1634,21 +1800,31 @@ export class Renderer {
       }
       this.fogCtx!.putImageData(this.fogImg!, 0, 0);
     }
-    // Projection affine sur le plan du sol (1 px = 1 tuile, décalage ½ tuile).
-    // Hors de la carte : voile sombre — en iso, le losange du monde ne couvre
-    // pas tout l'écran, les coins doivent rester « inconnus ».
-    ctx.save();
+    // Projection affine sur le plan du sol — composée en DEMI-RÉSOLUTION
+    // (le brouillard est flou par nature ; le coût de remplissage est ÷4,
+    // décisif sur Safari/mobile), puis un seul agrandissement axis-aligned.
+    const hw = Math.ceil(proj.W / 2), hh = Math.ceil(proj.H / 2);
+    if (!this.fogScreen || this.fogScreen.width !== hw || this.fogScreen.height !== hh) {
+      this.fogScreen = document.createElement('canvas');
+      this.fogScreen.width = hw; this.fogScreen.height = hh;
+      this.fogScreenCtx = this.fogScreen.getContext('2d')!;
+    }
+    const fc = this.fogScreenCtx!;
+    fc.setTransform(1, 0, 0, 1, 0, 0);
+    fc.clearRect(0, 0, hw, hh);
     const t = proj.groundTransform(1, true);
-    ctx.setTransform(t[0], t[1], t[2], t[3], t[4], t[5]);
-    ctx.imageSmoothingEnabled = true;
+    fc.setTransform(t[0] / 2, t[1] / 2, t[2] / 2, t[3] / 2, t[4] / 2, t[5] / 2);
+    fc.imageSmoothingEnabled = true;
     const M = 600; // marge « hors monde » en tuiles (couvre tout viewport raisonnable)
-    ctx.fillStyle = 'rgba(8,10,14,0.9)';
-    ctx.fillRect(-M, -M, w + 2 * M, M);        // bande nord
-    ctx.fillRect(-M, h, w + 2 * M, M);         // bande sud
-    ctx.fillRect(-M, 0, M, h);                 // bande ouest
-    ctx.fillRect(w, 0, M, h);                  // bande est
-    ctx.drawImage(this.fogCanvas, 0, 0, w, h, 0, 0, w, h);
-    ctx.restore();
+    fc.fillStyle = 'rgba(8,10,14,0.9)';
+    fc.fillRect(-M, -M, w + 2 * M, M);        // bande nord
+    fc.fillRect(-M, h, w + 2 * M, M);         // bande sud
+    fc.fillRect(-M, 0, M, h);                 // bande ouest
+    fc.fillRect(w, 0, M, h);                  // bande est
+    fc.drawImage(this.fogCanvas, 0, 0, w, h, 0, 0, w, h);
+    fc.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(this.fogScreen, 0, 0, hw, hh, 0, 0, proj.W, proj.H);
   }
 
   // ------------------------------------------------------------------ unités
@@ -1829,12 +2005,11 @@ export class Renderer {
     const h = z * s * (0.5 + 0.22 * fl);          // hauteur de la langue
     const w = z * s * 0.13;                        // demi-largeur à la base
     const sway = Math.sin(time * 9.3) * w * 0.6;   // ondulation du sommet
-    // halo chaud très léger
-    const glow = ctx.createRadialGradient(x, y - h * 0.35, 0, x, y - h * 0.35, h * 0.9);
-    glow.addColorStop(0, `rgba(255,150,60,${0.16 * fl})`);
-    glow.addColorStop(1, 'rgba(255,150,60,0)');
-    ctx.fillStyle = glow;
-    ctx.beginPath(); ctx.arc(x, y - h * 0.35, h * 0.9, 0, Math.PI * 2); ctx.fill();
+    // halo chaud très léger (sprite pré-cuit : pas de gradient par frame)
+    ctx.save();
+    ctx.globalAlpha = 0.42 * fl;
+    ctx.drawImage(this.warmGlow(), x - h * 0.9, y - h * 0.35 - h * 0.9, h * 1.8, h * 1.8);
+    ctx.restore();
     // langue orange
     ctx.fillStyle = `rgba(255,140,50,${0.75 * fl})`;
     ctx.beginPath();
@@ -1862,6 +2037,26 @@ export class Renderer {
     side: HTMLCanvasElement; turretSide?: HTMLCanvasElement;
   }>();
 
+  private lastGame: Game | null = null;
+  private vignette: HTMLCanvasElement | null = null;
+
+  // halo chaud générique (portes, flammes) : cuit une fois, teinte baked
+  private warmGlowCv: HTMLCanvasElement | null = null;
+  private warmGlow(): HTMLCanvasElement {
+    if (this.warmGlowCv) return this.warmGlowCv;
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = 64;
+    const c = cv.getContext('2d')!;
+    const gr = c.createRadialGradient(32, 32, 2, 32, 32, 32);
+    gr.addColorStop(0, 'rgba(255,205,125,0.5)');
+    gr.addColorStop(0.55, 'rgba(255,165,80,0.22)');
+    gr.addColorStop(1, 'rgba(255,150,60,0)');
+    c.fillStyle = gr;
+    c.fillRect(0, 0, 64, 64);
+    this.warmGlowCv = cv;
+    return cv;
+  }
+
   // blob d'ombre radial générique, cuit une fois puis étiré à la demande
   private shadowBlobCv: HTMLCanvasElement | null = null;
   private shadowBlob(): HTMLCanvasElement {
@@ -1876,6 +2071,148 @@ export class Renderer {
     c.fillStyle = gr;
     c.fillRect(0, 0, 64, 64);
     this.shadowBlobCv = cv;
+    return cv;
+  }
+
+  // ------------------------------------------ infanterie : billboards debout
+  //
+  // Un fantassin vu de dessus puis aplati au sol était un simple point ; en
+  // vue RTS 2.5D l'infanterie doit être DEBOUT. Chaque type a une silhouette
+  // procédurale distincte (casque, arme, équipement), cuite une fois par
+  // équipe, orientée vers l'est (miroir horizontal pour l'ouest au runtime).
+  private infantryCache = new Map<string, HTMLCanvasElement>();
+  private infantrySprite(type: string, owner: number): HTMLCanvasElement {
+    const key = `inf:${type}:${owner}`;
+    let cv = this.infantryCache.get(key);
+    if (!cv) {
+      cv = this.bakeInfantry(type, PLAYER_COLORS[owner]);
+      this.infantryCache.set(key, cv);
+    }
+    return cv;
+  }
+
+  private bakeInfantry(type: string, team: string): HTMLCanvasElement {
+    const cv = document.createElement('canvas');
+    cv.width = 30; cv.height = 44;
+    const c = cv.getContext('2d')!;
+    const cx = 14;                        // axe du corps (le canon dépasse à droite)
+    const uniform = type === 'spy' ? '#8d8776' : type === 'elite' ? '#3a3f3c' : '#575e49';
+    const uniformD = shade(uniform, -0.3);
+    const helmet = type === 'engineer' ? '#d8a935' : type === 'elite' ? '#2c3130' : type === 'spy' ? '#6d6553' : '#49503f';
+    const skin = '#c9a179';
+    const o = (f: () => void) => { c.strokeStyle = 'rgba(0,0,0,0.55)'; c.lineWidth = 1; f(); };
+
+    // jambes + rangers
+    c.fillStyle = uniformD;
+    c.fillRect(cx - 5, 26, 4, 12);
+    c.fillRect(cx + 1, 26, 4, 12);
+    c.fillStyle = '#23261f';
+    c.fillRect(cx - 6, 37, 6, 4);
+    c.fillRect(cx + 1, 37, 6, 4);
+    // torse (veste) + éclairage NO
+    c.fillStyle = uniform;
+    c.beginPath();
+    c.moveTo(cx - 6, 14); c.lineTo(cx + 6, 14); c.lineTo(cx + 5, 28); c.lineTo(cx - 5, 28);
+    c.closePath(); c.fill();
+    o(() => c.stroke());
+    c.fillStyle = 'rgba(255,250,230,0.18)';
+    c.fillRect(cx - 5, 15, 3, 11);
+    c.fillStyle = 'rgba(0,0,0,0.22)';
+    c.fillRect(cx + 2, 15, 3, 12);
+    // brassard/plastron couleur d'équipe (identification immédiate)
+    c.fillStyle = team;
+    c.fillRect(cx - 6, 16, 12, 3);
+    c.fillStyle = 'rgba(0,0,0,0.25)';
+    c.fillRect(cx - 6, 18, 12, 1);
+    // bras droit (vers l'arme)
+    c.fillStyle = uniform;
+    c.fillRect(cx + 3, 17, 7, 3.5);
+    // tête + casque
+    c.fillStyle = skin;
+    c.beginPath(); c.arc(cx, 10, 4.4, 0, Math.PI * 2); c.fill();
+    c.fillStyle = helmet;
+    if (type === 'elite') {
+      // béret incliné
+      c.beginPath(); c.ellipse(cx - 0.5, 6.6, 5.4, 3, -0.18, 0, Math.PI * 2); c.fill();
+      c.fillStyle = shade(team, -0.1); c.fillRect(cx + 2.5, 5.5, 3, 2);
+    } else if (type === 'spy') {
+      // chapeau à bord
+      c.beginPath(); c.ellipse(cx, 7.6, 6.4, 2.1, 0, 0, Math.PI * 2); c.fill();
+      c.fillRect(cx - 4, 3.4, 8, 4.5);
+    } else {
+      c.beginPath(); c.arc(cx, 8.6, 5.2, Math.PI * 0.95, Math.PI * 2.05); c.fill();
+      c.fillRect(cx - 5.2, 8, 10.4, 2.4);
+      c.fillStyle = 'rgba(255,250,230,0.28)';
+      c.beginPath(); c.arc(cx - 1.4, 7.2, 4, Math.PI, Math.PI * 1.55); c.stroke();
+    }
+    // équipement par type
+    c.fillStyle = '#2f332c';
+    if (type === 'bazooka' || type === 'rocketeer') {
+      // tube sur l'épaule
+      c.save();
+      c.translate(cx + 1, 13);
+      c.rotate(-0.22);
+      c.fillStyle = type === 'rocketeer' ? '#3c4440' : '#4a4438';
+      c.fillRect(-7, -2.6, 20, 5.2);
+      c.fillStyle = '#1d201c';
+      c.fillRect(11, -3.2, 3.4, 6.4);
+      c.fillStyle = shade(team, -0.15);
+      c.fillRect(2, -2.6, 2.4, 5.2);
+      c.restore();
+      if (type === 'rocketeer') {           // rack dorsal de roquettes
+        c.fillStyle = '#333a35';
+        c.fillRect(cx - 9, 15, 4, 10);
+        c.fillStyle = '#b8912f';
+        c.fillRect(cx - 8.4, 16, 2.6, 2); c.fillRect(cx - 8.4, 19, 2.6, 2); c.fillRect(cx - 8.4, 22, 2.6, 2);
+      }
+    } else if (type === 'sniper') {
+      c.save();
+      c.translate(cx + 2, 19);
+      c.rotate(-0.12);
+      c.fillStyle = '#3c3a30';
+      c.fillRect(-4, -1.1, 19, 2.2);        // long canon
+      c.fillStyle = '#20241f';
+      c.fillRect(3, -2.8, 4, 2);            // lunette
+      c.restore();
+    } else if (type === 'engineer') {
+      c.fillStyle = '#7a4e26';               // mallette à outils
+      c.fillRect(cx + 6, 24, 7, 6);
+      c.strokeStyle = 'rgba(0,0,0,0.5)'; c.strokeRect(cx + 6, 24, 7, 6);
+      c.fillStyle = '#d8a935';
+      c.fillRect(cx + 8, 23, 3, 1.6);
+    } else if (type === 'kamikaze') {
+      // gilet de charges + détonateur (danger lisible)
+      c.fillStyle = '#5d2721';
+      c.fillRect(cx - 5, 19, 10, 7);
+      c.fillStyle = '#c8372d';
+      c.fillRect(cx - 4, 20, 2.6, 5); c.fillRect(cx - 0.8, 20, 2.6, 5); c.fillRect(cx + 2.4, 20, 2.6, 5);
+      c.strokeStyle = '#1c1c1c';
+      c.beginPath(); c.moveTo(cx + 5, 22); c.quadraticCurveTo(cx + 9, 20, cx + 8, 16); c.stroke();
+    } else if (type === 'spy') {
+      // manteau long
+      c.fillStyle = shade('#8d8776', -0.12);
+      c.beginPath();
+      c.moveTo(cx - 6, 18); c.lineTo(cx + 6, 18); c.lineTo(cx + 7, 34); c.lineTo(cx - 7, 34);
+      c.closePath(); c.fill();
+      o(() => c.stroke());
+    } else {
+      // fusil d'assaut standard
+      c.save();
+      c.translate(cx + 2, 19.5);
+      c.rotate(-0.1);
+      c.fillStyle = '#41453a';
+      c.fillRect(-5, -1.4, 14, 2.8);
+      c.fillStyle = '#6d5230';
+      c.fillRect(-6.5, -1.2, 3, 3.4);       // crosse bois
+      c.fillStyle = '#23261f';
+      c.fillRect(3, 1, 2.2, 3.4);           // chargeur
+      c.restore();
+    }
+    // liseré global léger (détache du fond)
+    c.globalCompositeOperation = 'destination-over';
+    c.fillStyle = 'rgba(0,0,0,0.001)';
+    c.fillRect(0, 0, cv.width, cv.height);
+    c.globalCompositeOperation = 'source-over';
     return cv;
   }
 
@@ -2419,13 +2756,43 @@ export class Renderer {
       ctx.drawImage(blob, px + z * 0.14 - rad * 1.25, py + z * 0.1 - rad * 0.62, rad * 2.5, rad * 1.24);
     }
 
-    // ----- coque : flanc sombre légèrement plus bas (épaisseur), puis le corps
-    groundImg(spr.side, px, py + Math.max(1, z * 0.07), u.dir);
-    groundImg(spr.body, px, py, u.dir, Math.max(1, z * 0.05));
-    if (u.type === 'harvester' && u.cargo > 1) {
-      // benne de minerai : dessinée dans le repère sol du véhicule
+    // ----- infanterie : BILLBOARD DEBOUT (un soldat aplati au sol était
+    // illisible) — sprite vertical pré-cuit, miroir selon le cap, bob de marche
+    if (def.armor === 'inf') {
+      const inf = this.infantrySprite(u.type, u.owner);
+      const hPx = z * 0.8 * visualScale;
+      const s2 = hPx / 44;                                  // bake = 44 px de haut
+      const moving = u.order.kind !== 'idle';
+      const bob = moving ? Math.abs(Math.sin(g.time * 9 + u.id * 1.7)) * z * 0.035 : 0;
+      const flip = Math.cos(u.dir) < -0.05 ? -1 : 1;        // regarde vers l'ouest → miroir
       ctx.save();
-      ctx.translate(px, py - Math.max(1, z * 0.05));
+      ctx.translate(px, py - bob);
+      ctx.scale(flip * s2, s2);
+      ctx.drawImage(inf, -inf.width / 2, -inf.height + 3);
+      ctx.restore();
+      if (selected || u.hp < u.maxHp) {
+        this.healthBar(ctx, px, py - hPx - z * 0.18, Math.max(12, def.radius * 2.2 * z), u.hp / u.maxHp, selected);
+      }
+      return;
+    }
+
+    // ----- coque : PILE D'EXTRUSION (flancs sombres empilés sous le toit) —
+    // le véhicule a une vraie épaisseur par classe, pas un simple sticker.
+    const hullH = u.type === 'harvester' ? 0.3
+      : def.isAir ? 0.14
+      : def.armor === 'heavy' ? 0.24
+      : u.type === 'artillery' || u.type === 'heavyarty' || u.type === 'tankdestroyer' ? 0.2
+      : 0.15;
+    const hullPx = Math.max(2, hullH * z * ISO_ELEV * visualScale);
+    const steps = Math.max(2, Math.min(5, Math.round(hullPx / 2)));
+    for (let k2 = 0; k2 < steps; k2++) {
+      groundImg(spr.side, px, py - (hullPx * k2) / steps, u.dir);
+    }
+    groundImg(spr.body, px, py, u.dir, hullPx);
+    if (u.type === 'harvester' && u.cargo > 1) {
+      // benne de minerai : dessinée dans le repère sol du véhicule (sur le toit)
+      ctx.save();
+      ctx.translate(px, py - hullPx);
       ctx.transform(1, 0.5, -1, 0.5, 0, 0);
       ctx.rotate(u.dir);
       const L = def.radius * 2.7 * z * visualScale, Wd = def.radius * 2.1 * z * visualScale;
@@ -2454,12 +2821,14 @@ export class Renderer {
       const pivotW = -def.radius * 0.12; // recul du pivot le long du cap, en tuiles
       const tx2 = wx + Math.cos(u.dir) * pivotW, ty2 = wy + Math.sin(u.dir) * pivotW;
       const tpx = proj.sx(tx2, ty2), tpy = proj.sy(tx2, ty2);
-      groundImg(spr.turretSide ?? spr.turret, tpx, tpy - Math.max(1, z * 0.02), tAng);
-      groundImg(spr.turret, tpx, tpy, tAng, Math.max(1, z * 0.09));
+      // la tourelle est posée SUR le toit de la coque (hullPx) avec sa propre épaisseur
+      groundImg(spr.turretSide ?? spr.turret, tpx, tpy, tAng, hullPx);
+      groundImg(spr.turret, tpx, tpy, tAng, hullPx + Math.max(1.5, z * 0.07));
     }
 
-    if (def.armor !== 'inf') {
-      // phares avant : points projetés depuis le repère monde du véhicule
+    {
+      // phares avant : points projetés depuis le repère monde du véhicule,
+      // à hauteur de coque (pas au ras du sol)
       const fx = Math.cos(u.dir), fy = Math.sin(u.dir);
       const nose = def.radius * 0.9;
       const side = def.radius * 0.42;
@@ -2468,7 +2837,7 @@ export class Renderer {
       for (const sgn of [1, -1]) {
         const lwx = wx + fx * nose - sgn * fy * side;
         const lwy = wy + fy * nose + sgn * fx * side;
-        ctx.beginPath(); ctx.arc(proj.sx(lwx, lwy), proj.sy(lwx, lwy) - z * 0.06, lampR, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(proj.sx(lwx, lwy), proj.sy(lwx, lwy) - hullPx * 0.55, lampR, 0, Math.PI * 2); ctx.fill();
       }
     }
 
@@ -2711,11 +3080,10 @@ export class Renderer {
         const k2 = 1 - (g.time - b.doorT) / 0.9;
         const dpx = proj.sx(x0 + spr.door.u, y0 + spr.door.v);
         const dpy = proj.sy(x0 + spr.door.u, y0 + spr.door.v);
-        const gl = ctx.createRadialGradient(dpx, dpy, 0, dpx, dpy, z * 0.8);
-        gl.addColorStop(0, `rgba(255,214,130,${0.34 * k2})`);
-        gl.addColorStop(1, 'rgba(255,214,130,0)');
-        ctx.fillStyle = gl;
-        ctx.beginPath(); ctx.ellipse(dpx, dpy, z * 0.8, z * 0.4, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.save();
+        ctx.globalAlpha = 0.75 * k2;
+        ctx.drawImage(this.warmGlow(), dpx - z * 0.8, dpy - z * 0.4, z * 1.6, z * 0.8);
+        ctx.restore();
       }
     }
 
