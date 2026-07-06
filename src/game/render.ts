@@ -358,7 +358,7 @@ export class Renderer {
     // Le gameplay/coords/collisions/fog sont INCHANGÉS — seul le rendu gagne en
     // densité. spx (pixels par sous-tuile) est borné pour que la toile de
     // pré-rendu reste raisonnable même sur carte Géante (perf/mémoire).
-    const SUB = 4;
+    const SUB = 3;
     const n = Math.max(w, h);
     const spx = Math.max(3, Math.min(6, Math.floor(4400 / (n * SUB))));
     const tpx = SUB * spx;
@@ -432,19 +432,25 @@ export class Renderer {
     // Couleur d'une tuile (palette variée, déterministe). Sert au mélange des
     // bordures : on interpole les couleurs des 4 tuiles autour de chaque
     // sous-cellule → transitions douces entre herbe / terre / roche / eau.
-    const c00: [number, number, number] = [0, 0, 0], c10: [number, number, number] = [0, 0, 0];
-    const c01: [number, number, number] = [0, 0, 0], c11: [number, number, number] = [0, 0, 0];
-    const tileRGB = (tx: number, ty: number, out: [number, number, number]) => {
-      if (tx < 0) tx = 0; else if (tx >= w) tx = w - 1;
-      if (ty < 0) ty = 0; else if (ty >= h) ty = h - 1;
-      const tt = terrain[ty * w + tx];
-      if (tt === T_WATER) { out[0] = waterRGB[0]; out[1] = waterRGB[1]; out[2] = waterRGB[2]; return; }
-      const vi = (((tx * 73856093) ^ (ty * 19349663)) >>> 0);
-      const p = tt === T_ROCK ? rockP[vi % rockP.length] : tt === T_ROUGH ? roughP[vi % roughP.length] : grassP[vi % grassP.length];
-      out[0] = p[0]; out[1] = p[1]; out[2] = p[2];
-    };
-
     const shoreRGB = hex2rgb(theme.shore);
+
+    // Précalcul : couleur de chaque tuile (+ 2 tuiles de marge pour le warp)
+    // → remplace 4 appels de fonction tileRGB() par 4 lectures de tableau par pixel.
+    const TMAP_W = w + 4;
+    const tileMap = new Uint8Array(TMAP_W * (h + 4) * 3);
+    for (let ty2 = -2; ty2 < h + 2; ty2++) {
+      for (let tx2 = -2; tx2 < w + 2; tx2++) {
+        const cty2 = ty2 < 0 ? 0 : ty2 >= h ? h - 1 : ty2;
+        const ctx2 = tx2 < 0 ? 0 : tx2 >= w ? w - 1 : tx2;
+        const tt = terrain[cty2 * w + ctx2];
+        const vi = (((ctx2 * 73856093) ^ (cty2 * 19349663)) >>> 0);
+        const pp = tt === T_WATER ? waterRGB : tt === T_ROCK ? rockP[vi % rockP.length] : tt === T_ROUGH ? roughP[vi % roughP.length] : grassP[vi % grassP.length];
+        const i3 = ((ty2 + 2) * TMAP_W + (tx2 + 2)) * 3;
+        tileMap[i3] = pp[0]; tileMap[i3 + 1] = pp[1]; tileMap[i3 + 2] = pp[2];
+      }
+    }
+    // Voisins fixes (évite 73K allocations de tableaux dans la boucle)
+    const N4DX = [1, -1, 0, 0], N4DY = [0, 0, 1, -1];
 
     for (let sy = 0; sy < H4; sy++) {
       for (let sx2 = 0; sx2 < W4; sx2++) {
@@ -459,9 +465,8 @@ export class Renderer {
         let gty = Math.round(wy); if (gty < 0) gty = 0; else if (gty >= h) gty = h - 1;
         const t = terrain[gty * w + gtx];
         let rockContact = 0, openContact = 0, waterContact = 0;
-        const neigh4: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-        for (const [dx, dy] of neigh4) {
-          const nx = gtx + dx, ny = gty + dy;
+        for (let ni = 0; ni < 4; ni++) {
+          const nx = gtx + N4DX[ni], ny = gty + N4DY[ni];
           if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
           const nt = terrain[ny * w + nx];
           if (nt === T_ROCK) rockContact++;
@@ -469,14 +474,18 @@ export class Renderer {
           else openContact++;
         }
 
-        // mélange bilinéaire des 4 tuiles voisines
-        tileRGB(x0, y0, c00); tileRGB(x0 + 1, y0, c10);
-        tileRGB(x0, y0 + 1, c01); tileRGB(x0 + 1, y0 + 1, c11);
+        // mélange bilinéaire des 4 tuiles voisines (lecture directe tileMap)
+        const x0c = (x0 + 2 < 0 ? 0 : x0 + 2 >= TMAP_W ? TMAP_W - 1 : x0 + 2);
+        const x1c = (x0 + 3 < 0 ? 0 : x0 + 3 >= TMAP_W ? TMAP_W - 1 : x0 + 3);
+        const y0c = (y0 + 2 < 0 ? 0 : y0 + 2 >= h + 4 ? h + 3 : y0 + 2);
+        const y1c = (y0 + 3 < 0 ? 0 : y0 + 3 >= h + 4 ? h + 3 : y0 + 3);
+        const i00 = (y0c * TMAP_W + x0c) * 3, i10 = (y0c * TMAP_W + x1c) * 3;
+        const i01 = (y1c * TMAP_W + x0c) * 3, i11 = (y1c * TMAP_W + x1c) * 3;
         const w00 = (1 - fxr) * (1 - fyr), w10 = fxr * (1 - fyr);
         const w01 = (1 - fxr) * fyr, w11 = fxr * fyr;
-        let r = c00[0] * w00 + c10[0] * w10 + c01[0] * w01 + c11[0] * w11;
-        let gn = c00[1] * w00 + c10[1] * w10 + c01[1] * w01 + c11[1] * w11;
-        let b = c00[2] * w00 + c10[2] * w10 + c01[2] * w01 + c11[2] * w11;
+        let r = tileMap[i00] * w00 + tileMap[i10] * w10 + tileMap[i01] * w01 + tileMap[i11] * w11;
+        let gn = tileMap[i00+1] * w00 + tileMap[i10+1] * w10 + tileMap[i01+1] * w01 + tileMap[i11+1] * w11;
+        let b = tileMap[i00+2] * w00 + tileMap[i10+2] * w10 + tileMap[i01+2] * w01 + tileMap[i11+2] * w11;
 
         if (t === T_ROCK) {
           // zones infranchissables : sombres et distinctes, liseré de contact clair
@@ -581,9 +590,9 @@ export class Renderer {
         if (relief < 0.20) relief = 0.20; else if (relief > 2.10) relief = 2.10;
         // ombre portée longue (soleil NW → ombre vers SE)
         let cast = 0;
-        for (let s = 1; s <= 18; s++) {
-          const ax = sx2 - s, ay = sy - s; if (ax < 0 || ay < 0) break;
-          const diff = SH[ay * W4 + ax] - e - s * 0.0072;
+        for (let s = 1; s <= 9; s++) {
+          const ax = sx2 - s * 2, ay = sy - s * 2; if (ax < 0 || ay < 0) break;
+          const diff = SH[ay * W4 + ax] - e - s * 0.0144;
           if (diff > cast) cast = diff;
         }
         const m = relief * (1 - Math.min(0.72, cast * 5.0));
@@ -755,7 +764,7 @@ export class Renderer {
         tc.beginPath();
         tc.moveTo(0, 0); tc.lineTo(bx, by); tc.lineTo(bx, by + hw); tc.lineTo(0, hw);
         tc.closePath(); tc.fill();
-        const nFac = 3 + ((jitterSalt * 5) % 3);
+        const nFac = 2;
         let tPrev = 0;
         for (let f = 0; f < nFac; f++) {
           const tNext = f === nFac - 1 ? 1 : (f + 1) / nFac + (wallRng() - 0.5) * 0.12;
@@ -779,7 +788,7 @@ export class Renderer {
           const yy = (hw * k) / 3 + (wallRng() - 0.5) * 2;
           tc.beginPath(); tc.moveTo(1, yy); tc.lineTo(bx - 1, by + yy); tc.stroke();
         }
-        const nCr = 3 + ((jitterSalt * 7) % 3);
+        const nCr = 2;
         for (let k = 0; k < nCr; k++) {
           const t0 = (k + 0.3 + wallRng() * 0.5) / nCr;
           const xx = bx * t0, yy0 = by * t0;
@@ -800,7 +809,7 @@ export class Renderer {
         tc.moveTo(0, hw); tc.lineTo(bx, by + hw); tc.lineTo(bx, by + hw + SS * 1.6); tc.lineTo(0, hw + SS * 1.6);
         tc.closePath(); tc.fill();
         // éboulis : cailloux tombés au pied (ancre le mur dans le sol)
-        for (let r2 = 0; r2 < 4; r2++) {
+        for (let r2 = 0; r2 < 2; r2++) {
           const t3 = wallRng();
           const rx2 = bx * t3 + (wallRng() - 0.5) * 3;
           const ry2 = by * t3 + hw + wallRng() * SS * 0.9;
@@ -926,73 +935,80 @@ export class Renderer {
     const badlands = g.map.theme === 'badlands';
     const vegRng = mulberry32(w * 17 + h * 101 + 55);
 
-    // Fonction utilitaire : arbre pré-compensé iso (pin, chêne, palmier)
-    const drawTree = (px: number, py: number, scale: number, style: 'pine' | 'oak' | 'palm' | 'dead') => {
-      tc.save();
-      tc.translate(px, py);
-      tc.transform(0.5, -0.5, 1, 1, 0, 0);
-      tc.translate(-px, -py);
+    // Pré-cuisson des sprites d'arbres avec iso-compensation intégrée.
+    // Chaque stamp encode déjà le transform(0.5,-0.5,1,1) → 1 drawImage par arbre
+    // au lieu de ~80 appels canvas API individuels (×1200 arbres = 96 000 → 1 200).
+    const mkTreeStamp = (style: 'pine' | 'oak' | 'palm' | 'dead', scale: number): [HTMLCanvasElement, number, number] => {
+      const sw = Math.ceil(tpx * 5 * scale + tpx), sh = Math.ceil(tpx * 4 * scale + tpx);
+      const sc2 = document.createElement('canvas');
+      sc2.width = sw; sc2.height = sh;
+      const cx = sc2.getContext('2d')!;
+      const anX = sw * 0.5, anY = sh * 0.78;
+      cx.translate(anX, anY);
+      cx.transform(0.5, -0.5, 1, 1, 0, 0);
+      cx.translate(-anX, -anY);
       const trunkH = tpx * (style === 'palm' ? 0.52 : 0.32) * scale;
-      const trunkW = Math.max(1, SS * (style === 'palm' ? 0.18 : 0.26) * scale);
       // ombre au sol
-      tc.fillStyle = 'rgba(0,0,0,0.22)';
-      tc.beginPath(); tc.ellipse(px + SS * 0.3, py + SS * 0.22, SS * 1.1 * scale, SS * 0.5 * scale, 0.3, 0, Math.PI * 2); tc.fill();
+      cx.fillStyle = 'rgba(0,0,0,0.22)';
+      cx.beginPath(); cx.ellipse(anX + SS * 0.3, anY + SS * 0.22, SS * 1.1 * scale, SS * 0.5 * scale, 0.3, 0, Math.PI * 2); cx.fill();
       // tronc
-      tc.strokeStyle = style === 'dead' ? 'rgba(80,60,40,0.80)' : 'rgba(78,54,30,0.82)';
-      tc.lineWidth = trunkW;
-      const lean = (vegRng() - 0.5) * SS * 0.4;
-      tc.beginPath(); tc.moveTo(px + lean * 0.1, py); tc.lineTo(px + lean, py - trunkH); tc.stroke();
-      const topX = px + lean, topY = py - trunkH;
+      cx.strokeStyle = style === 'dead' ? 'rgba(80,60,40,0.80)' : 'rgba(78,54,30,0.82)';
+      cx.lineWidth = Math.max(1, SS * (style === 'palm' ? 0.18 : 0.26) * scale);
+      cx.beginPath(); cx.moveTo(anX, anY); cx.lineTo(anX, anY - trunkH); cx.stroke();
+      const topX = anX, topY = anY - trunkH;
       if (style === 'pine') {
-        for (let tier = 0; tier < 4; tier++) {
-          const yy = topY + trunkH * tier * 0.22;
-          const ww = SS * (2.8 - tier * 0.45) * scale;
-          const hh2 = SS * (1.6 - tier * 0.22) * scale;
-          tc.fillStyle = tier % 2 === 0 ? 'rgba(18,64,32,0.80)' : 'rgba(24,78,42,0.75)';
-          tc.beginPath();
-          tc.moveTo(topX, yy - hh2 * 0.9);
-          tc.lineTo(topX + ww * 0.55, yy + hh2 * 0.55);
-          tc.lineTo(topX - ww * 0.55, yy + hh2 * 0.55);
-          tc.closePath(); tc.fill();
-          tc.fillStyle = 'rgba(200,230,210,0.12)'; // reflet soleil
-          tc.beginPath();
-          tc.moveTo(topX - ww * 0.45, yy + hh2 * 0.1);
-          tc.lineTo(topX + ww * 0.25, yy + hh2 * 0.02);
-          tc.lineTo(topX + ww * 0.4, yy + hh2 * 0.32);
-          tc.lineTo(topX - ww * 0.28, yy + hh2 * 0.38);
-          tc.closePath(); tc.fill();
+        for (let tier = 0; tier < 3; tier++) {
+          const yy = topY + trunkH * tier * 0.26;
+          const ww = SS * (2.7 - tier * 0.5) * scale;
+          const hh2 = SS * (1.55 - tier * 0.22) * scale;
+          cx.fillStyle = tier % 2 === 0 ? 'rgba(18,64,32,0.80)' : 'rgba(24,78,42,0.75)';
+          cx.beginPath();
+          cx.moveTo(topX, yy - hh2 * 0.9);
+          cx.lineTo(topX + ww * 0.55, yy + hh2 * 0.55);
+          cx.lineTo(topX - ww * 0.55, yy + hh2 * 0.55);
+          cx.closePath(); cx.fill();
         }
       } else if (style === 'oak') {
-        tc.fillStyle = 'rgba(24,72,28,0.72)';
-        tc.beginPath(); tc.arc(topX, topY, SS * 2.0 * scale, 0, Math.PI * 2); tc.fill();
-        tc.fillStyle = 'rgba(32,88,38,0.62)';
-        tc.beginPath(); tc.arc(topX - SS * 0.6 * scale, topY - SS * 0.4 * scale, SS * 1.4 * scale, 0, Math.PI * 2); tc.fill();
-        tc.fillStyle = 'rgba(180,220,190,0.14)';
-        tc.beginPath(); tc.arc(topX - SS * 0.8 * scale, topY - SS * 0.6 * scale, SS * 0.8 * scale, 0, Math.PI * 2); tc.fill();
+        cx.fillStyle = 'rgba(24,72,28,0.72)';
+        cx.beginPath(); cx.arc(topX, topY, SS * 2.0 * scale, 0, Math.PI * 2); cx.fill();
+        cx.fillStyle = 'rgba(32,88,38,0.62)';
+        cx.beginPath(); cx.arc(topX - SS * 0.6 * scale, topY - SS * 0.4 * scale, SS * 1.4 * scale, 0, Math.PI * 2); cx.fill();
+        cx.fillStyle = 'rgba(180,220,190,0.14)';
+        cx.beginPath(); cx.arc(topX - SS * 0.8 * scale, topY - SS * 0.6 * scale, SS * 0.8 * scale, 0, Math.PI * 2); cx.fill();
       } else if (style === 'palm') {
-        tc.strokeStyle = '#2a7a38'; tc.lineWidth = Math.max(1, SS * 0.28 * scale);
-        for (let q = 0; q < 6; q++) {
-          const a = (q / 6) * Math.PI * 2 + vegRng() * 0.6;
-          tc.beginPath();
-          tc.moveTo(topX, topY);
-          tc.quadraticCurveTo(topX + Math.cos(a) * tpx * 0.24, topY + Math.sin(a) * tpx * 0.12,
+        cx.strokeStyle = '#2a7a38'; cx.lineWidth = Math.max(1, SS * 0.28 * scale);
+        for (let q = 0; q < 5; q++) {
+          const a = (q / 5) * Math.PI * 2;
+          cx.beginPath();
+          cx.moveTo(topX, topY);
+          cx.quadraticCurveTo(topX + Math.cos(a) * tpx * 0.24, topY + Math.sin(a) * tpx * 0.12,
             topX + Math.cos(a) * tpx * 0.45, topY + Math.sin(a) * tpx * 0.24);
-          tc.stroke();
+          cx.stroke();
         }
-      } else { // dead
-        tc.strokeStyle = 'rgba(60,44,30,0.58)'; tc.lineWidth = Math.max(1, SS * 0.18);
+      } else {
+        cx.strokeStyle = 'rgba(60,44,30,0.58)'; cx.lineWidth = Math.max(1, SS * 0.18);
         for (let q = 0; q < 3; q++) {
-          const a = (q / 3) * Math.PI - Math.PI * 0.35 + (vegRng() - 0.5) * 0.6;
-          tc.beginPath();
-          tc.moveTo(topX, topY);
-          tc.lineTo(topX + Math.cos(a) * tpx * 0.22 * scale, topY + Math.sin(a) * tpx * 0.12 * scale);
-          tc.stroke();
+          const a = (q / 3) * Math.PI - Math.PI * 0.35;
+          cx.beginPath();
+          cx.moveTo(topX, topY);
+          cx.lineTo(topX + Math.cos(a) * tpx * 0.22 * scale, topY + Math.sin(a) * tpx * 0.12 * scale);
+          cx.stroke();
         }
       }
-      tc.restore();
+      return [sc2, anX, anY];
+    };
+    const treeStamps: Record<string, [HTMLCanvasElement, number, number][]> = {
+      pine: [0.72, 1.0, 1.30].map(s => mkTreeStamp('pine', s)),
+      oak:  [0.72, 1.0, 1.30].map(s => mkTreeStamp('oak', s)),
+      palm: [0.72, 1.0, 1.30].map(s => mkTreeStamp('palm', s)),
+      dead: [0.55, 0.72, 0.90].map(s => mkTreeStamp('dead', s)),
+    };
+    const stampTree = (px: number, py: number, style: string) => {
+      const [sc2, ax, ay] = treeStamps[style][(vegRng() * 3) | 0];
+      tc.drawImage(sc2, px - ax, py - ay);
     };
 
-    const vegCount = Math.floor(w * h * 1.5);
+    const vegCount = Math.floor(w * h * 1.0);
     for (let k = 0; k < vegCount; k++) {
       const tx = (vegRng() * w) | 0, ty = (vegRng() * h) | 0;
       const t = terrain[ty * w + tx];
@@ -1015,7 +1031,7 @@ export class Renderer {
         }
       } else if (arctic) {
         if (r < 0.042 && !roads[ty * w + tx]) {
-          drawTree(px, py, 0.72 + vegRng() * 0.56, 'pine');
+          stampTree(px, py, 'pine');
         } else if (r < 0.10) {
           tc.fillStyle = 'rgba(38,52,58,0.24)';
           tc.beginPath(); tc.ellipse(px, py, SS * (0.9 + vegRng() * 0.8), SS * (0.48 + vegRng() * 0.38), vegRng() * Math.PI, 0, Math.PI * 2); tc.fill();
@@ -1028,7 +1044,7 @@ export class Renderer {
         }
       } else if (tropical) {
         if (r < 0.048 && !roads[ty * w + tx]) {
-          drawTree(px, py, 0.72 + vegRng() * 0.60, 'palm');
+          stampTree(px, py, 'palm');
         } else if (r < 0.11 && t !== T_ROCK) {
           // fougères / grandes herbes tropicales
           tc.fillStyle = 'rgba(12,52,20,0.55)';
@@ -1041,7 +1057,7 @@ export class Renderer {
         }
       } else if (badlands) {
         if (r < 0.028 && !roads[ty * w + tx]) {
-          drawTree(px, py, 0.55 + vegRng() * 0.45, 'dead');
+          stampTree(px, py, 'dead');
         } else if (r < 0.20) {
           // cailloux brûlés
           tc.fillStyle = `rgba(0,0,0,${0.14 + vegRng() * 0.16})`;
@@ -1056,7 +1072,7 @@ export class Renderer {
         // TEMPERATE + DESERT + MIST : arbres, herbes, buissons
         const isDesert = g.map.theme === 'desert';
         if (!isDesert && r < 0.055 && !roads[ty * w + tx] && t !== T_ROCK) {
-          drawTree(px, py, 0.68 + vegRng() * 0.60, vegRng() < 0.60 ? 'pine' : 'oak');
+          stampTree(px, py, vegRng() < 0.60 ? 'pine' : 'oak');
         } else if (r < 0.28) {
           // touffes d'herbe / végétation basse (variées)
           const len = SS * (0.9 + vegRng() * 1.1);
