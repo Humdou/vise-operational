@@ -652,30 +652,18 @@ export class Renderer {
         const mask = cliff[i] ?? 0;
         if (!mask || terrain[i] === T_WATER) continue;
         const px = tx * tpx, py = ty * tpx;
-        const face = Math.max(SS * 1.4, tpx * 0.42);
         const jitter = (s: number, salt: number) => (warpB(tx + s * 0.25 + salt, ty + s * 0.25) - 0.5) * SS * 1.1;
+        // Arêtes N/O (côté opposé à la caméra) : liseré discret uniquement.
+        // Les anciennes GROSSES bandes floues et les faces plates E/S sont
+        // supprimées : elles doublonnaient salement sous les parois
+        // verticales de la passe 3bis (double dessin = traits noirs baveux).
         if (mask & 1) { // N : arête éclairée
-          tc.fillStyle = 'rgba(255,250,222,0.58)';
-          for (let s = 0; s < SUB; s++) tc.fillRect(px + s * SS, py + jitter(s, 1), SS + 1, Math.max(1.5, SS * 0.5));
+          tc.fillStyle = 'rgba(255,250,222,0.26)';
+          for (let s = 0; s < SUB; s++) tc.fillRect(px + s * SS, py + jitter(s, 1) * 0.5, SS + 1, Math.max(1, SS * 0.3));
         }
         if (mask & 8) { // O : arête éclairée
-          tc.fillStyle = 'rgba(255,250,222,0.5)';
-          for (let s = 0; s < SUB; s++) tc.fillRect(px + jitter(s, 4), py + s * SS, Math.max(1.5, SS * 0.5), SS + 1);
-        }
-        if (mask & 2) { // E : face sombre + stries
-          const gr = tc.createLinearGradient(px + tpx - face, 0, px + tpx, 0);
-          gr.addColorStop(0, 'rgba(18,14,10,0.12)'); gr.addColorStop(1, 'rgba(6,4,3,0.74)');
-          tc.fillStyle = gr; tc.fillRect(px + tpx - face, py, face, tpx);
-          tc.strokeStyle = 'rgba(0,0,0,0.5)'; tc.lineWidth = 1;
-          for (let k = 0; k < SUB; k++) { const yy = py + k * SS + rng() * SS; tc.beginPath(); tc.moveTo(px + tpx - face, yy); tc.lineTo(px + tpx, yy + (rng() - 0.5) * SS); tc.stroke(); }
-        }
-        if (mask & 4) { // S : face sombre + ombre projetée au pied
-          const gr = tc.createLinearGradient(0, py + tpx - face, 0, py + tpx);
-          gr.addColorStop(0, 'rgba(18,14,10,0.13)'); gr.addColorStop(1, 'rgba(6,4,3,0.78)');
-          tc.fillStyle = gr; tc.fillRect(px, py + tpx - face, tpx, face);
-          tc.strokeStyle = 'rgba(0,0,0,0.54)'; tc.lineWidth = 1;
-          for (let k = 0; k < SUB; k++) { const xx = px + k * SS + rng() * SS; tc.beginPath(); tc.moveTo(xx, py + tpx - face); tc.lineTo(xx + (rng() - 0.5) * SS, py + tpx); tc.stroke(); }
-          if (ty + 1 < h && terrain[(ty + 1) * w + tx] !== T_WATER) { tc.fillStyle = 'rgba(6,8,16,0.5)'; tc.fillRect(px, py + tpx, tpx, face); }
+          tc.fillStyle = 'rgba(255,250,222,0.22)';
+          for (let s = 0; s < SUB; s++) tc.fillRect(px + jitter(s, 4) * 0.5, py + s * SS, Math.max(1, SS * 0.3), SS + 1);
         }
       }
 
@@ -1113,6 +1101,7 @@ export class Renderer {
     ctx.imageSmoothingQuality = 'medium';
     const _rt = prof.enabled ? performance.now() : 0;
     this.drawIsoGround(ctx, proj);
+    this.prewarmGround(g);
     if (prof.enabled) prof.add('render.terrain', performance.now() - _rt);
 
     // bornes de culling en tuiles (AABB monde du viewport iso)
@@ -1124,7 +1113,7 @@ export class Renderer {
     // ----- EAU VIVANTE : miroitement et vaguelettes animés par frame, dessinés
     // par-dessus le terrain figé (sous les entités). Borné au viewport ; ignoré
     // en fort dézoom (invisible et inutile → coût nul sur grandes cartes).
-    if (z >= 6) {
+    if (z >= 14) {   // invisible et coûteux au dézoom (des dizaines de milliers de tuiles)
       const terr = g.map.terrain, t1 = g.time;
       const sPx = z;
       ctx.save();
@@ -1158,7 +1147,7 @@ export class Renderer {
     // ----- ÉCUME DE RIVAGE animée : vaguelettes qui lèchent la côte (les
     // segments côtiers sont précalculés une fois ; par frame on ne dessine
     // que ceux du viewport). Donne vie aux bords d'eau sans coût notable.
-    if (z >= 8) {
+    if (z >= 15) {   // écume : uniquement à zoom rapproché (milliers de segments sinon)
       if (!this.shore) this.buildShore(g);
       ctx.save();
       ctx.lineCap = 'round';
@@ -1464,7 +1453,7 @@ export class Renderer {
         ctx.globalAlpha = aIn;
         ctx.translate(px, py - alt);
         if (bank) ctx.rotate(bank);
-        ctx.drawImage(aD.cv, -aD.ax * sA, -aD.ay * sA + aD.cv.height * sA * 0.28, aD.cv.width * sA, aD.cv.height * sA);
+        ctx.drawImage(aD.cv, -aD.ax * sA, -aD.ay * sA, aD.cv.width * sA, aD.cv.height * sA);
         ctx.restore();
       }
       // rotor des hélicoptères : disque flou + pales (vitesse selon vol/pad)
@@ -1768,8 +1757,12 @@ export class Renderer {
   // Espace « iso-px » : U = (x−y)·S, V = (x+y)·S/2 (S = px par tuile du
   // palier). L'écran est U·(z/S) + ox — un simple zoom/translation → le
   // contenu d'un chunk ne dépend QUE de son index et du palier : cache parfait.
+  // La Map SERT de LRU : l'ordre d'insertion est l'ordre de récence — un
+  // accès replace la clé en fin (delete+set, O(1)), l'éviction retire la
+  // première clé. Un chunk UTILISÉ reste donc toujours chaud : c'était la
+  // cause des carrés noirs (chunks visibles évincés/re-cuits en boucle,
+  // Safari peignant des canvas pas encore rasterisés).
   private isoChunks = new Map<string, HTMLCanvasElement | null>();
-  private isoChunkLru: string[] = [];
   private static readonly CHUNK = 256;
   private static readonly CHUNK_PAD = 4;
 
@@ -1779,15 +1772,8 @@ export class Renderer {
     const key = `${S}:${cu}:${cv}`;
     const hit = this.isoChunks.get(key);
     if (hit !== undefined) {
-      // LRU : un chunk UTILISÉ doit rester chaud — sans ce rafraîchissement,
-      // les chunks visibles étaient évincés par âge et re-cuits en boucle
-      // (cause des carrés noirs : Safari peignait des canvas pas encore
-      // rasterisés sous cette avalanche de re-créations).
-      const idx = this.isoChunkLru.indexOf(key);
-      if (idx >= 0 && idx < this.isoChunkLru.length - 1) {
-        this.isoChunkLru.splice(idx, 1);
-        this.isoChunkLru.push(key);
-      }
+      this.isoChunks.delete(key);
+      this.isoChunks.set(key, hit);
       return hit;
     }
     const C = Renderer.CHUNK, P = Renderer.CHUNK_PAD;
@@ -1815,10 +1801,9 @@ export class Renderer {
       c.setTransform(1, 0, 0, 1, 0, 0);
     }
     this.isoChunks.set(key, cvs);
-    this.isoChunkLru.push(key);
-    if (this.isoChunkLru.length > this.isoChunkCap) {
-      const old = this.isoChunkLru.splice(0, this.isoChunkLru.length - this.isoChunkCap);
-      for (const k2 of old) this.isoChunks.delete(k2);
+    while (this.isoChunks.size > this.isoChunkCap) {
+      const oldest = this.isoChunks.keys().next().value as string;
+      this.isoChunks.delete(oldest);
     }
     return cvs;
   }
@@ -1838,6 +1823,29 @@ export class Renderer {
     ctx.restore();
   }
 
+  // Précuisson d'arrière-plan du palier grossier : quelques chunks par frame,
+  // jusqu'à couvrir toute la carte → le dézoom ne bake plus rien en urgence.
+  private prewarmDone = false;
+  private prewarmNext = 0;
+  private prewarmGround(g: Game) {
+    if (this.prewarmDone) return;
+    const S = 12, C = Renderer.CHUNK;
+    const { w, h } = g.map;
+    // bornes iso-px du monde entier au palier S
+    const u0 = Math.floor((-(h + 1) * S) / C), u1 = Math.floor(((w + 1) * S) / C);
+    const v0 = 0, v1 = Math.floor((((w + h) / 2 + 1) * S) / C);
+    const cols = u1 - u0 + 1, total = cols * (v1 - v0 + 1);
+    let done = 0;
+    while (this.prewarmNext < total && done < 4) {
+      const cu = u0 + (this.prewarmNext % cols);
+      const cvi = v0 + Math.floor(this.prewarmNext / cols);
+      this.prewarmNext++;
+      const key = `${S}:${cu}:${cvi}`;
+      if (!this.isoChunks.has(key)) { this.isoChunk(g, S, cu, cvi); done++; }
+    }
+    if (this.prewarmNext >= total) this.prewarmDone = true;
+  }
+
   private drawIsoGround(ctx: CanvasRenderingContext2D, proj: Proj) {
     const g = this.lastGame!;
     const S = this.isoLod(proj.z);
@@ -1851,7 +1859,9 @@ export class Renderer {
     // plafond dynamique : TOUJOURS assez grand pour tout le viewport (avec
     // marge ×3) — un cache plus petit que l'écran thrashait à chaque frame
     const visible = (cu1 - cu0 + 1) * (cv1 - cv0 + 1);
-    this.isoChunkCap = Math.max(240, visible * 3);
+    // assez pour le palier grossier précuit complet + le palier courant,
+    // sans excès (budget mémoire canvas de Safari iOS)
+    this.isoChunkCap = Math.max(300, visible * 3);
     // budget de cuisson par frame : au changement de palier de zoom, on ne
     // re-cuit pas 100+ chunks dans la même frame (gel + artefacts Safari) —
     // les chunks manquants passent par le blit direct cette frame-là.
@@ -1876,9 +1886,12 @@ export class Renderer {
           this.isoChunk(g, S, cu, cv);
         }
         if (!chunk) continue;
+        // recouvrement d'1 px source : sans lui, des interstices sub-pixel
+        // entre chunks adjacents laissaient voir le fond → « traits noirs en
+        // grille » à certains niveaux de zoom
         ctx.drawImage(
-          chunk, P, P, C, C,
-          proj.ox + cu * C * k, proj.oy + cv * C * k, C * k, C * k,
+          chunk, P, P, C + 1, C + 1,
+          proj.ox + cu * C * k, proj.oy + cv * C * k, (C + 1) * k, (C + 1) * k,
         );
       }
     }
@@ -2451,14 +2464,16 @@ export class Renderer {
     const sideSrc = part === 'body' ? spr.side : spr.turretSide;
     if (!src || !sideSrc) return null;
     const th = (di / Renderer.NDIR) * Math.PI * 2;
-    // encombrement écran du sprite aplati : demi-diagonale × étendue iso
+    // Encombrement ÉCRAN exact du sprite aplati : sous [[1,0.5],[−1,0.5]], un
+    // point à distance r s'étend jusqu'à ±1.415·r en X et ±0.708·r en Y.
+    // Les anciennes marges tronquaient les véhicules selon leur cap.
     const rad = Math.hypot(src.width, src.height) / 2;
-    const W2 = Math.ceil(rad * 2.2 + 6);
-    const H2 = Math.ceil(rad * 1.15 + hullPx + 8);
+    const W2 = Math.ceil(rad * 2 * 1.415 + 8);
+    const H2 = Math.ceil(rad * 2 * 0.708 + hullPx + 10);
     const cv = document.createElement('canvas');
     cv.width = W2; cv.height = H2;
     const c = cv.getContext('2d')!;
-    const ax = W2 / 2, ay = H2 - 4;            // ancre = centre au sol de l'unité
+    const ax = W2 / 2, ay = Math.ceil(H2 - rad * 0.708 - 4);   // ancre = centre au sol
     const put = (img: HTMLCanvasElement, lift: number) => {
       c.save();
       c.translate(ax, ay - lift);
