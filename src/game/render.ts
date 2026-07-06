@@ -11,6 +11,7 @@ import { prof } from './profiler';
 import { Proj, ISO_ELEV } from './proj';
 import { bakeIsoBuilding, IsoBuildingSprite, BUILDING_HEIGHTS, ISO_S } from './iso-buildings';
 import { getBuildingAsset } from './assets';
+import { bakeVehicle } from './vehicles';
 
 export interface Camera {
   x: number;   // centre, en tuiles
@@ -2424,7 +2425,9 @@ export class Renderer {
       // sprites BRUTS vue de dessus : la finition (contour, soleil) est
       // appliquée par isoUnitDir APRÈS aplatissement, par direction — la
       // lumière reste ainsi fixe à l'écran quand l'unité tourne.
-      const baked = this.bakeUnit(type, PLAYER_COLORS[owner]);
+      // Véhicules et aéronefs : NOUVELLE bakery (vehicles.ts, refonte 100 %).
+      const baked = bakeVehicle(type as keyof typeof UNITS, PLAYER_COLORS[owner])
+        ?? this.bakeUnit(type, PLAYER_COLORS[owner]);
       spr = {
         body: baked.body,
         turret: baked.turret,
