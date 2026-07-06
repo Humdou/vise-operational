@@ -310,28 +310,54 @@ export const THEMES: Record<ThemeId, {
   ore: string; oreGlow: string; shore: string; mist?: number;
 }> = {
   temperate: {
-    name: 'Plaine', grass: ['#4a6b3a', '#466637', '#507240'], rough: ['#6b6b4f', '#73705a'],
-    water: '#2c4a66', rock: ['#5a5a58', '#4d4d4c'], ore: '#d4af37', oreGlow: '#ffe27a', shore: '#b9a06b',
+    // Herbe verte vive, terre chaude brun-ocre, eau bleu marine profond,
+    // roche gris-anthracite chaud. Rupture franche avec l'ancien vert olive terne.
+    name: 'Plaine',
+    grass: ['#3c7228', '#487e30', '#547a38', '#3e6820', '#5a8a3c', '#406230'],
+    rough: ['#8a6838', '#9a7848', '#7e5c30', '#a47c50', '#7a5e36'],
+    water: '#0e2e48', rock: ['#423c34', '#524840', '#38342c', '#4e4640'],
+    ore: '#d8b020', oreGlow: '#ffe84a', shore: '#cdb068',
   },
   snow: {
-    name: 'Neige', grass: ['#cdd6dc', '#c4ced6', '#d6dee3'], rough: ['#a8b0b8', '#9aa4ad'],
-    water: '#39556e', rock: ['#6e7479', '#5e6468'], ore: '#c9a227', oreGlow: '#ffe27a', shore: '#dde6ec',
+    // Blanc de glace pur, bleu-gris acier pour la roche, eau noire-ardoise profonde.
+    name: 'Neige',
+    grass: ['#d8e4ec', '#ccdae4', '#e0eaf0', '#c8d6e2', '#d0dce8'],
+    rough: ['#8c9eac', '#7e92a2', '#96a8b6', '#849ab0'],
+    water: '#182c3e', rock: ['#5a6470', '#4e5a66', '#667480', '#525e6a'],
+    ore: '#d0aa20', oreGlow: '#ffe060', shore: '#eaf0f6',
   },
   desert: {
-    name: 'Désert', grass: ['#c2a36b', '#bb9c63', '#caa971'], rough: ['#a3855a', '#977b54'],
-    water: '#2f6072', rock: ['#7a6a55', '#6a5c4a'], ore: '#b8860b', oreGlow: '#ffd24d', shore: '#dcc18a',
+    // Sable riche ocre-orangé, latérite brun-rouge, oasis turquoise vive,
+    // roche brun-rouille sombre. Identité très différente du temperate.
+    name: 'Désert',
+    grass: ['#c8974e', '#d4a458', '#bc8e44', '#d8ac60', '#c09040'],
+    rough: ['#9a5c30', '#a86838', '#8e5228', '#b07240'],
+    water: '#0e6470', rock: ['#6a4030', '#7a4c38', '#5c3628', '#7e5440'],
+    ore: '#cc9010', oreGlow: '#ffcc30', shore: '#e4cc80',
   },
   mist: {
-    name: 'Brouillard léger', grass: ['#48604a', '#445b46', '#4e664f'], rough: ['#5d6655', '#555e4f'],
-    water: '#31495c', rock: ['#565b59', '#4a4f4d'], ore: '#d4af37', oreGlow: '#ffe27a', shore: '#8f8a66', mist: 0.22,
+    // Teintes brumeuses bleu-vert désaturées, ambiance atmosphérique.
+    name: 'Brouillard léger',
+    grass: ['#3a5844', '#425e4c', '#345040', '#4a6252', '#3e5a48'],
+    rough: ['#4a5e52', '#425648', '#3e5246', '#50625a'],
+    water: '#1a2e3e', rock: ['#404c4a', '#384440', '#4a5652', '#3c4844'],
+    ore: '#d4b030', oreGlow: '#ffe260', shore: '#7a8872', mist: 0.30,
   },
   badlands: {
-    name: 'Terres brûlées', grass: ['#6d5a48', '#665443', '#75614d'], rough: ['#57473a', '#4e4034'],
-    water: '#3a3f55', rock: ['#4a423c', '#3f3833'], ore: '#e0b440', oreGlow: '#ffe27a', shore: '#8a7558',
+    // Terre brûlée brun-rouge scorché, roche quasi-noire, eau saumâtre sombre.
+    name: 'Terres brûlées',
+    grass: ['#8c4a28', '#9a5430', '#7e4020', '#a05c38', '#843820'],
+    rough: ['#4e2e18', '#5c3820', '#442814', '#583212'],
+    water: '#1e1e34', rock: ['#2a2420', '#38302a', '#22201c', '#342e28'],
+    ore: '#e8b830', oreGlow: '#ffe860', shore: '#9a7e58',
   },
   tropical: {
-    name: 'Tropical', grass: ['#3f7a45', '#3a7340', '#478552'], rough: ['#6f8a48', '#637e40'],
-    water: '#1f6e7e', rock: ['#5e5a50', '#514f49'], ore: '#d4af37', oreGlow: '#ffe27a', shore: '#e6d7a8',
+    // Jungle vert intense saturé, sous-bois olive-jaune, lagon turquoise lumineux.
+    name: 'Tropical',
+    grass: ['#267830', '#2e8038', '#228428', '#348c3c', '#1e6e28', '#3a8040'],
+    rough: ['#787e28', '#848a32', '#6e7824', '#8a8e3a'],
+    water: '#086070', rock: ['#323028', '#3c3a30', '#2c2e26', '#424038'],
+    ore: '#d8b428', oreGlow: '#ffee60', shore: '#e8d690',
   },
 };
 

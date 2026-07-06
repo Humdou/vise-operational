@@ -444,122 +444,149 @@ export class Renderer {
       out[0] = p[0]; out[1] = p[1]; out[2] = p[2];
     };
 
+    const shoreRGB = hex2rgb(theme.shore);
+
     for (let sy = 0; sy < H4; sy++) {
       for (let sx2 = 0; sx2 < W4; sx2++) {
         const i4 = sy * W4 + sx2;
-        const fx = (sx2 + 0.5) / SUB, fy = (sy + 0.5) / SUB;     // coord tuile
-        // position continue déformée (frontières organiques), alignée centres tuiles
-        const wx = fx - 0.5 + (warpA(fx * 1.1, fy * 1.1) - 0.5) * 1.8;
-        const wy = fy - 0.5 + (warpB(fx * 1.1 + 3.3, fy * 1.1 + 1.1) - 0.5) * 1.8;
+        const fx = (sx2 + 0.5) / SUB, fy = (sy + 0.5) / SUB;
+        // frontières organiques déformées par bruit
+        const wx = fx - 0.5 + (warpA(fx * 1.1, fy * 1.1) - 0.5) * 2.0;
+        const wy = fy - 0.5 + (warpB(fx * 1.1 + 3.3, fy * 1.1 + 1.1) - 0.5) * 2.0;
         const x0 = Math.floor(wx), y0 = Math.floor(wy);
         const fxr = wx - x0, fyr = wy - y0;
-        // type dominant (tuile la plus proche) pour la logique eau/relief
         let gtx = Math.round(wx); if (gtx < 0) gtx = 0; else if (gtx >= w) gtx = w - 1;
         let gty = Math.round(wy); if (gty < 0) gty = 0; else if (gty >= h) gty = h - 1;
         const t = terrain[gty * w + gtx];
-        let rockContact = 0, openContact = 0;
-        if (t !== T_WATER) {
-          const neigh: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-          for (const [dx, dy] of neigh) {
-            const nx = gtx + dx, ny = gty + dy;
-            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-            const nt = terrain[ny * w + nx];
-            if (nt === T_ROCK) rockContact++;
-            else if (nt !== T_WATER) openContact++;
-          }
+        let rockContact = 0, openContact = 0, waterContact = 0;
+        const neigh4: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+        for (const [dx, dy] of neigh4) {
+          const nx = gtx + dx, ny = gty + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const nt = terrain[ny * w + nx];
+          if (nt === T_ROCK) rockContact++;
+          else if (nt === T_WATER) waterContact++;
+          else openContact++;
         }
 
-        // ----- couleur fondue : mélange bilinéaire des 4 tuiles voisines
-        tileRGB(x0, y0, c00); tileRGB(x0 + 1, y0, c10); tileRGB(x0, y0 + 1, c01); tileRGB(x0 + 1, y0 + 1, c11);
-        const w00 = (1 - fxr) * (1 - fyr), w10 = fxr * (1 - fyr), w01 = (1 - fxr) * fyr, w11 = fxr * fyr;
+        // mélange bilinéaire des 4 tuiles voisines
+        tileRGB(x0, y0, c00); tileRGB(x0 + 1, y0, c10);
+        tileRGB(x0, y0 + 1, c01); tileRGB(x0 + 1, y0 + 1, c11);
+        const w00 = (1 - fxr) * (1 - fyr), w10 = fxr * (1 - fyr);
+        const w01 = (1 - fxr) * fyr, w11 = fxr * fyr;
         let r = c00[0] * w00 + c10[0] * w10 + c01[0] * w01 + c11[0] * w11;
         let gn = c00[1] * w00 + c10[1] * w10 + c01[1] * w01 + c11[1] * w11;
         let b = c00[2] * w00 + c10[2] * w10 + c01[2] * w01 + c11[2] * w11;
+
         if (t === T_ROCK) {
-          // Les zones infranchissables doivent rester immédiatement lisibles,
-          // même après le mélange organique des bordures.
-          r = r * 0.72 + 42;
-          gn = gn * 0.70 + 38;
-          b = b * 0.68 + 34;
+          // zones infranchissables : sombres et distinctes, liseré de contact clair
+          r = r * 0.68 + 22; gn = gn * 0.64 + 18; b = b * 0.60 + 14;
           if (openContact > 0) {
-            const rim = Math.min(0.24, openContact * 0.06);
-            r += 42 * rim; gn += 36 * rim; b += 24 * rim;
+            const rim = Math.min(0.32, openContact * 0.08);
+            r += 50 * rim; gn += 40 * rim; b += 28 * rim;
           }
         } else if (rockContact > 0 && t !== T_WATER) {
-          const border = Math.min(0.28, rockContact * 0.085);
-          r *= 1 - border;
-          gn *= 1 - border;
-          b *= 1 - border * 0.9;
+          const border = Math.min(0.36, rockContact * 0.10);
+          r *= 1 - border; gn *= 1 - border; b *= 1 - border * 0.85;
         }
 
         const e = SH[i4];
+
         if (t !== T_WATER) {
-          // teinte par altitude : sommets clairs/secs, creux verts/sombres
-          const hh = e - 0.5;
-          if (hh > 0) { const k = Math.min(0.42, hh * 1.0); r += (208 - r) * k; gn += (196 - gn) * k; b += (150 - b) * k; }
-          else { const k = Math.min(0.42, -hh * 1.0); r += (26 - r) * k; gn += (62 - gn) * k; b += (44 - b) * k; }
-          // variation fine de teinte (herbe/sol moins répétitifs)
-          const j = (grain(fx * 3.1, fy * 3.1) - 0.5) * 0.16 + (tint(fx * 7.3, fy * 7.3) - 0.5) * 0.10;
-          r *= 1 + j; gn *= 1 + j; b *= 1 + j;
-          // Lecture stratégique du relief : les fonds de vallée sont plus froids
-          // et sombres, les plateaux/sommets plus secs et rocheux.
-          const valleyTone = Math.max(0, Math.min(1, (0.46 - e) * 2.4));
-          if (valleyTone > 0) {
-            r = r * (1 - valleyTone * 0.18) + 18 * valleyTone;
-            gn = gn * (1 - valleyTone * 0.10) + 38 * valleyTone;
-            b = b * (1 - valleyTone * 0.06) + 30 * valleyTone;
+          // === PLAGE : bande sableuse entre eau et terre ===
+          if (waterContact > 0 && t !== T_ROCK) {
+            const beachBlend = Math.min(0.82, waterContact * 0.28);
+            r = r * (1 - beachBlend) + shoreRGB[0] * beachBlend;
+            gn = gn * (1 - beachBlend) + shoreRGB[1] * beachBlend;
+            b = b * (1 - beachBlend) + shoreRGB[2] * beachBlend;
           }
-          const plateauTone = Math.max(0, Math.min(1, (e - 0.64) * 2.1));
+
+          // === COULEUR PAR ALTITUDE : fort contraste vallée/plateau ===
+          const hh = e - 0.50;
+          if (hh > 0) {
+            // plateaux/sommets : secs, clairs, dorés/rocheux
+            const k = Math.min(0.60, hh * 1.5);
+            r += (220 - r) * k; gn += (200 - gn) * k * 0.88; b += (140 - b) * k * 0.70;
+          } else {
+            // creux/vallées : froids, sombres, humides
+            const k = Math.min(0.58, -hh * 1.5);
+            r += (18 - r) * k * 0.90; gn += (50 - gn) * k * 0.70; b += (38 - b) * k * 0.55;
+          }
+
+          // grain de surface (texture microscopique)
+          const j = (grain(fx * 4.2, fy * 4.2) - 0.5) * 0.20 + (tint(fx * 8.5, fy * 8.5) - 0.5) * 0.12;
+          r *= 1 + j; gn *= 1 + j; b *= 1 + j;
+
+          // fond de vallée : refroidissement fort → vert/bleu humide
+          const valleyTone = Math.max(0, Math.min(1, (0.44 - e) * 2.8));
+          if (valleyTone > 0) {
+            r = r * (1 - valleyTone * 0.30) + 12 * valleyTone;
+            gn = gn * (1 - valleyTone * 0.18) + 42 * valleyTone;
+            b = b * (1 - valleyTone * 0.10) + 34 * valleyTone;
+          }
+          // plateaux : assèchement fort → ocre/beige rocailleux
+          const plateauTone = Math.max(0, Math.min(1, (e - 0.60) * 2.8));
           if (plateauTone > 0) {
-            r = r * (1 - plateauTone * 0.16) + 142 * plateauTone;
-            gn = gn * (1 - plateauTone * 0.18) + 128 * plateauTone;
-            b = b * (1 - plateauTone * 0.26) + 92 * plateauTone;
+            r = r * (1 - plateauTone * 0.22) + 175 * plateauTone;
+            gn = gn * (1 - plateauTone * 0.28) + 152 * plateauTone;
+            b = b * (1 - plateauTone * 0.38) + 100 * plateauTone;
           }
         } else {
-          // eau : forte profondeur (fonds très sombres et bleutés, hauts-fonds
-          // clairs et turquoise) → contraste marqué + meilleure intégration.
-          const depth = Math.max(0, Math.min(1, (0.2 - e) / 0.2));
-          if (depth > 0.55) {        // grand fond : bleu nuit profond
-            r *= 1 - depth * 0.72; gn *= 1 - depth * 0.6; b = b * (1 - depth * 0.32) + depth * 26;
-          } else {                   // haut-fond : turquoise plus clair
-            const sh2 = 1 - depth;
-            r = r * (1 - sh2 * 0.3) + sh2 * 38; gn = gn * (1 - sh2 * 0.18) + sh2 * 92; b = b * (1 - sh2 * 0.1) + sh2 * 42;
+          // === EAU : trois zones spectrales nettes ===
+          // profondeur normalisée (0 = surface / haut-fond, 1 = abyssal)
+          const depth = Math.max(0, Math.min(1, (0.18 - e) / 0.18));
+          if (depth > 0.60) {
+            // grands fonds : bleu nuit quasi-noir
+            const d = depth;
+            r = r * (1 - d * 0.88) + 6 * d;
+            gn = gn * (1 - d * 0.78) + 16 * d;
+            b = b * (1 - d * 0.55) + 48 * d;
+          } else if (depth > 0.22) {
+            // eaux moyennes : bleu-acier
+            const d = (depth - 0.22) / 0.38;
+            r = r * (1 - d * 0.55) + 14 * d;
+            gn = gn * (1 - d * 0.42) + 44 * d;
+            b = b * (1 - d * 0.22) + 80 * d;
+          } else {
+            // hauts-fonds : turquoise clair (bande côtière)
+            const d = 1 - depth / 0.22;
+            r = r * (1 - d * 0.28) + 46 * d;
+            gn = gn * (1 - d * 0.10) + 110 * d;
+            b = b * (1 - d * 0.05) + 108 * d;
           }
-          const ripple = (grain(fx * 5, fy * 2.5) - 0.5) * 20;
-          r += ripple * 0.4; gn += ripple * 0.6; b += ripple;
+          // vaguelettes microscopiques
+          const rip = (grain(fx * 6, fy * 2.8) - 0.5) * 14 + (tint(fx * 3, fy * 6) - 0.5) * 8;
+          r += rip * 0.25; gn += rip * 0.50; b += rip * 0.75;
         }
 
-        // ===== RELIEF EN PALIERS + FALAISES (lecture de hauteur immédiate) =====
-        // Style C&C/Tempest : l'altitude est découpée en niveaux ; chaque niveau
-        // a une luminosité distincte (haut clair / bas sombre) et les RUPTURES de
-        // niveau deviennent des falaises (arête éclairée au NO, ombre au pied SE).
+        // === RELIEF EN PALIERS FORTS (style C&C/Wargame) ===
         const xm = sx2 > 0 ? sx2 - 1 : sx2, xp = sx2 < W4 - 1 ? sx2 + 1 : sx2;
         const ym = sy > 0 ? sy - 1 : sy, yp = sy < H4 - 1 ? sy + 1 : sy;
         const hl = SH[sy * W4 + xm], hr = SH[sy * W4 + xp], hu = SH[ym * W4 + sx2], hd = SH[yp * W4 + sx2];
         const dxh = hr - hl, dyh = hd - hu;
-        const LEVELS = 9;
+        const LEVELS = 12;
         const myL = Math.floor(e * LEVELS);
-        // rampe de luminosité par palier : contraste fort entre étages
-        let relief = 0.68 + myL * (0.62 / LEVELS);
+        // rampe de luminosité par palier : plage élargie → contraste dramatique
+        let relief = 0.44 + myL * (1.05 / LEVELS);
         if (t !== T_WATER) {
-          // bord SUPÉRIEUR de falaise (domine l'est/le sud, côté éclairé) → liseré clair
-          if (myL > Math.floor(hr * LEVELS)) relief += 0.28;
-          if (myL > Math.floor(hd * LEVELS)) relief += 0.28;
-          // PIED de falaise (dominé par l'ouest/le nord) → ombre franche
-          if (myL < Math.floor(hl * LEVELS)) relief -= 0.56;
-          if (myL < Math.floor(hu * LEVELS)) relief -= 0.56;
+          // arête éclairée (côté NW, lumière solaire) → liseré très clair
+          if (myL > Math.floor(hr * LEVELS)) relief += 0.50;
+          if (myL > Math.floor(hd * LEVELS)) relief += 0.50;
+          // pied de falaise (côté SE, ombre) → assombrissement fort
+          if (myL < Math.floor(hl * LEVELS)) relief -= 0.80;
+          if (myL < Math.floor(hu * LEVELS)) relief -= 0.80;
         }
-        // micro-pente continue (douceur à l'intérieur d'un palier)
-        relief += (-dxh - dyh) * 9;
-        if (relief < 0.28) relief = 0.28; else if (relief > 1.82) relief = 1.82;
-        // ombre PORTÉE longue : falaises/collines projettent loin vers le SE
+        // micro-pente directionnelle (modelé doux à l'intérieur d'un palier)
+        relief += (-dxh - dyh) * 14;
+        if (relief < 0.20) relief = 0.20; else if (relief > 2.10) relief = 2.10;
+        // ombre portée longue (soleil NW → ombre vers SE)
         let cast = 0;
-        for (let s = 1; s <= 14; s++) {
+        for (let s = 1; s <= 18; s++) {
           const ax = sx2 - s, ay = sy - s; if (ax < 0 || ay < 0) break;
-          const diff = SH[ay * W4 + ax] - e - s * 0.0085;
+          const diff = SH[ay * W4 + ax] - e - s * 0.0072;
           if (diff > cast) cast = diff;
         }
-        const m = relief * (1 - Math.min(0.6, cast * 3.0));
+        const m = relief * (1 - Math.min(0.72, cast * 5.0));
         r *= m; gn *= m; b *= m;
 
         const o = i4 * 4;
@@ -577,27 +604,57 @@ export class Renderer {
     const rng = mulberry32(w * 31 + h);
     const SS = spx;             // taille d'une sous-tuile en pixels
 
-    // ===== 2) RIVAGES : écume + liseré clair, contour irrégulier (sous-tuile)
-    tc.lineWidth = Math.max(1, SS * 0.6);
+    // ===== 2) RIVAGES : plage sableuse + arête côtière + liseré d'écume
     const icyShore = g.map.theme === 'snow';
+    const shr = shoreRGB;
     for (let ty = 0; ty < h; ty++)
       for (let tx = 0; tx < w; tx++) {
         if (terrain[ty * w + tx] !== T_WATER) continue;
         const neigh: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
         for (const [dx, dy] of neigh) {
           if (!isLand(tx + dx, ty + dy)) continue;
-          tc.strokeStyle = icyShore ? 'rgba(238,248,255,0.76)' : 'rgba(228,242,250,0.55)';
-          tc.beginPath();
           const ex = (tx + (dx > 0 ? 1 : 0)) * tpx, ey = (ty + (dy > 0 ? 1 : 0)) * tpx;
+          // --- bande de plage (sable) côté eau, juste derrière la rive
+          if (!icyShore) {
+            const beachW = tpx * 0.38;
+            const bx0 = dx !== 0 ? ex - dx * beachW : tx * tpx;
+            const by0 = dy !== 0 ? ey - dy * beachW : ty * tpx;
+            const bx1 = dx !== 0 ? ex : tx * tpx + tpx;
+            const by1 = dy !== 0 ? ey : ty * tpx + tpx;
+            const sg = tc.createLinearGradient(
+              dx !== 0 ? bx0 : bx0, dy !== 0 ? by0 : by0,
+              dx !== 0 ? bx1 : bx1, dy !== 0 ? by1 : by1,
+            );
+            sg.addColorStop(0, `rgba(${shr[0]},${shr[1]},${shr[2]},0.0)`);
+            sg.addColorStop(0.55, `rgba(${shr[0]},${shr[1]},${shr[2]},0.58)`);
+            sg.addColorStop(1, `rgba(${shr[0]},${shr[1]},${shr[2]},0.82)`);
+            tc.fillStyle = sg;
+            tc.fillRect(Math.min(bx0, bx1), Math.min(by0, by1), Math.abs(bx1 - bx0) + tpx * (dx === 0 ? 1 : 0), Math.abs(by1 - by0) + tpx * (dy === 0 ? 1 : 0));
+          }
+          // --- liseré côtier net
+          tc.lineWidth = Math.max(1.2, SS * 0.7);
+          tc.strokeStyle = icyShore ? 'rgba(220,240,255,0.84)' : `rgba(${Math.min(255, shr[0] + 40)},${Math.min(255, shr[1] + 30)},${Math.min(255, shr[2] + 20)},0.72)`;
+          tc.beginPath();
           for (let s = 0; s <= SUB; s++) {
-            const jit = (warpA(tx + s * 0.3, ty + s * 0.3) - 0.5) * SS * 1.3;
-            const x = dx !== 0 ? ex + jit * 0.3 : (tx) * tpx + s * SS;
-            const y = dy !== 0 ? ey + jit * 0.3 : (ty) * tpx + s * SS;
+            const jit = (warpA(tx + s * 0.3, ty + s * 0.3) - 0.5) * SS * 1.4;
+            const x = dx !== 0 ? ex + jit * 0.28 : tx * tpx + s * SS;
+            const y = dy !== 0 ? ey + jit * 0.28 : ty * tpx + s * SS;
+            if (s === 0) tc.moveTo(x, y); else tc.lineTo(x, y);
+          }
+          tc.stroke();
+          // --- second liseré côté eau (limite turquoise)
+          tc.strokeStyle = 'rgba(120,210,220,0.30)';
+          tc.lineWidth = Math.max(1, SS * 0.35);
+          tc.beginPath();
+          for (let s = 0; s <= SUB; s++) {
+            const jit = (warpB(tx + s * 0.22 + 5, ty + s * 0.22 + 3) - 0.5) * SS * 1.1;
+            const x = dx !== 0 ? ex - dx * SS * 0.55 + jit * 0.22 : tx * tpx + s * SS;
+            const y = dy !== 0 ? ey - dy * SS * 0.55 + jit * 0.22 : ty * tpx + s * SS;
             if (s === 0) tc.moveTo(x, y); else tc.lineTo(x, y);
           }
           tc.stroke();
           if (icyShore) {
-            tc.strokeStyle = 'rgba(150,205,230,0.28)';
+            tc.strokeStyle = 'rgba(160,215,235,0.30)';
             tc.lineWidth = Math.max(1, SS * 0.28);
             tc.beginPath();
             for (let s = 0; s <= SUB; s++) {
@@ -607,7 +664,6 @@ export class Renderer {
               if (s === 0) tc.moveTo(x, y); else tc.lineTo(x, y);
             }
             tc.stroke();
-            tc.lineWidth = Math.max(1, SS * 0.6);
           }
         }
       }
@@ -658,13 +714,18 @@ export class Renderer {
         // Les anciennes GROSSES bandes floues et les faces plates E/S sont
         // supprimées : elles doublonnaient salement sous les parois
         // verticales de la passe 3bis (double dessin = traits noirs baveux).
-        if (mask & 1) { // N : arête éclairée
-          tc.fillStyle = 'rgba(255,250,222,0.26)';
-          for (let s = 0; s < SUB; s++) tc.fillRect(px + s * SS, py + jitter(s, 1) * 0.5, SS + 1, Math.max(1, SS * 0.3));
+        if (mask & 1) { // N : arête éclairée (soleil NW)
+          tc.fillStyle = 'rgba(255,252,228,0.46)';
+          for (let s = 0; s < SUB; s++) tc.fillRect(px + s * SS, py + jitter(s, 1) * 0.5, SS + 1, Math.max(1.5, SS * 0.42));
+          // halo diffus sous l'arête
+          tc.fillStyle = 'rgba(255,250,200,0.14)';
+          for (let s = 0; s < SUB; s++) tc.fillRect(px + s * SS, py + jitter(s, 1) * 0.3 + SS * 0.3, SS + 1, Math.max(1, SS * 0.6));
         }
         if (mask & 8) { // O : arête éclairée
-          tc.fillStyle = 'rgba(255,250,222,0.22)';
-          for (let s = 0; s < SUB; s++) tc.fillRect(px + jitter(s, 4) * 0.5, py + s * SS, Math.max(1, SS * 0.3), SS + 1);
+          tc.fillStyle = 'rgba(255,252,228,0.42)';
+          for (let s = 0; s < SUB; s++) tc.fillRect(px + jitter(s, 4) * 0.5, py + s * SS, Math.max(1.5, SS * 0.42), SS + 1);
+          tc.fillStyle = 'rgba(255,250,200,0.12)';
+          for (let s = 0; s < SUB; s++) tc.fillRect(px + jitter(s, 4) * 0.3 + SS * 0.3, py + s * SS, Math.max(1, SS * 0.6), SS + 1);
         }
       }
 
@@ -675,8 +736,8 @@ export class Renderer {
     {
       const LEVELS = 9;
       const rockBase = THEMES[g.map.theme].rock[0];
-      const wallTop = shade(rockBase, -0.06);
-      const wallBot = shade(rockBase, -0.46);
+      const wallTop = shade(rockBase, +0.10);
+      const wallBot = shade(rockBase, -0.58);
       const lvl = (xx: number, yy: number) =>
         Math.floor((height[Math.max(0, Math.min(h - 1, yy)) * w + Math.max(0, Math.min(w - 1, xx))] ?? 0.5) * LEVELS);
       const wallRng = mulberry32(w * 613 + h * 271 + 5);
@@ -728,15 +789,15 @@ export class Renderer {
           tc.lineTo(xx + (wallRng() - 0.5) * 3, yy0 + hw * (0.72 + wallRng() * 0.25));
           tc.stroke();
         }
-        // lèvre supérieure : arête claire + ombre du surplomb juste dessous
-        tc.strokeStyle = 'rgba(255,250,225,0.55)'; tc.lineWidth = Math.max(1.2, SS * 0.34);
+        // lèvre supérieure : arête très claire + ombre du surplomb
+        tc.strokeStyle = 'rgba(255,252,230,0.72)'; tc.lineWidth = Math.max(1.5, SS * 0.44);
         tc.beginPath(); tc.moveTo(0, 0.5); tc.lineTo(bx, by + 0.5); tc.stroke();
-        tc.strokeStyle = 'rgba(0,0,0,0.4)'; tc.lineWidth = Math.max(1, SS * 0.2);
-        tc.beginPath(); tc.moveTo(0, 0.5 + SS * 0.4); tc.lineTo(bx, by + 0.5 + SS * 0.4); tc.stroke();
-        // occlusion au pied
-        tc.fillStyle = 'rgba(4,6,10,0.30)';
+        tc.strokeStyle = 'rgba(0,0,0,0.52)'; tc.lineWidth = Math.max(1.2, SS * 0.28);
+        tc.beginPath(); tc.moveTo(0, 0.5 + SS * 0.5); tc.lineTo(bx, by + 0.5 + SS * 0.5); tc.stroke();
+        // occlusion au pied : très sombre pour ancrer le mur
+        tc.fillStyle = 'rgba(2,4,8,0.46)';
         tc.beginPath();
-        tc.moveTo(0, hw); tc.lineTo(bx, by + hw); tc.lineTo(bx, by + hw + SS * 1.2); tc.lineTo(0, hw + SS * 1.2);
+        tc.moveTo(0, hw); tc.lineTo(bx, by + hw); tc.lineTo(bx, by + hw + SS * 1.6); tc.lineTo(0, hw + SS * 1.6);
         tc.closePath(); tc.fill();
         // éboulis : cailloux tombés au pied (ancre le mur dans le sol)
         for (let r2 = 0; r2 < 4; r2++) {
@@ -756,14 +817,14 @@ export class Renderer {
           if (!mask || terrain[i] === T_WATER) continue;
           const px = tx * tpx, py = ty * tpx;
           const myL = lvl(tx, ty);
-          if (mask & 4) {   // face SUD (visible en bas-gauche à l'écran)
-            const dL = Math.max(1, Math.min(3, myL - lvl(tx, ty + 1)));
-            const hw = tpx * (0.32 + 0.19 * dL);
+          if (mask & 4) {   // face SUD
+            const dL = Math.max(1, Math.min(4, myL - lvl(tx, ty + 1)));
+            const hw = tpx * (0.46 + 0.30 * dL);
             drawWall(px, py + tpx, tpx, 0.5 * tpx, hw, tx + ty * 3);
           }
-          if (mask & 2) {   // face EST (visible en bas-droite à l'écran)
-            const dL = Math.max(1, Math.min(3, myL - lvl(tx + 1, ty)));
-            const hw = tpx * (0.32 + 0.19 * dL);
+          if (mask & 2) {   // face EST
+            const dL = Math.max(1, Math.min(4, myL - lvl(tx + 1, ty)));
+            const hw = tpx * (0.46 + 0.30 * dL);
             drawWall(px + tpx, py, -tpx, 0.5 * tpx, hw, tx * 2 + ty);
           }
         }
@@ -859,91 +920,167 @@ export class Renderer {
         }
       }
 
-    // ===== 5) VÉGÉTATION / DÉTAILS épars (densité bornée pour la perf) : touffes,
-    // buissons, cailloux, palmiers en tropical — donnent la richesse de surface.
+    // ===== 5) VÉGÉTATION riche : arbres, buissons, touffes, cailloux, galets
     const tropical = g.map.theme === 'tropical';
     const arctic = g.map.theme === 'snow';
+    const badlands = g.map.theme === 'badlands';
     const vegRng = mulberry32(w * 17 + h * 101 + 55);
-    const vegCount = Math.floor(w * h * 1.1);
+
+    // Fonction utilitaire : arbre pré-compensé iso (pin, chêne, palmier)
+    const drawTree = (px: number, py: number, scale: number, style: 'pine' | 'oak' | 'palm' | 'dead') => {
+      tc.save();
+      tc.translate(px, py);
+      tc.transform(0.5, -0.5, 1, 1, 0, 0);
+      tc.translate(-px, -py);
+      const trunkH = tpx * (style === 'palm' ? 0.52 : 0.32) * scale;
+      const trunkW = Math.max(1, SS * (style === 'palm' ? 0.18 : 0.26) * scale);
+      // ombre au sol
+      tc.fillStyle = 'rgba(0,0,0,0.22)';
+      tc.beginPath(); tc.ellipse(px + SS * 0.3, py + SS * 0.22, SS * 1.1 * scale, SS * 0.5 * scale, 0.3, 0, Math.PI * 2); tc.fill();
+      // tronc
+      tc.strokeStyle = style === 'dead' ? 'rgba(80,60,40,0.80)' : 'rgba(78,54,30,0.82)';
+      tc.lineWidth = trunkW;
+      const lean = (vegRng() - 0.5) * SS * 0.4;
+      tc.beginPath(); tc.moveTo(px + lean * 0.1, py); tc.lineTo(px + lean, py - trunkH); tc.stroke();
+      const topX = px + lean, topY = py - trunkH;
+      if (style === 'pine') {
+        for (let tier = 0; tier < 4; tier++) {
+          const yy = topY + trunkH * tier * 0.22;
+          const ww = SS * (2.8 - tier * 0.45) * scale;
+          const hh2 = SS * (1.6 - tier * 0.22) * scale;
+          tc.fillStyle = tier % 2 === 0 ? 'rgba(18,64,32,0.80)' : 'rgba(24,78,42,0.75)';
+          tc.beginPath();
+          tc.moveTo(topX, yy - hh2 * 0.9);
+          tc.lineTo(topX + ww * 0.55, yy + hh2 * 0.55);
+          tc.lineTo(topX - ww * 0.55, yy + hh2 * 0.55);
+          tc.closePath(); tc.fill();
+          tc.fillStyle = 'rgba(200,230,210,0.12)'; // reflet soleil
+          tc.beginPath();
+          tc.moveTo(topX - ww * 0.45, yy + hh2 * 0.1);
+          tc.lineTo(topX + ww * 0.25, yy + hh2 * 0.02);
+          tc.lineTo(topX + ww * 0.4, yy + hh2 * 0.32);
+          tc.lineTo(topX - ww * 0.28, yy + hh2 * 0.38);
+          tc.closePath(); tc.fill();
+        }
+      } else if (style === 'oak') {
+        tc.fillStyle = 'rgba(24,72,28,0.72)';
+        tc.beginPath(); tc.arc(topX, topY, SS * 2.0 * scale, 0, Math.PI * 2); tc.fill();
+        tc.fillStyle = 'rgba(32,88,38,0.62)';
+        tc.beginPath(); tc.arc(topX - SS * 0.6 * scale, topY - SS * 0.4 * scale, SS * 1.4 * scale, 0, Math.PI * 2); tc.fill();
+        tc.fillStyle = 'rgba(180,220,190,0.14)';
+        tc.beginPath(); tc.arc(topX - SS * 0.8 * scale, topY - SS * 0.6 * scale, SS * 0.8 * scale, 0, Math.PI * 2); tc.fill();
+      } else if (style === 'palm') {
+        tc.strokeStyle = '#2a7a38'; tc.lineWidth = Math.max(1, SS * 0.28 * scale);
+        for (let q = 0; q < 6; q++) {
+          const a = (q / 6) * Math.PI * 2 + vegRng() * 0.6;
+          tc.beginPath();
+          tc.moveTo(topX, topY);
+          tc.quadraticCurveTo(topX + Math.cos(a) * tpx * 0.24, topY + Math.sin(a) * tpx * 0.12,
+            topX + Math.cos(a) * tpx * 0.45, topY + Math.sin(a) * tpx * 0.24);
+          tc.stroke();
+        }
+      } else { // dead
+        tc.strokeStyle = 'rgba(60,44,30,0.58)'; tc.lineWidth = Math.max(1, SS * 0.18);
+        for (let q = 0; q < 3; q++) {
+          const a = (q / 3) * Math.PI - Math.PI * 0.35 + (vegRng() - 0.5) * 0.6;
+          tc.beginPath();
+          tc.moveTo(topX, topY);
+          tc.lineTo(topX + Math.cos(a) * tpx * 0.22 * scale, topY + Math.sin(a) * tpx * 0.12 * scale);
+          tc.stroke();
+        }
+      }
+      tc.restore();
+    };
+
+    const vegCount = Math.floor(w * h * 1.5);
     for (let k = 0; k < vegCount; k++) {
       const tx = (vegRng() * w) | 0, ty = (vegRng() * h) | 0;
       const t = terrain[ty * w + tx];
       if (t === T_WATER) continue;
       const px = tx * tpx + vegRng() * tpx, py = ty * tpx + vegRng() * tpx;
       const r = vegRng();
+
       if (t === T_ROCK) {
-        if (r < 0.4) { tc.fillStyle = `rgba(0,0,0,${0.12 + vegRng() * 0.14})`; tc.beginPath(); tc.arc(px, py, SS * (0.4 + vegRng() * 0.5), 0, Math.PI * 2); tc.fill(); }
-      } else if (arctic && r < 0.045 && !roads[ty * w + tx]) {
-        // Pré-compensation iso : l'image du sol sera cisaillée par la
-        // projection affine — on applique l'inverse ici pour que l'arbre
-        // apparaisse DROIT à l'écran (billboard cuit dans le terrain).
-        tc.save();
-        tc.translate(px, py);
-        tc.transform(0.5, -0.5, 1, 1, 0, 0);
-        tc.translate(-px, -py);
-        const scale = 0.75 + vegRng() * 0.55;
-        const trunkH = tpx * 0.28 * scale;
-        tc.fillStyle = 'rgba(18,28,28,0.28)';
-        tc.beginPath(); tc.ellipse(px + SS * 0.22, py + SS * 0.3, SS * 0.9 * scale, SS * 0.42 * scale, 0.25, 0, Math.PI * 2); tc.fill();
-        tc.strokeStyle = 'rgba(70,52,38,0.72)';
-        tc.lineWidth = Math.max(1, SS * 0.22);
-        tc.beginPath(); tc.moveTo(px, py + trunkH * 0.35); tc.lineTo(px, py - trunkH * 0.35); tc.stroke();
-        for (let tier = 0; tier < 3; tier++) {
-          const yy = py - trunkH * (0.44 - tier * 0.28);
-          const ww = SS * (2.5 - tier * 0.52) * scale;
-          const hh = SS * (1.15 - tier * 0.12) * scale;
-          tc.fillStyle = tier === 0 ? 'rgba(17,56,47,0.72)' : 'rgba(20,72,56,0.68)';
-          tc.beginPath();
-          tc.moveTo(px, yy - hh * 0.72);
-          tc.lineTo(px + ww * 0.5, yy + hh * 0.45);
-          tc.lineTo(px - ww * 0.5, yy + hh * 0.45);
-          tc.closePath(); tc.fill();
-          tc.fillStyle = 'rgba(238,247,255,0.64)';
-          tc.beginPath();
-          tc.moveTo(px - ww * 0.42, yy + hh * 0.15);
-          tc.lineTo(px + ww * 0.32, yy + hh * 0.04);
-          tc.lineTo(px + ww * 0.43, yy + hh * 0.28);
-          tc.lineTo(px - ww * 0.32, yy + hh * 0.34);
-          tc.closePath(); tc.fill();
+        // zones rocheuses : cailloux + fissures + lichens
+        if (r < 0.50) {
+          const rs = SS * (0.5 + vegRng() * 0.9);
+          tc.fillStyle = `rgba(0,0,0,${0.16 + vegRng() * 0.18})`;
+          tc.beginPath(); tc.ellipse(px, py, rs * 1.4, rs * 0.9, vegRng() * Math.PI, 0, Math.PI * 2); tc.fill();
+          tc.fillStyle = `rgba(255,245,215,${0.06 + vegRng() * 0.06})`;
+          tc.beginPath(); tc.ellipse(px - rs * 0.3, py - rs * 0.25, rs * 0.8, rs * 0.45, 0, 0, Math.PI * 2); tc.fill();
         }
-        tc.restore();
-      } else if (arctic && r < 0.13) {
-        tc.fillStyle = 'rgba(42,55,60,0.22)';
-        tc.beginPath(); tc.ellipse(px, py, SS * (0.8 + vegRng() * 0.75), SS * (0.45 + vegRng() * 0.35), vegRng() * Math.PI, 0, Math.PI * 2); tc.fill();
-        tc.fillStyle = 'rgba(242,248,252,0.36)';
-        tc.beginPath(); tc.ellipse(px - SS * 0.15, py - SS * 0.15, SS * (0.65 + vegRng() * 0.45), SS * 0.26, vegRng() * Math.PI, 0, Math.PI * 2); tc.fill();
-      } else if (arctic && r < 0.28) {
-        const len = SS * (0.7 + vegRng() * 0.8);
-        tc.strokeStyle = 'rgba(24,42,38,0.23)'; tc.lineWidth = 1;
-        for (let q = 0; q < 2; q++) {
-          tc.beginPath();
-          tc.moveTo(px + (vegRng() - 0.5) * SS, py + SS * 0.35);
-          tc.lineTo(px + (vegRng() - 0.5) * SS, py - len);
-          tc.stroke();
+        if (r < 0.18) { // lichens verts sur roche
+          tc.fillStyle = `rgba(68,90,40,${0.18 + vegRng() * 0.16})`;
+          tc.beginPath(); tc.ellipse(px, py, SS * (0.6 + vegRng() * 0.7), SS * (0.35 + vegRng() * 0.4), vegRng() * Math.PI, 0, Math.PI * 2); tc.fill();
         }
-      } else if (tropical && r < 0.05) {
-        tc.save();
-        tc.translate(px, py);
-        tc.transform(0.5, -0.5, 1, 1, 0, 0);
-        tc.translate(-px, -py);
-        const topX = px + (vegRng() - 0.5) * SS, topY = py - tpx * 0.5;
-        tc.strokeStyle = '#5d4a30'; tc.lineWidth = Math.max(1.2, SS * 0.4);
-        tc.beginPath(); tc.moveTo(px, py); tc.lineTo(topX, topY); tc.stroke();
-        tc.strokeStyle = '#1f5a2d'; tc.lineWidth = Math.max(1, SS * 0.3);
-        for (let q = 0; q < 5; q++) { const a = (q / 5) * Math.PI * 2 + vegRng(); tc.beginPath(); tc.moveTo(topX, topY); tc.quadraticCurveTo(topX + Math.cos(a) * tpx * 0.2, topY + Math.sin(a) * tpx * 0.1, topX + Math.cos(a) * tpx * 0.34, topY + Math.sin(a) * tpx * 0.18); tc.stroke(); }
-        tc.restore();
-      } else if (r < 0.34) {
-        // touffe d'herbe : brin sombre + brin clair
-        const len = SS * (0.8 + vegRng());
-        tc.strokeStyle = 'rgba(0,0,0,0.22)'; tc.lineWidth = 1;
-        tc.beginPath(); tc.moveTo(px, py); tc.lineTo(px + (vegRng() - 0.5) * SS, py - len); tc.stroke();
-        tc.strokeStyle = 'rgba(255,255,235,0.16)'; tc.beginPath(); tc.moveTo(px + 0.6, py); tc.lineTo(px + 0.6 + (vegRng() - 0.5) * SS, py - len * 0.8); tc.stroke();
-      } else if (r < 0.4) {
-        tc.fillStyle = tropical ? 'rgba(10,45,20,0.5)' : 'rgba(20,40,18,0.34)';
-        for (let q = 0; q < 3; q++) { tc.beginPath(); tc.arc(px + (vegRng() - 0.5) * SS * 2, py + (vegRng() - 0.5) * SS * 2, SS * (0.4 + vegRng() * 0.4), 0, Math.PI * 2); tc.fill(); }
-      } else if (r < 0.43) {
-        tc.fillStyle = 'rgba(96,78,52,0.26)';
-        tc.beginPath(); tc.ellipse(px, py, SS * 1.4, SS * 0.9, vegRng() * 3, 0, Math.PI * 2); tc.fill();
+      } else if (arctic) {
+        if (r < 0.042 && !roads[ty * w + tx]) {
+          drawTree(px, py, 0.72 + vegRng() * 0.56, 'pine');
+        } else if (r < 0.10) {
+          tc.fillStyle = 'rgba(38,52,58,0.24)';
+          tc.beginPath(); tc.ellipse(px, py, SS * (0.9 + vegRng() * 0.8), SS * (0.48 + vegRng() * 0.38), vegRng() * Math.PI, 0, Math.PI * 2); tc.fill();
+          tc.fillStyle = 'rgba(240,248,254,0.42)';
+          tc.beginPath(); tc.ellipse(px - SS * 0.18, py - SS * 0.18, SS * (0.7 + vegRng() * 0.5), SS * 0.28, vegRng() * Math.PI, 0, Math.PI * 2); tc.fill();
+        } else if (r < 0.22) {
+          const len = SS * (0.9 + vegRng() * 0.9);
+          tc.strokeStyle = 'rgba(22,40,36,0.26)'; tc.lineWidth = 1;
+          for (let q = 0; q < 2; q++) { tc.beginPath(); tc.moveTo(px + (vegRng() - 0.5) * SS, py + SS * 0.4); tc.lineTo(px + (vegRng() - 0.5) * SS * 0.6, py - len); tc.stroke(); }
+        }
+      } else if (tropical) {
+        if (r < 0.048 && !roads[ty * w + tx]) {
+          drawTree(px, py, 0.72 + vegRng() * 0.60, 'palm');
+        } else if (r < 0.11 && t !== T_ROCK) {
+          // fougères / grandes herbes tropicales
+          tc.fillStyle = 'rgba(12,52,20,0.55)';
+          for (let q = 0; q < 4; q++) { tc.beginPath(); tc.arc(px + (vegRng() - 0.5) * SS * 2.2, py + (vegRng() - 0.5) * SS * 2.2, SS * (0.45 + vegRng() * 0.5), 0, Math.PI * 2); tc.fill(); }
+          tc.fillStyle = 'rgba(30,80,32,0.42)';
+          for (let q = 0; q < 3; q++) { tc.beginPath(); tc.arc(px + (vegRng() - 0.5) * SS * 1.6, py + (vegRng() - 0.5) * SS * 1.6, SS * (0.30 + vegRng() * 0.35), 0, Math.PI * 2); tc.fill(); }
+        } else if (r < 0.30) {
+          tc.fillStyle = 'rgba(8,48,16,0.40)';
+          tc.beginPath(); tc.ellipse(px, py, SS * (0.8 + vegRng() * 1.0), SS * (0.5 + vegRng() * 0.6), vegRng() * Math.PI, 0, Math.PI * 2); tc.fill();
+        }
+      } else if (badlands) {
+        if (r < 0.028 && !roads[ty * w + tx]) {
+          drawTree(px, py, 0.55 + vegRng() * 0.45, 'dead');
+        } else if (r < 0.20) {
+          // cailloux brûlés
+          tc.fillStyle = `rgba(0,0,0,${0.14 + vegRng() * 0.16})`;
+          tc.beginPath(); tc.ellipse(px, py, SS * (0.8 + vegRng() * 0.9), SS * (0.45 + vegRng() * 0.45), vegRng() * Math.PI, 0, Math.PI * 2); tc.fill();
+        } else if (r < 0.32) {
+          // touffes rabougries
+          const len = SS * (0.5 + vegRng() * 0.6);
+          tc.strokeStyle = 'rgba(100,70,38,0.35)'; tc.lineWidth = 1;
+          tc.beginPath(); tc.moveTo(px, py); tc.lineTo(px + (vegRng() - 0.5) * SS * 0.8, py - len); tc.stroke();
+        }
+      } else {
+        // TEMPERATE + DESERT + MIST : arbres, herbes, buissons
+        const isDesert = g.map.theme === 'desert';
+        if (!isDesert && r < 0.055 && !roads[ty * w + tx] && t !== T_ROCK) {
+          drawTree(px, py, 0.68 + vegRng() * 0.60, vegRng() < 0.60 ? 'pine' : 'oak');
+        } else if (r < 0.28) {
+          // touffes d'herbe / végétation basse (variées)
+          const len = SS * (0.9 + vegRng() * 1.1);
+          const leafAlpha = isDesert ? 0.14 : 0.28;
+          tc.strokeStyle = isDesert ? `rgba(140,100,40,${leafAlpha})` : `rgba(0,0,0,${leafAlpha})`;
+          tc.lineWidth = 1;
+          for (let q = 0; q < 2 + (r < 0.10 ? 2 : 0); q++) {
+            tc.beginPath(); tc.moveTo(px + (vegRng() - 0.5) * SS * 1.2, py); tc.lineTo(px + (vegRng() - 0.5) * SS, py - len * (0.6 + vegRng() * 0.5)); tc.stroke();
+          }
+          tc.strokeStyle = isDesert ? 'rgba(220,190,120,0.12)' : 'rgba(255,255,230,0.18)';
+          tc.beginPath(); tc.moveTo(px + 0.7, py); tc.lineTo(px + 0.7 + (vegRng() - 0.5) * SS, py - len * 0.75); tc.stroke();
+        } else if (r < 0.38 && !isDesert) {
+          // buisson dense
+          tc.fillStyle = 'rgba(20,52,18,0.38)';
+          for (let q = 0; q < 4; q++) { tc.beginPath(); tc.arc(px + (vegRng() - 0.5) * SS * 2.0, py + (vegRng() - 0.5) * SS * 2.0, SS * (0.42 + vegRng() * 0.45), 0, Math.PI * 2); tc.fill(); }
+          tc.fillStyle = 'rgba(40,80,30,0.28)';
+          tc.beginPath(); tc.arc(px, py - SS * 0.3, SS * (0.8 + vegRng() * 0.5), 0, Math.PI * 2); tc.fill();
+        } else if (r < 0.44) {
+          // galet / caillou
+          tc.fillStyle = `rgba(80,68,48,${0.20 + vegRng() * 0.18})`;
+          tc.beginPath(); tc.ellipse(px, py, SS * (1.2 + vegRng() * 0.9), SS * (0.7 + vegRng() * 0.6), vegRng() * 3, 0, Math.PI * 2); tc.fill();
+          tc.fillStyle = `rgba(255,242,210,${0.06 + vegRng() * 0.06})`;
+          tc.beginPath(); tc.ellipse(px - SS * 0.3, py - SS * 0.3, SS * 0.7, SS * 0.38, 0, 0, Math.PI * 2); tc.fill();
+        }
       }
     }
 
@@ -970,28 +1107,39 @@ export class Renderer {
       tc.translate(px, py);
       tc.rotate(angle + (erosionRng() - 0.5) * 0.45);
       if (t === T_ROCK || slope > 0.045) {
-        tc.strokeStyle = snow ? 'rgba(38,48,58,0.22)' : t === T_ROCK ? 'rgba(0,0,0,0.34)' : 'rgba(42,34,22,0.22)';
-        tc.lineWidth = Math.max(1, SS * 0.22);
-        const len = tpx * (0.25 + erosionRng() * 0.42);
+        // fissures + stries d'érosion (plus larges et sombres)
+        tc.strokeStyle = snow ? 'rgba(30,42,52,0.28)' : t === T_ROCK ? 'rgba(0,0,0,0.42)' : 'rgba(48,36,18,0.28)';
+        tc.lineWidth = Math.max(1.2, SS * 0.28);
+        const len = tpx * (0.30 + erosionRng() * 0.52);
         tc.beginPath();
         tc.moveTo(-len * 0.5, 0);
-        tc.quadraticCurveTo(0, (erosionRng() - 0.5) * SS, len * 0.5, 0);
+        tc.quadraticCurveTo(erosionRng() * SS * 0.4, (erosionRng() - 0.5) * SS * 1.2, len * 0.5, 0);
         tc.stroke();
-        tc.strokeStyle = snow ? 'rgba(255,255,255,0.14)' : 'rgba(255,245,210,0.10)';
+        tc.strokeStyle = snow ? 'rgba(255,255,255,0.18)' : 'rgba(255,245,210,0.14)';
         tc.lineWidth = 1;
         tc.beginPath();
-        tc.moveTo(-len * 0.35, -SS * 0.18);
-        tc.lineTo(len * 0.35, -SS * 0.18);
+        tc.moveTo(-len * 0.38, -SS * 0.22);
+        tc.lineTo(len * 0.38, -SS * 0.22);
         tc.stroke();
+        // second sillon décalé
+        if (erosionRng() < 0.55) {
+          tc.strokeStyle = snow ? 'rgba(24,36,46,0.18)' : 'rgba(0,0,0,0.22)';
+          tc.lineWidth = Math.max(1, SS * 0.18);
+          const len2 = len * (0.5 + erosionRng() * 0.4);
+          tc.beginPath();
+          tc.moveTo(-len2 * 0.5 + (erosionRng() - 0.5) * SS, SS * 0.5);
+          tc.quadraticCurveTo(0, SS * 0.5 + (erosionRng() - 0.5) * SS * 0.6, len2 * 0.5 + (erosionRng() - 0.5) * SS, SS * 0.5);
+          tc.stroke();
+        }
       } else if (t === T_ROUGH) {
-        tc.fillStyle = snow ? 'rgba(72,82,90,0.16)' : desert ? 'rgba(124,88,50,0.18)' : 'rgba(70,60,44,0.20)';
+        tc.fillStyle = snow ? 'rgba(60,72,82,0.22)' : desert ? 'rgba(130,90,48,0.24)' : 'rgba(72,58,38,0.26)';
         tc.beginPath();
-        tc.ellipse(0, 0, tpx * (0.18 + erosionRng() * 0.18), SS * (0.45 + erosionRng() * 0.45), 0, 0, Math.PI * 2);
+        tc.ellipse(0, 0, tpx * (0.22 + erosionRng() * 0.22), SS * (0.52 + erosionRng() * 0.52), 0, 0, Math.PI * 2);
         tc.fill();
-      } else if (erosionRng() < 0.35) {
-        tc.fillStyle = snow ? 'rgba(235,242,248,0.13)' : desert ? 'rgba(150,112,66,0.16)' : 'rgba(126,104,66,0.16)';
+      } else if (erosionRng() < 0.38) {
+        tc.fillStyle = snow ? 'rgba(230,240,248,0.15)' : desert ? 'rgba(158,118,62,0.20)' : 'rgba(128,106,62,0.20)';
         tc.beginPath();
-        tc.ellipse(0, 0, tpx * (0.16 + erosionRng() * 0.12), SS * (0.35 + erosionRng() * 0.35), 0, 0, Math.PI * 2);
+        tc.ellipse(0, 0, tpx * (0.18 + erosionRng() * 0.15), SS * (0.40 + erosionRng() * 0.40), 0, 0, Math.PI * 2);
         tc.fill();
       }
       tc.restore();
@@ -1036,9 +1184,15 @@ export class Renderer {
       }
     }
 
-    // léger assombrissement global pour l'unité chromatique
-    tc.fillStyle = 'rgba(0,0,0,0.04)';
+    // film atmosphérique final (unité chromatique + légère désaturation des extrêmes)
+    tc.fillStyle = 'rgba(0,0,0,0.06)';
     tc.fillRect(0, 0, c.width, c.height);
+    // très léger voile chaud (ciel) sur la moitié haute — donne de la profondeur
+    const atmGr = tc.createLinearGradient(0, 0, 0, c.height * 0.35);
+    atmGr.addColorStop(0, 'rgba(210,190,140,0.04)');
+    atmGr.addColorStop(1, 'rgba(0,0,0,0)');
+    tc.fillStyle = atmGr;
+    tc.fillRect(0, 0, c.width, c.height * 0.35);
     const debugMode = typeof window !== 'undefined'
       ? new URLSearchParams(window.location.search).get('terrainDebug')
       : null;
