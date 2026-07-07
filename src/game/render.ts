@@ -386,6 +386,7 @@ export class Renderer {
     const warpB = mkNoise(w * 17 + h * 53 + 2);
     const tint = mkNoise(w * 131 + h * 29 + 3);
     const grain = mkNoise(w * 211 + h * 97 + 4);
+    const forestN = mkNoise(w * 57 + h * 23 + 11);
 
     const hex2rgb = (s: string): [number, number, number] => {
       const v = parseInt(s.slice(1), 16); return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
@@ -413,6 +414,58 @@ export class Renderer {
         const hv = (interpH((sx2 + 0.5) / SUB - 0.5, (sy + 0.5) / SUB - 0.5) - 0.46) * 1.20 + 0.46;
         SH[sy * W4 + sx2] = hv < 0 ? 0 : hv > 1 ? 1 : hv;
       }
+    // ---- TERRASSEMENT : plateaux PLATS reliés par des rampes courtes.
+    // Le relief se lit comme des paliers propres (style RTS classique) au lieu
+    // d'une ondulation continue « terrain généré ». L'éclairage reste continu :
+    // aucune marche de luminosité, uniquement de vraies pentes lissées.
+    const TLV = 5, TRAMP = 0.38;
+    const SH2 = new Float32Array(W4 * H4);
+    for (let i = 0; i < W4 * H4; i++) {
+      const s = SH[i] * TLV;
+      const li = Math.floor(s);
+      const f = s - li;
+      const tt2 = f < 1 - TRAMP ? 0 : (f - (1 - TRAMP)) / TRAMP;
+      SH2[i] = (li + tt2 * tt2 * (3 - 2 * tt2)) / TLV;
+    }
+    // ---- CHAMP D'EAU : fraction d'eau par tuile (1 = eau), légèrement floutée.
+    // Échantillonné en bilinéaire + warp par pixel → ligne de côte ORGANIQUE
+    // et continue, sans aucun tracé par tuile (fini les zigzags de bord).
+    const WF = new Float32Array(w * h);
+    for (let i = 0; i < w * h; i++) WF[i] = terrain[i] === T_WATER ? 1 : 0;
+    // masque « proche de l'eau » (rayon 3) : évite le coût du warp d'eau
+    // sur les pixels loin de toute côte
+    const WNEAR = new Uint8Array(w * h);
+    {
+      const tmp = new Uint8Array(w * h);
+      for (let y2 = 0; y2 < h; y2++)
+        for (let x2 = 0; x2 < w; x2++) {
+          let v = 0;
+          for (let dx2 = -3; dx2 <= 3 && !v; dx2++) {
+            const xx = x2 + dx2;
+            if (xx >= 0 && xx < w && WF[y2 * w + xx] > 0) v = 1;
+          }
+          tmp[y2 * w + x2] = v;
+        }
+      for (let y2 = 0; y2 < h; y2++)
+        for (let x2 = 0; x2 < w; x2++) {
+          let v = 0;
+          for (let dy2 = -3; dy2 <= 3 && !v; dy2++) {
+            const yy = y2 + dy2;
+            if (yy >= 0 && yy < h && tmp[yy * w + x2]) v = 1;
+          }
+          WNEAR[y2 * w + x2] = v;
+        }
+      // léger flou du champ (arrondit les angles des lacs)
+      const WB = new Float32Array(w * h);
+      for (let y2 = 0; y2 < h; y2++)
+        for (let x2 = 0; x2 < w; x2++) {
+          const c0 = WF[y2 * w + x2];
+          const cn = WF[Math.max(0, y2 - 1) * w + x2], cs = WF[Math.min(h - 1, y2 + 1) * w + x2];
+          const cw2 = WF[y2 * w + Math.max(0, x2 - 1)], ce = WF[y2 * w + Math.min(w - 1, x2 + 1)];
+          WB[y2 * w + x2] = (c0 * 4 + cn + cs + cw2 + ce) / 8;
+        }
+      WF.set(WB);
+    }
 
     // ===== 1) BASE : couleur + relief par SOUS-TUILE via ImageData (rapide,
     // dense). Frontières de terrain déformées par bruit (fini les carrés nets).
@@ -426,6 +479,13 @@ export class Renderer {
     // bordures : on interpole les couleurs des 4 tuiles autour de chaque
     // sous-cellule → transitions douces entre herbe / terre / roche / eau.
     const shoreRGB = hex2rgb(theme.shore);
+    // Sous l'eau le FOND est sableux : la couleur d'eau est un VOILE ajouté
+    // par-dessus selon la profondeur (voir boucle pixel) → rives naturelles.
+    const bottomRGB: [number, number, number] = [
+      Math.round(shoreRGB[0] * 0.78), Math.round(shoreRGB[1] * 0.74), Math.round(shoreRGB[2] * 0.66)];
+    // rampe d'eau dérivée du thème (les 6 biomes gardent leur identité)
+    const wShal = [waterRGB[0] * 0.45 + 96, waterRGB[1] * 0.45 + 118, waterRGB[2] * 0.45 + 118];
+    const wDeep = [waterRGB[0] * 0.72 + 4, waterRGB[1] * 0.72 + 8, waterRGB[2] * 0.72 + 18];
 
     // Précalcul : couleur de chaque tuile (+ 2 tuiles de marge pour le warp)
     // → remplace 4 appels de fonction tileRGB() par 4 lectures de tableau par pixel.
@@ -437,7 +497,7 @@ export class Renderer {
         const ctx2 = tx2 < 0 ? 0 : tx2 >= w ? w - 1 : tx2;
         const tt = terrain[cty2 * w + ctx2];
         const vi = (((ctx2 * 73856093) ^ (cty2 * 19349663)) >>> 0);
-        const pp = tt === T_WATER ? waterRGB : tt === T_ROCK ? rockP[vi % rockP.length] : tt === T_ROUGH ? roughP[vi % roughP.length] : grassP[vi % grassP.length];
+        const pp = tt === T_WATER ? bottomRGB : tt === T_ROCK ? rockP[vi % rockP.length] : tt === T_ROUGH ? roughP[vi % roughP.length] : grassP[vi % grassP.length];
         const i3 = ((ty2 + 2) * TMAP_W + (tx2 + 2)) * 3;
         tileMap[i3] = pp[0]; tileMap[i3 + 1] = pp[1]; tileMap[i3 + 2] = pp[2];
       }
@@ -458,14 +518,28 @@ export class Renderer {
         let gtx = Math.round(wx); if (gtx < 0) gtx = 0; else if (gtx >= w) gtx = w - 1;
         let gty = Math.round(wy); if (gty < 0) gty = 0; else if (gty >= h) gty = h - 1;
         const t = terrain[gty * w + gtx];
-        let rockContact = 0, openContact = 0, waterContact = 0;
+        let rockContact = 0, openContact = 0;
         for (let ni = 0; ni < 4; ni++) {
           const nx = gtx + N4DX[ni], ny = gty + N4DY[ni];
           if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
           const nt = terrain[ny * w + nx];
           if (nt === T_ROCK) rockContact++;
-          else if (nt === T_WATER) waterContact++;
-          else openContact++;
+          else if (nt !== T_WATER) openContact++;
+        }
+        // fraction d'eau au pixel : warp dédié à amplitude modérée (la côte
+        // visuelle reste proche de la vraie côte gameplay), bilinéaire continu
+        let wf = 0;
+        if (WNEAR[gty * w + gtx]) {
+          const vx = fx - 0.5 + (warpA(fx * 0.9 + 7.3, fy * 0.9 + 4.1) - 0.5) * 1.7;
+          const vy = fy - 0.5 + (warpB(fx * 0.9 + 3.7, fy * 0.9 + 8.9) - 0.5) * 1.7;
+          const wx0 = Math.floor(vx), wy0 = Math.floor(vy);
+          const wfx = vx - wx0, wfy = vy - wy0;
+          const cx0 = wx0 < 0 ? 0 : wx0 >= w ? w - 1 : wx0;
+          const cx1 = wx0 + 1 < 0 ? 0 : wx0 + 1 >= w ? w - 1 : wx0 + 1;
+          const cy0 = wy0 < 0 ? 0 : wy0 >= h ? h - 1 : wy0;
+          const cy1 = wy0 + 1 < 0 ? 0 : wy0 + 1 >= h ? h - 1 : wy0 + 1;
+          wf = WF[cy0 * w + cx0] * (1 - wfx) * (1 - wfy) + WF[cy0 * w + cx1] * wfx * (1 - wfy)
+             + WF[cy1 * w + cx0] * (1 - wfx) * wfy + WF[cy1 * w + cx1] * wfx * wfy;
         }
 
         // mélange bilinéaire des 4 tuiles voisines (lecture directe tileMap)
@@ -495,93 +569,86 @@ export class Renderer {
 
         const e = SH[i4];
 
-        if (t !== T_WATER) {
-          // === PLAGE : transition douce eau→terre, élargie, basée sur altitude ===
-          if (t !== T_ROCK) {
-            // contact direct + zone basse altitude → sable progressif
-            const contactBeach = waterContact > 0 ? Math.min(0.68, waterContact * 0.24) : 0;
-            const lowBeach = Math.max(0, 1.0 - e * 5.5) * 0.36;
-            const beachBlend = Math.min(0.70, Math.max(contactBeach, lowBeach));
-            if (beachBlend > 0.01) {
-              r = r * (1 - beachBlend) + shoreRGB[0] * beachBlend;
-              gn = gn * (1 - beachBlend) + shoreRGB[1] * beachBlend;
-              b = b * (1 - beachBlend) + shoreRGB[2] * beachBlend;
-            }
-          }
-
-          // === TONALITÉ ALTIMÉTRIQUE : douce, non dominante ===
+        // === SOL CONTINU (même sous l'eau : le fond sableux reste visible en
+        // zone peu profonde — l'eau est un VOILE ajouté après, pas une tuile) ===
+        {
           const hh = e - 0.50;
           if (hh > 0) {
-            // plateaux : légère chaleur, sans écraser la couleur de base
             const k = Math.min(0.28, hh * 0.76);
             r += (208 - r) * k * 0.50; gn += (192 - gn) * k * 0.42; b += (138 - b) * k * 0.26;
           } else {
-            // creux : légère fraîcheur/verdure
             const k = Math.min(0.24, -hh * 0.72);
             r += (24 - r) * k * 0.50; gn += (60 - gn) * k * 0.38; b += (46 - b) * k * 0.28;
           }
-
-          // grain de surface léger
-          const j = (grain(fx * 3.5, fy * 3.5) - 0.5) * 0.13 + (tint(fx * 6.5, fy * 6.5) - 0.5) * 0.07;
+          // grain discret : les plateaux restent des aplats propres (1 seul
+          // appel de bruit par pixel — le second n'apportait rien de visible)
+          const j = (grain(fx * 2.6, fy * 2.6) - 0.5) * 0.11;
           r *= 1 + j; gn *= 1 + j; b *= 1 + j;
-
-          // fond de vallée : humidité subtile
-          const valleyTone = Math.max(0, Math.min(1, (0.40 - e) * 2.0));
+          const valleyTone = Math.max(0, Math.min(1, (0.40 - e) * 1.8));
           if (valleyTone > 0) {
-            r = r * (1 - valleyTone * 0.15) + 20 * valleyTone;
-            gn = gn * (1 - valleyTone * 0.08) + 54 * valleyTone;
+            r = r * (1 - valleyTone * 0.13) + 20 * valleyTone;
+            gn = gn * (1 - valleyTone * 0.07) + 54 * valleyTone;
             b = b * (1 - valleyTone * 0.04) + 42 * valleyTone;
           }
-          // plateaux : tonalité rocheuse douce
-          const plateauTone = Math.max(0, Math.min(1, (e - 0.67) * 2.0));
+          const plateauTone = Math.max(0, Math.min(1, (e - 0.67) * 1.8));
           if (plateauTone > 0) {
-            r = r * (1 - plateauTone * 0.12) + 185 * plateauTone;
-            gn = gn * (1 - plateauTone * 0.16) + 168 * plateauTone;
-            b = b * (1 - plateauTone * 0.24) + 122 * plateauTone;
+            r = r * (1 - plateauTone * 0.11) + 185 * plateauTone;
+            gn = gn * (1 - plateauTone * 0.14) + 168 * plateauTone;
+            b = b * (1 - plateauTone * 0.22) + 122 * plateauTone;
           }
-        } else {
-          // === EAU : bleu naturel, dégradé profondeur, rives tintées au sol ===
-          const depth = Math.max(0, Math.min(1, (0.22 - e) / 0.22));
-          const wR = 62 - depth * 42;   // hauts-fonds teal → profond bleu
-          const wG = 150 - depth * 92;
-          const wB = 192 - depth * 72;
-          const wBlend = 0.50 + depth * 0.36;
-          r = r * (1 - wBlend) + wR * wBlend;
-          gn = gn * (1 - wBlend) + wG * wBlend;
-          b = b * (1 - wBlend) + wB * wBlend;
-          // rives proches (openContact = voisins terre) : teinte sableuse organique
-          if (openContact > 0 && depth < 0.60) {
-            const sBlend = Math.min(0.30, openContact * 0.10) * (1 - depth * 1.7);
-            r += (shoreRGB[0] * 0.52 - r) * sBlend;
-            gn += (shoreRGB[1] * 0.52 - gn) * sBlend;
-            b += (shoreRGB[2] * 0.52 - b) * sBlend;
-          }
-          // micro-ondulations très discrètes
-          const rip = (grain(fx * 4.5, fy * 2.2) - 0.5) * 6 + (tint(fx * 2.2, fy * 4.5) - 0.5) * 3;
-          r += rip * 0.08; gn += rip * 0.16; b += rip * 0.32;
         }
 
-        // === RELIEF CONTINU : normal-based diffuse équilibré, ombre douce, AO léger ===
+        // === PLAGE : anneau de sable continu qui suit la ligne d'eau warpée ===
+        if (wf > 0.24 && t !== T_ROCK) {
+          const sandK = Math.min(1, (wf - 0.24) / 0.24) * 0.60;
+          r += (shoreRGB[0] - r) * sandK;
+          gn += (shoreRGB[1] - gn) * sandK;
+          b += (shoreRGB[2] - b) * sandK;
+        }
+
+        // === RELIEF EN TERRASSES : éclairage continu du champ terrassé —
+        // plateaux plats et calmes, rampes nettes, zéro marche de luminosité ===
+        const e2 = SH2[i4];
         const xm = sx2 > 0 ? sx2 - 1 : sx2, xp = sx2 < W4 - 1 ? sx2 + 1 : sx2;
         const ym = sy > 0 ? sy - 1 : sy, yp = sy < H4 - 1 ? sy + 1 : sy;
-        const hl = SH[sy * W4 + xm], hr = SH[sy * W4 + xp], hu = SH[ym * W4 + sx2], hd = SH[yp * W4 + sx2];
+        const hl = SH2[sy * W4 + xm], hr = SH2[sy * W4 + xp], hu = SH2[ym * W4 + sx2], hd = SH2[yp * W4 + sx2];
         const dxh = hr - hl, dyh = hd - hu;
-        // Diffuse : amplitude modérée pour lire les pentes sans noircir les vallées
         const nlen = Math.sqrt(dxh * dxh + dyh * dyh + 0.004);
         const diffuse = ((-dxh * 0.6 + -dyh * 0.6 + 0.063) / (nlen * 1.1)) * 0.55 + 0.76;
         let relief = diffuse;
-        if (relief < 0.28) relief = 0.28; else if (relief > 1.60) relief = 1.60;
-        // Ombre portée très douce (moins d'artefact "peint sur le sol")
+        if (relief < 0.34) relief = 0.34; else if (relief > 1.58) relief = 1.58;
+        // ombre portée douce depuis les rebords de plateaux (soleil NW)
         let cast = 0;
         for (let s = 1; s <= 9; s++) {
           const ax = sx2 - s * 2, ay = sy - s * 2; if (ax < 0 || ay < 0) break;
-          const diff = SH[ay * W4 + ax] - e - s * 0.016;
+          const diff = SH2[ay * W4 + ax] - e2 - s * 0.016;
           if (diff > cast) cast = diff;
         }
-        // AO léger (vallées 8% plus sombres max) — pas d'enfoncement brutal
-        const ao = Math.max(0, (0.42 - e) * 0.10);
-        const m = relief * (1 - Math.min(0.32, cast * 2.4) - ao);
+        const wA = wf > 0.5 ? Math.min(1, (wf - 0.5) * 9) : 0;
+        const ao = Math.max(0, (0.42 - e) * 0.10) * (1 - wA);
+        let m = relief * (1 - Math.min(0.32, cast * 2.4) - ao);
+        // l'eau est PLANE : le modelé du relief s'efface sous le voile d'eau
+        if (wA > 0) m += (1.04 - m) * wA * 0.85;
         r *= m; gn *= m; b *= m;
+
+        // === EAU : voile de profondeur par-dessus le fond, teinte du thème ===
+        if (wA > 0) {
+          const depthE = Math.max(0, Math.min(1, (0.22 - e) / 0.22));
+          const depthW = Math.max(0, Math.min(1, (wf - 0.52) * 1.9));
+          const depth = Math.min(1, depthE * 0.55 + depthW * 0.65);
+          const wAl = wA * (0.55 + depth * 0.33);
+          r += (wShal[0] + (wDeep[0] - wShal[0]) * depth - r) * wAl;
+          gn += (wShal[1] + (wDeep[1] - wShal[1]) * depth - gn) * wAl;
+          b += (wShal[2] + (wDeep[2] - wShal[2]) * depth - b) * wAl;
+          const rip = (tint(fx * 4.5, fy * 2.2) - 0.5) * 8;
+          r += rip * 0.06 * wA; gn += rip * 0.12 * wA; b += rip * 0.24 * wA;
+        }
+        // ligne d'eau : fine bande humide sombre (définit la côte sans stroke)
+        if (wf > 0.30 && wf < 0.70) {
+          const wet = 1 - Math.abs(wf - 0.5) * 5;
+          const wk = 1 - wet * wet * 0.14;
+          r *= wk; gn *= wk; b *= wk;
+        }
 
         const o = i4 * 4;
         D[o] = r < 0 ? 0 : r > 255 ? 255 : r;
@@ -648,18 +715,17 @@ export class Renderer {
         // Les anciennes GROSSES bandes floues et les faces plates E/S sont
         // supprimées : elles doublonnaient salement sous les parois
         // verticales de la passe 3bis (double dessin = traits noirs baveux).
-        if (mask & 1) { // N : arête éclairée (soleil NW)
-          tc.fillStyle = 'rgba(255,252,228,0.46)';
-          for (let s = 0; s < SUB; s++) tc.fillRect(px + s * SS, py + jitter(s, 1) * 0.5, SS + 1, Math.max(1.5, SS * 0.42));
-          // halo diffus sous l'arête
-          tc.fillStyle = 'rgba(255,250,200,0.14)';
-          for (let s = 0; s < SUB; s++) tc.fillRect(px + s * SS, py + jitter(s, 1) * 0.3 + SS * 0.3, SS + 1, Math.max(1, SS * 0.6));
+        if (mask & 1) { // N : arête éclairée (soleil NW) — discrète
+          tc.fillStyle = 'rgba(255,252,228,0.24)';
+          for (let s = 0; s < SUB; s++) tc.fillRect(px + s * SS, py + jitter(s, 1) * 0.5, SS + 1, Math.max(1.2, SS * 0.32));
+          tc.fillStyle = 'rgba(255,250,200,0.09)';
+          for (let s = 0; s < SUB; s++) tc.fillRect(px + s * SS, py + jitter(s, 1) * 0.3 + SS * 0.3, SS + 1, Math.max(1, SS * 0.5));
         }
-        if (mask & 8) { // O : arête éclairée
-          tc.fillStyle = 'rgba(255,252,228,0.42)';
-          for (let s = 0; s < SUB; s++) tc.fillRect(px + jitter(s, 4) * 0.5, py + s * SS, Math.max(1.5, SS * 0.42), SS + 1);
-          tc.fillStyle = 'rgba(255,250,200,0.12)';
-          for (let s = 0; s < SUB; s++) tc.fillRect(px + jitter(s, 4) * 0.3 + SS * 0.3, py + s * SS, Math.max(1, SS * 0.6), SS + 1);
+        if (mask & 8) { // O : arête éclairée — discrète
+          tc.fillStyle = 'rgba(255,252,228,0.22)';
+          for (let s = 0; s < SUB; s++) tc.fillRect(px + jitter(s, 4) * 0.5, py + s * SS, Math.max(1.2, SS * 0.32), SS + 1);
+          tc.fillStyle = 'rgba(255,250,200,0.08)';
+          for (let s = 0; s < SUB; s++) tc.fillRect(px + jitter(s, 4) * 0.3 + SS * 0.3, py + s * SS, Math.max(1, SS * 0.5), SS + 1);
         }
       }
 
@@ -723,10 +789,10 @@ export class Renderer {
           tc.lineTo(xx + (wallRng() - 0.5) * 3, yy0 + hw * (0.72 + wallRng() * 0.25));
           tc.stroke();
         }
-        // lèvre supérieure : arête très claire + ombre du surplomb
-        tc.strokeStyle = 'rgba(255,252,230,0.72)'; tc.lineWidth = Math.max(1.5, SS * 0.44);
+        // lèvre supérieure : arête claire modérée + ombre du surplomb
+        tc.strokeStyle = 'rgba(255,252,230,0.42)'; tc.lineWidth = Math.max(1.2, SS * 0.30);
         tc.beginPath(); tc.moveTo(0, 0.5); tc.lineTo(bx, by + 0.5); tc.stroke();
-        tc.strokeStyle = 'rgba(0,0,0,0.52)'; tc.lineWidth = Math.max(1.2, SS * 0.28);
+        tc.strokeStyle = 'rgba(0,0,0,0.36)'; tc.lineWidth = Math.max(1.0, SS * 0.22);
         tc.beginPath(); tc.moveTo(0, 0.5 + SS * 0.5); tc.lineTo(bx, by + 0.5 + SS * 0.5); tc.stroke();
         // occlusion au pied : très sombre pour ancrer le mur
         tc.fillStyle = 'rgba(2,4,8,0.46)';
@@ -940,6 +1006,16 @@ export class Renderer {
       if (t === T_WATER) continue;
       const px = tx * tpx + vegRng() * tpx, py = ty * tpx + vegRng() * tpx;
       const r = vegRng();
+      // MASSIFS FORESTIERS : bruit basse fréquence → les arbres poussent en
+      // bosquets denses avec clairières, pas en semis uniforme « généré ».
+      const fN = forestN(tx * 0.16 + 3.1, ty * 0.16 + 5.7);
+      const fFac = fN > 0.56 ? 0.35 + ((fN - 0.56) / 0.44) * 3.4 : 0.10;
+      // pas d'arbre les pieds dans l'eau visuelle (la côte warpée déborde)
+      const nearWater =
+        (tx > 0 && terrain[ty * w + tx - 1] === T_WATER) ||
+        (tx < w - 1 && terrain[ty * w + tx + 1] === T_WATER) ||
+        (ty > 0 && terrain[(ty - 1) * w + tx] === T_WATER) ||
+        (ty < h - 1 && terrain[(ty + 1) * w + tx] === T_WATER);
 
       if (t === T_ROCK) {
         // zones rocheuses : cailloux + fissures + lichens
@@ -955,7 +1031,7 @@ export class Renderer {
           tc.beginPath(); tc.ellipse(px, py, SS * (0.6 + vegRng() * 0.7), SS * (0.35 + vegRng() * 0.4), vegRng() * Math.PI, 0, Math.PI * 2); tc.fill();
         }
       } else if (arctic) {
-        if (r < 0.042 && !roads[ty * w + tx]) {
+        if (r < 0.042 * fFac && !roads[ty * w + tx] && !nearWater) {
           stampTree(px, py, 'pine');
         } else if (r < 0.10) {
           tc.fillStyle = 'rgba(38,52,58,0.24)';
@@ -968,7 +1044,7 @@ export class Renderer {
           for (let q = 0; q < 2; q++) { tc.beginPath(); tc.moveTo(px + (vegRng() - 0.5) * SS, py + SS * 0.4); tc.lineTo(px + (vegRng() - 0.5) * SS * 0.6, py - len); tc.stroke(); }
         }
       } else if (tropical) {
-        if (r < 0.048 && !roads[ty * w + tx]) {
+        if (r < 0.048 * (0.5 + fFac) && !roads[ty * w + tx] && !nearWater) {
           stampTree(px, py, 'palm');
         } else if (r < 0.11 && t !== T_ROCK) {
           // fougères / grandes herbes tropicales
@@ -981,7 +1057,7 @@ export class Renderer {
           tc.beginPath(); tc.ellipse(px, py, SS * (0.8 + vegRng() * 1.0), SS * (0.5 + vegRng() * 0.6), vegRng() * Math.PI, 0, Math.PI * 2); tc.fill();
         }
       } else if (badlands) {
-        if (r < 0.028 && !roads[ty * w + tx]) {
+        if (r < 0.028 * (0.3 + fFac) && !roads[ty * w + tx] && !nearWater) {
           stampTree(px, py, 'dead');
         } else if (r < 0.20) {
           // cailloux brûlés
@@ -996,7 +1072,7 @@ export class Renderer {
       } else {
         // TEMPERATE + DESERT + MIST : arbres, herbes, buissons
         const isDesert = g.map.theme === 'desert';
-        if (!isDesert && r < 0.055 && !roads[ty * w + tx] && t !== T_ROCK) {
+        if (!isDesert && r < 0.055 * fFac && !roads[ty * w + tx] && t !== T_ROCK && !nearWater) {
           stampTree(px, py, vegRng() < 0.60 ? 'pine' : 'oak');
         } else if (r < 0.28) {
           // touffes d'herbe / végétation basse (variées)
@@ -1015,12 +1091,12 @@ export class Renderer {
           for (let q = 0; q < 4; q++) { tc.beginPath(); tc.arc(px + (vegRng() - 0.5) * SS * 2.0, py + (vegRng() - 0.5) * SS * 2.0, SS * (0.42 + vegRng() * 0.45), 0, Math.PI * 2); tc.fill(); }
           tc.fillStyle = 'rgba(40,80,30,0.28)';
           tc.beginPath(); tc.arc(px, py - SS * 0.3, SS * (0.8 + vegRng() * 0.5), 0, Math.PI * 2); tc.fill();
-        } else if (r < 0.44) {
-          // galet / caillou
-          tc.fillStyle = `rgba(80,68,48,${0.20 + vegRng() * 0.18})`;
-          tc.beginPath(); tc.ellipse(px, py, SS * (1.2 + vegRng() * 0.9), SS * (0.7 + vegRng() * 0.6), vegRng() * 3, 0, Math.PI * 2); tc.fill();
-          tc.fillStyle = `rgba(255,242,210,${0.06 + vegRng() * 0.06})`;
-          tc.beginPath(); tc.ellipse(px - SS * 0.3, py - SS * 0.3, SS * 0.7, SS * 0.38, 0, 0, Math.PI * 2); tc.fill();
+        } else if (r < 0.405) {
+          // galet / caillou — rare et discret (le semis dense faisait « bricolé »)
+          tc.fillStyle = `rgba(80,68,48,${0.13 + vegRng() * 0.11})`;
+          tc.beginPath(); tc.ellipse(px, py, SS * (1.0 + vegRng() * 0.7), SS * (0.6 + vegRng() * 0.45), vegRng() * 3, 0, Math.PI * 2); tc.fill();
+          tc.fillStyle = `rgba(255,242,210,${0.04 + vegRng() * 0.04})`;
+          tc.beginPath(); tc.ellipse(px - SS * 0.3, py - SS * 0.3, SS * 0.6, SS * 0.32, 0, 0, Math.PI * 2); tc.fill();
         }
       }
     }
@@ -1029,7 +1105,7 @@ export class Renderer {
     // pente. Cela donne une lecture plus naturelle des plateaux et vallées sans
     // changer une seule tuile de gameplay.
     const erosionRng = mulberry32(w * 409 + h * 37 + 23);
-    const erosionCount = Math.floor(w * h * 0.42);
+    const erosionCount = Math.floor(w * h * 0.30);
     for (let k = 0; k < erosionCount; k++) {
       const tx = (erosionRng() * w) | 0, ty = (erosionRng() * h) | 0;
       const i = ty * w + tx;
@@ -1077,8 +1153,9 @@ export class Renderer {
         tc.beginPath();
         tc.ellipse(0, 0, tpx * (0.22 + erosionRng() * 0.22), SS * (0.52 + erosionRng() * 0.52), 0, 0, Math.PI * 2);
         tc.fill();
-      } else if (erosionRng() < 0.38) {
-        tc.fillStyle = snow ? 'rgba(230,240,248,0.15)' : desert ? 'rgba(158,118,62,0.20)' : 'rgba(128,106,62,0.20)';
+      } else if (slope > 0.018 && erosionRng() < 0.38) {
+        // traces d'érosion UNIQUEMENT sur les pentes : les plats restent propres
+        tc.fillStyle = snow ? 'rgba(230,240,248,0.13)' : desert ? 'rgba(158,118,62,0.16)' : 'rgba(128,106,62,0.16)';
         tc.beginPath();
         tc.ellipse(0, 0, tpx * (0.18 + erosionRng() * 0.15), SS * (0.40 + erosionRng() * 0.40), 0, 0, Math.PI * 2);
         tc.fill();
@@ -1219,13 +1296,20 @@ export class Renderer {
           const idx = ty * mw + tx;
           if (terr[idx] !== T_WATER) continue;
           if (!revealAll && fog[idx] === 0) continue;
+          // uniquement les tuiles INTÉRIEURES du plan d'eau : la ligne de côte
+          // visuelle est warpée, un glint sur une tuile-rive tomberait sur le sable
+          if (tx <= 0 || ty <= 0 || tx >= mw - 1 || ty >= g.map.h - 1
+            || terr[idx - 1] !== T_WATER || terr[idx + 1] !== T_WATER
+            || terr[idx - mw] !== T_WATER || terr[idx + mw] !== T_WATER) continue;
           const px = proj.sx(tx + 0.5, ty + 0.5), py = proj.sy(tx + 0.5, ty + 0.5);
-          // bande de lumière qui ondule lentement
-          const band = 0.05 + 0.05 * Math.sin(t1 * 1.5 + tx * 0.9 + ty * 0.6);
-          if (band > 0.01) {
-            const yo = Math.sin(t1 * 1.05 + tx * 0.8) * sPx * 0.16;
-            ctx.fillStyle = `rgba(120,170,195,${band})`;
-            ctx.fillRect(px - sPx * 0.5, py - sPx * 0.08 + yo, sPx, sPx * 0.16);
+          // lueur elliptique douce qui ondule lentement (pas de rectangle dur)
+          const band = 0.04 + 0.04 * Math.sin(t1 * 1.5 + tx * 0.9 + ty * 0.6);
+          if (band > 0.012) {
+            const yo = Math.sin(t1 * 1.05 + tx * 0.8) * sPx * 0.14;
+            ctx.fillStyle = `rgba(150,200,220,${band})`;
+            ctx.beginPath();
+            ctx.ellipse(px, py + yo, sPx * 0.44, sPx * 0.09, 0, 0, Math.PI * 2);
+            ctx.fill();
           }
           // éclat spéculaire qui dérive
           const spk = Math.sin(t1 * 2.1 + (tx * 13 + ty * 7));
@@ -1236,31 +1320,6 @@ export class Renderer {
             ctx.beginPath(); ctx.arc(px + dx, py + dy, Math.max(0.8, sPx * 0.07), 0, Math.PI * 2); ctx.fill();
           }
         }
-      }
-      ctx.restore();
-    }
-
-    // ----- ÉCUME DE RIVAGE animée : vaguelettes qui lèchent la côte (les
-    // segments côtiers sont précalculés une fois ; par frame on ne dessine
-    // que ceux du viewport). Donne vie aux bords d'eau sans coût notable.
-    if (z >= 15) {   // écume : uniquement à zoom rapproché (milliers de segments sinon)
-      if (!this.shore) this.buildShore(g);
-      ctx.save();
-      ctx.lineCap = 'round';
-      for (const sgm of this.shore!) {
-        if (sgm.x < ab.x0 || sgm.x > ab.x1 || sgm.y < ab.y0 || sgm.y > ab.y1) continue;
-        const fi = Math.round(sgm.y) * mw + Math.round(sgm.x);
-        if (!revealAll && fog[Math.max(0, Math.min(fog.length - 1, fi))] === 0) continue;
-        const t2 = g.time * 1.15 + sgm.ph;
-        const pulse = 0.5 + 0.5 * Math.sin(t2);
-        const lap = 0.1 * Math.sin(t2 * 0.7 + sgm.ph);        // la vague avance/recule
-        const ox2 = sgm.nx * lap, oy2 = sgm.ny * lap;
-        ctx.strokeStyle = `rgba(236,248,252,${0.08 + 0.2 * pulse})`;
-        ctx.lineWidth = Math.max(1, z * (0.045 + 0.03 * pulse));
-        ctx.beginPath();
-        ctx.moveTo(proj.sx(sgm.x1 + ox2, sgm.y1 + oy2), proj.sy(sgm.x1 + ox2, sgm.y1 + oy2));
-        ctx.lineTo(proj.sx(sgm.x2 + ox2, sgm.y2 + oy2), proj.sy(sgm.x2 + ox2, sgm.y2 + oy2));
-        ctx.stroke();
       }
       ctx.restore();
     }
@@ -1991,32 +2050,6 @@ export class Renderer {
         );
       }
     }
-  }
-
-  // segments côtiers (eau ↔ terre) pour l'écume animée, précalculés
-  private shore: { x: number; y: number; x1: number; y1: number; x2: number; y2: number; nx: number; ny: number; ph: number }[] | null = null;
-  private buildShore(g: Game) {
-    const { w, h, terrain } = g.map;
-    const list: NonNullable<typeof this.shore> = [];
-    const isLand = (x: number, y: number) =>
-      x >= 0 && y >= 0 && x < w && y < h && terrain[y * w + x] !== T_WATER;
-    for (let ty = 0; ty < h; ty++)
-      for (let tx = 0; tx < w; tx++) {
-        if (terrain[ty * w + tx] !== T_WATER) continue;
-        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
-          if (!isLand(tx + dx, ty + dy)) continue;
-          // arête partagée (tuiles centrées sur les entiers : bords à ±0.5)
-          const ex = tx + dx * 0.5, ey = ty + dy * 0.5;
-          list.push({
-            x: tx, y: ty,
-            x1: dx !== 0 ? ex : tx - 0.42, y1: dy !== 0 ? ey : ty - 0.42,
-            x2: dx !== 0 ? ex : tx + 0.42, y2: dy !== 0 ? ey : ty + 0.42,
-            nx: -dx, ny: -dy,               // normale vers l'eau (la vague recule)
-            ph: (tx * 13 + ty * 7) % 6.28,
-          });
-        }
-      }
-    this.shore = list;
   }
 
   private fogScreen: HTMLCanvasElement | null = null;
@@ -3100,21 +3133,10 @@ export class Renderer {
     const def = UNITS[u.type];
     const z = proj.z;
     const wx = ox ?? u.x, wy = oy ?? u.y;
-    const px = proj.sx(wx, wy);
-    // Ancrage au relief visuel : décaler l'unité vers le haut selon la hauteur
-    // du terrain sous elle — évite l'effet "glisse au-dessus" sur terrain élevé.
-    const mH = g.map.height, mW = g.map.w, mHt = g.map.h;
-    const clampMx = (v: number) => Math.max(0, Math.min(mW - 1, v | 0));
-    const clampMy = (v: number) => Math.max(0, Math.min(mHt - 1, v | 0));
-    const tx0h = clampMx(Math.floor(wx)), ty0h = clampMy(Math.floor(wy));
-    const fxH = wx - Math.floor(wx), fyH = wy - Math.floor(wy);
-    const terrH = (mH[ty0h * mW + tx0h] ?? 0.46) * (1 - fxH) * (1 - fyH)
-                + (mH[ty0h * mW + clampMx(tx0h + 1)] ?? 0.46) * fxH * (1 - fyH)
-                + (mH[clampMy(ty0h + 1) * mW + tx0h] ?? 0.46) * (1 - fxH) * fyH
-                + (mH[clampMy(ty0h + 1) * mW + clampMx(tx0h + 1)] ?? 0.46) * fxH * fyH;
-    // Décalage positif seulement (terrain en hauteur lève l'unité, creux imperceptible)
-    const groundLift = Math.max(0, terrH - 0.44) * z * 0.38;
-    const py = proj.sy(wx, wy) - groundLift;
+    // Le plan du sol est projeté À PLAT (le relief est de l'éclairage + parois
+    // baked) : l'unité est donc ancrée exactement sur son point projeté, comme
+    // les projectiles, effets et marqueurs — aucun décalage divergent.
+    const px = proj.sx(wx, wy), py = proj.sy(wx, wy);
     const col = PLAYER_COLORS[u.owner];
     const spr = this.unitSprites(u.type, u.owner);
     const visualScale = this.unitVisualScale(u.type, def);
@@ -3137,14 +3159,16 @@ export class Renderer {
       ctx.beginPath(); ctx.ellipse(px, py, rr1 * 1.18, rr1 * 0.59, 0, 0, Math.PI * 2); ctx.stroke();
     }
 
-    // ----- ombre de contact : ellipse plate DURE (ancrage net au sol) + halo doux
+    // ----- ombre de contact : ellipse plate DURE orientée selon le cap
+    // (l'ombre suit le châssis → le véhicule est POSÉ, pas flottant) + halo doux
     {
       const inf = def.armor === 'inf';
       const rad = (inf ? def.radius * 0.95 : def.radius * 1.20 * visualScale) * z;
       const shx = px + z * 0.14, shy = py + z * 0.09;
-      // ellipse de contact : sombre, définie, clairement au sol
+      // angle écran du cap (aligné iso) — infanterie : ombre ronde neutre
+      const rot = inf ? 0 : Math.atan2((Math.cos(u.dir) + Math.sin(u.dir)) * 0.5, Math.cos(u.dir) - Math.sin(u.dir));
       ctx.fillStyle = 'rgba(0,0,0,0.36)';
-      ctx.beginPath(); ctx.ellipse(shx, shy, rad * 1.05, rad * 0.52, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(shx, shy, rad * 1.12, rad * 0.50, rot, 0, Math.PI * 2); ctx.fill();
       // halo diffus autour (profondeur, lumière rasante)
       const blob = this.shadowBlob();
       ctx.drawImage(blob, shx - rad * 1.55, shy - rad * 0.78, rad * 3.1, rad * 1.56);
