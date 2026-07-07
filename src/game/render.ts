@@ -405,13 +405,12 @@ export class Renderer {
       const a = height[y0 * w + x0], b = height[y0 * w + x1], cc = height[y1 * w + x0], d = height[y1 * w + x1];
       return a + (b - a) * fx + (cc - a) * fy + (a - b - cc + d) * fx * fy;
     };
-    // Champ d'altitude sous-tuile, avec CONTRASTE ÉTALÉ autour de 0.46 : pousse
-    // les hauts plus haut et les bas plus bas → davantage de ruptures de niveau
-    // (donc plus de falaises/terrasses franches) sans toucher au gameplay.
+    // Champ d'altitude sous-tuile. Contraste modéré : de bons reliefs sans
+    // paliers trop francs qui créent un effet grille artificiel.
     const SH = new Float32Array(W4 * H4);
     for (let sy = 0; sy < H4; sy++)
       for (let sx2 = 0; sx2 < W4; sx2++) {
-        const hv = (interpH((sx2 + 0.5) / SUB - 0.5, (sy + 0.5) / SUB - 0.5) - 0.46) * 1.55 + 0.46;
+        const hv = (interpH((sx2 + 0.5) / SUB - 0.5, (sy + 0.5) / SUB - 0.5) - 0.46) * 1.20 + 0.46;
         SH[sy * W4 + sx2] = hv < 0 ? 0 : hv > 1 ? 1 : hv;
       }
 
@@ -456,9 +455,10 @@ export class Renderer {
       for (let sx2 = 0; sx2 < W4; sx2++) {
         const i4 = sy * W4 + sx2;
         const fx = (sx2 + 0.5) / SUB, fy = (sy + 0.5) / SUB;
-        // frontières organiques déformées par bruit
-        const wx = fx - 0.5 + (warpA(fx * 1.1, fy * 1.1) - 0.5) * 2.0;
-        const wy = fy - 0.5 + (warpB(fx * 1.1 + 3.3, fy * 1.1 + 1.1) - 0.5) * 2.0;
+        // frontières organiques : bruit basse-fréquence + grande amplitude
+        // → formes larges et naturelles, sans petits zigzags répétitifs
+        const wx = fx - 0.5 + (warpA(fx * 0.72, fy * 0.72) - 0.5) * 3.0;
+        const wy = fy - 0.5 + (warpB(fx * 0.72 + 2.6, fy * 0.72 + 1.3) - 0.5) * 3.0;
         const x0 = Math.floor(wx), y0 = Math.floor(wy);
         const fxr = wx - x0, fyr = wy - y0;
         let gtx = Math.round(wx); if (gtx < 0) gtx = 0; else if (gtx >= w) gtx = w - 1;
@@ -502,92 +502,85 @@ export class Renderer {
         const e = SH[i4];
 
         if (t !== T_WATER) {
-          // === PLAGE : bande sableuse entre eau et terre ===
-          if (waterContact > 0 && t !== T_ROCK) {
-            const beachBlend = Math.min(0.82, waterContact * 0.28);
-            r = r * (1 - beachBlend) + shoreRGB[0] * beachBlend;
-            gn = gn * (1 - beachBlend) + shoreRGB[1] * beachBlend;
-            b = b * (1 - beachBlend) + shoreRGB[2] * beachBlend;
+          // === PLAGE : transition douce eau→terre, élargie, basée sur altitude ===
+          if (t !== T_ROCK) {
+            // contact direct + zone basse altitude → sable progressif
+            const contactBeach = waterContact > 0 ? Math.min(0.68, waterContact * 0.24) : 0;
+            const lowBeach = Math.max(0, 1.0 - e * 5.5) * 0.36;
+            const beachBlend = Math.min(0.70, Math.max(contactBeach, lowBeach));
+            if (beachBlend > 0.01) {
+              r = r * (1 - beachBlend) + shoreRGB[0] * beachBlend;
+              gn = gn * (1 - beachBlend) + shoreRGB[1] * beachBlend;
+              b = b * (1 - beachBlend) + shoreRGB[2] * beachBlend;
+            }
           }
 
-          // === COULEUR PAR ALTITUDE : fort contraste vallée/plateau ===
+          // === TONALITÉ ALTIMÉTRIQUE : douce, non dominante ===
           const hh = e - 0.50;
           if (hh > 0) {
-            // plateaux/sommets : secs, clairs, dorés/rocheux
-            const k = Math.min(0.60, hh * 1.5);
-            r += (220 - r) * k; gn += (200 - gn) * k * 0.88; b += (140 - b) * k * 0.70;
+            // plateaux : légère chaleur, sans écraser la couleur de base
+            const k = Math.min(0.28, hh * 0.76);
+            r += (208 - r) * k * 0.50; gn += (192 - gn) * k * 0.42; b += (138 - b) * k * 0.26;
           } else {
-            // creux/vallées : froids, sombres, humides
-            const k = Math.min(0.58, -hh * 1.5);
-            r += (18 - r) * k * 0.90; gn += (50 - gn) * k * 0.70; b += (38 - b) * k * 0.55;
+            // creux : légère fraîcheur/verdure
+            const k = Math.min(0.24, -hh * 0.72);
+            r += (24 - r) * k * 0.50; gn += (60 - gn) * k * 0.38; b += (46 - b) * k * 0.28;
           }
 
-          // grain de surface (texture microscopique)
-          const j = (grain(fx * 4.2, fy * 4.2) - 0.5) * 0.20 + (tint(fx * 8.5, fy * 8.5) - 0.5) * 0.12;
+          // grain de surface léger
+          const j = (grain(fx * 3.5, fy * 3.5) - 0.5) * 0.13 + (tint(fx * 6.5, fy * 6.5) - 0.5) * 0.07;
           r *= 1 + j; gn *= 1 + j; b *= 1 + j;
 
-          // fond de vallée : refroidissement fort → vert/bleu humide
-          const valleyTone = Math.max(0, Math.min(1, (0.44 - e) * 2.8));
+          // fond de vallée : humidité subtile
+          const valleyTone = Math.max(0, Math.min(1, (0.40 - e) * 2.0));
           if (valleyTone > 0) {
-            r = r * (1 - valleyTone * 0.30) + 12 * valleyTone;
-            gn = gn * (1 - valleyTone * 0.18) + 42 * valleyTone;
-            b = b * (1 - valleyTone * 0.10) + 34 * valleyTone;
+            r = r * (1 - valleyTone * 0.15) + 20 * valleyTone;
+            gn = gn * (1 - valleyTone * 0.08) + 54 * valleyTone;
+            b = b * (1 - valleyTone * 0.04) + 42 * valleyTone;
           }
-          // plateaux : assèchement fort → ocre/beige rocailleux
-          const plateauTone = Math.max(0, Math.min(1, (e - 0.60) * 2.8));
+          // plateaux : tonalité rocheuse douce
+          const plateauTone = Math.max(0, Math.min(1, (e - 0.67) * 2.0));
           if (plateauTone > 0) {
-            r = r * (1 - plateauTone * 0.22) + 175 * plateauTone;
-            gn = gn * (1 - plateauTone * 0.28) + 152 * plateauTone;
-            b = b * (1 - plateauTone * 0.38) + 100 * plateauTone;
+            r = r * (1 - plateauTone * 0.12) + 185 * plateauTone;
+            gn = gn * (1 - plateauTone * 0.16) + 168 * plateauTone;
+            b = b * (1 - plateauTone * 0.24) + 122 * plateauTone;
           }
         } else {
-          // === EAU : trois zones spectrales nettes ===
-          // profondeur normalisée (0 = surface / haut-fond, 1 = abyssal)
-          const depth = Math.max(0, Math.min(1, (0.18 - e) / 0.18));
-          if (depth > 0.60) {
-            // grands fonds : bleu nuit quasi-noir
-            const d = depth;
-            r = r * (1 - d * 0.88) + 6 * d;
-            gn = gn * (1 - d * 0.78) + 16 * d;
-            b = b * (1 - d * 0.55) + 48 * d;
-          } else if (depth > 0.22) {
-            // eaux moyennes : bleu-acier
-            const d = (depth - 0.22) / 0.38;
-            r = r * (1 - d * 0.55) + 14 * d;
-            gn = gn * (1 - d * 0.42) + 44 * d;
-            b = b * (1 - d * 0.22) + 80 * d;
-          } else {
-            // hauts-fonds : turquoise clair (bande côtière)
-            const d = 1 - depth / 0.22;
-            r = r * (1 - d * 0.28) + 46 * d;
-            gn = gn * (1 - d * 0.10) + 110 * d;
-            b = b * (1 - d * 0.05) + 108 * d;
-          }
-          // vaguelettes microscopiques
-          const rip = (grain(fx * 6, fy * 2.8) - 0.5) * 14 + (tint(fx * 3, fy * 6) - 0.5) * 8;
-          r += rip * 0.25; gn += rip * 0.50; b += rip * 0.75;
+          // === EAU : bleu naturel, lisible, non dominant ===
+          // Dégradé continu (hauts-fonds teal → profond bleu moyen)
+          // Fini le noir quasi-abyssal : on reste dans le registre bleu naturel
+          const depth = Math.max(0, Math.min(1, (0.22 - e) / 0.22));
+          const wR = 60 - depth * 40;   // 60 (teal) → 20 (bleu foncé)
+          const wG = 148 - depth * 90;  // 148 → 58
+          const wB = 188 - depth * 68;  // 188 → 120
+          const wBlend = 0.52 + depth * 0.34;
+          r = r * (1 - wBlend) + wR * wBlend;
+          gn = gn * (1 - wBlend) + wG * wBlend;
+          b = b * (1 - wBlend) + wB * wBlend;
+          // micro-ondulations très discrètes
+          const rip = (grain(fx * 4.5, fy * 2.2) - 0.5) * 7 + (tint(fx * 2.2, fy * 4.5) - 0.5) * 4;
+          r += rip * 0.09; gn += rip * 0.18; b += rip * 0.35;
         }
 
-        // === RELIEF EN PALIERS FORTS (style C&C/Wargame) ===
+        // === RELIEF CONTINU : normal-based diffuse + très légère terrasse ===
         const xm = sx2 > 0 ? sx2 - 1 : sx2, xp = sx2 < W4 - 1 ? sx2 + 1 : sx2;
         const ym = sy > 0 ? sy - 1 : sy, yp = sy < H4 - 1 ? sy + 1 : sy;
         const hl = SH[sy * W4 + xm], hr = SH[sy * W4 + xp], hu = SH[ym * W4 + sx2], hd = SH[yp * W4 + sx2];
         const dxh = hr - hl, dyh = hd - hu;
-        const LEVELS = 12;
+        // Éclairage directionnel continu (lumière NW → 45°)
+        // Normal = (-dxh, -dyh, 1) normalisé ; light = (0.6, 0.6, 1) normalisé
+        const nlen = Math.sqrt(dxh * dxh + dyh * dyh + 0.004);
+        const diffuse = ((-dxh * 0.6 + -dyh * 0.6 + 0.063) / (nlen * 1.1)) * 0.52 + 0.72;
+        // Terrasses très douces : 4 paliers, ±0.08/-0.16 max (vs ±0.50/±0.80 avant)
+        const LEVELS = 4;
         const myL = Math.floor(e * LEVELS);
-        // rampe de luminosité par palier : plage élargie → contraste dramatique
-        let relief = 0.44 + myL * (1.05 / LEVELS);
+        let terrStep = 0;
         if (t !== T_WATER) {
-          // arête éclairée (côté NW, lumière solaire) → liseré très clair
-          if (myL > Math.floor(hr * LEVELS)) relief += 0.50;
-          if (myL > Math.floor(hd * LEVELS)) relief += 0.50;
-          // pied de falaise (côté SE, ombre) → assombrissement fort
-          if (myL < Math.floor(hl * LEVELS)) relief -= 0.80;
-          if (myL < Math.floor(hu * LEVELS)) relief -= 0.80;
+          if (myL > Math.floor(hr * LEVELS) || myL > Math.floor(hd * LEVELS)) terrStep += 0.07;
+          if (myL < Math.floor(hl * LEVELS) || myL < Math.floor(hu * LEVELS)) terrStep -= 0.14;
         }
-        // micro-pente directionnelle (modelé doux à l'intérieur d'un palier)
-        relief += (-dxh - dyh) * 14;
-        if (relief < 0.20) relief = 0.20; else if (relief > 2.10) relief = 2.10;
+        let relief = diffuse + terrStep;
+        if (relief < 0.22) relief = 0.22; else if (relief > 1.65) relief = 1.65;
         // ombre portée longue (soleil NW → ombre vers SE)
         let cast = 0;
         for (let s = 1; s <= 9; s++) {
@@ -625,7 +618,7 @@ export class Renderer {
           const ex = (tx + (dx > 0 ? 1 : 0)) * tpx, ey = (ty + (dy > 0 ? 1 : 0)) * tpx;
           // --- bande de plage (sable) côté eau, juste derrière la rive
           if (!icyShore) {
-            const beachW = tpx * 0.38;
+            const beachW = tpx * 0.52;
             const bx0 = dx !== 0 ? ex - dx * beachW : tx * tpx;
             const by0 = dy !== 0 ? ey - dy * beachW : ty * tpx;
             const bx1 = dx !== 0 ? ex : tx * tpx + tpx;
@@ -635,14 +628,14 @@ export class Renderer {
               dx !== 0 ? bx1 : bx1, dy !== 0 ? by1 : by1,
             );
             sg.addColorStop(0, `rgba(${shr[0]},${shr[1]},${shr[2]},0.0)`);
-            sg.addColorStop(0.55, `rgba(${shr[0]},${shr[1]},${shr[2]},0.58)`);
-            sg.addColorStop(1, `rgba(${shr[0]},${shr[1]},${shr[2]},0.82)`);
+            sg.addColorStop(0.45, `rgba(${shr[0]},${shr[1]},${shr[2]},0.38)`);
+            sg.addColorStop(1, `rgba(${shr[0]},${shr[1]},${shr[2]},0.65)`);
             tc.fillStyle = sg;
             tc.fillRect(Math.min(bx0, bx1), Math.min(by0, by1), Math.abs(bx1 - bx0) + tpx * (dx === 0 ? 1 : 0), Math.abs(by1 - by0) + tpx * (dy === 0 ? 1 : 0));
           }
-          // --- liseré côtier net
-          tc.lineWidth = Math.max(1.2, SS * 0.7);
-          tc.strokeStyle = icyShore ? 'rgba(220,240,255,0.84)' : `rgba(${Math.min(255, shr[0] + 40)},${Math.min(255, shr[1] + 30)},${Math.min(255, shr[2] + 20)},0.72)`;
+          // --- liseré côtier adouci
+          tc.lineWidth = Math.max(1.0, SS * 0.38);
+          tc.strokeStyle = icyShore ? 'rgba(220,240,255,0.55)' : `rgba(${Math.min(255, shr[0] + 28)},${Math.min(255, shr[1] + 18)},${Math.min(255, shr[2] + 10)},0.48)`;
           tc.beginPath();
           for (let s = 0; s <= SUB; s++) {
             const jit = (warpA(tx + s * 0.3, ty + s * 0.3) - 0.5) * SS * 1.4;

@@ -315,15 +315,15 @@ export const THEMES: Record<ThemeId, {
     name: 'Plaine',
     grass: ['#3c7228', '#487e30', '#547a38', '#3e6820', '#5a8a3c', '#406230'],
     rough: ['#8a6838', '#9a7848', '#7e5c30', '#a47c50', '#7a5e36'],
-    water: '#0e2e48', rock: ['#423c34', '#524840', '#38342c', '#4e4640'],
+    water: '#1e6898', rock: ['#423c34', '#524840', '#38342c', '#4e4640'],
     ore: '#d8b020', oreGlow: '#ffe84a', shore: '#cdb068',
   },
   snow: {
-    // Blanc de glace pur, bleu-gris acier pour la roche, eau noire-ardoise profonde.
+    // Blanc de glace pur, bleu-gris acier pour la roche, eau ardoise-bleu pâle.
     name: 'Neige',
     grass: ['#d8e4ec', '#ccdae4', '#e0eaf0', '#c8d6e2', '#d0dce8'],
     rough: ['#8c9eac', '#7e92a2', '#96a8b6', '#849ab0'],
-    water: '#182c3e', rock: ['#5a6470', '#4e5a66', '#667480', '#525e6a'],
+    water: '#2a6082', rock: ['#5a6470', '#4e5a66', '#667480', '#525e6a'],
     ore: '#d0aa20', oreGlow: '#ffe060', shore: '#eaf0f6',
   },
   desert: {
@@ -332,7 +332,7 @@ export const THEMES: Record<ThemeId, {
     name: 'Désert',
     grass: ['#c8974e', '#d4a458', '#bc8e44', '#d8ac60', '#c09040'],
     rough: ['#9a5c30', '#a86838', '#8e5228', '#b07240'],
-    water: '#0e6470', rock: ['#6a4030', '#7a4c38', '#5c3628', '#7e5440'],
+    water: '#1e8494', rock: ['#6a4030', '#7a4c38', '#5c3628', '#7e5440'],
     ore: '#cc9010', oreGlow: '#ffcc30', shore: '#e4cc80',
   },
   mist: {
@@ -340,15 +340,15 @@ export const THEMES: Record<ThemeId, {
     name: 'Brouillard léger',
     grass: ['#3a5844', '#425e4c', '#345040', '#4a6252', '#3e5a48'],
     rough: ['#4a5e52', '#425648', '#3e5246', '#50625a'],
-    water: '#1a2e3e', rock: ['#404c4a', '#384440', '#4a5652', '#3c4844'],
+    water: '#2a5472', rock: ['#404c4a', '#384440', '#4a5652', '#3c4844'],
     ore: '#d4b030', oreGlow: '#ffe260', shore: '#7a8872', mist: 0.30,
   },
   badlands: {
-    // Terre brûlée brun-rouge scorché, roche quasi-noire, eau saumâtre sombre.
+    // Terre brûlée brun-rouge scorché, roche quasi-noire, eau saumâtre bleutée.
     name: 'Terres brûlées',
     grass: ['#8c4a28', '#9a5430', '#7e4020', '#a05c38', '#843820'],
     rough: ['#4e2e18', '#5c3820', '#442814', '#583212'],
-    water: '#1e1e34', rock: ['#2a2420', '#38302a', '#22201c', '#342e28'],
+    water: '#283858', rock: ['#2a2420', '#38302a', '#22201c', '#342e28'],
     ore: '#e8b830', oreGlow: '#ffe860', shore: '#9a7e58',
   },
   tropical: {
@@ -356,7 +356,7 @@ export const THEMES: Record<ThemeId, {
     name: 'Tropical',
     grass: ['#267830', '#2e8038', '#228428', '#348c3c', '#1e6e28', '#3a8040'],
     rough: ['#787e28', '#848a32', '#6e7824', '#8a8e3a'],
-    water: '#086070', rock: ['#323028', '#3c3a30', '#2c2e26', '#424038'],
+    water: '#0a7890', rock: ['#323028', '#3c3a30', '#2c2e26', '#424038'],
     ore: '#d8b428', oreGlow: '#ffee60', shore: '#e8d690',
   },
 };
