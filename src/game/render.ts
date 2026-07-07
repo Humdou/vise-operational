@@ -6,7 +6,7 @@
 // remplaçable par des PNG via le manifest (assets.ts).
 import { Game, Unit, Building } from './engine';
 import { UNITS, BUILDINGS, THEMES, PLAYER_COLORS } from './data';
-import { T_GRASS, T_ROUGH, T_WATER, T_ROCK, mulberry32 } from './map';
+import { T_ROUGH, T_WATER, T_ROCK, mulberry32 } from './map';
 import { prof } from './profiler';
 import { Proj, ISO_ELEV } from './proj';
 import { bakeIsoBuilding, IsoBuildingSprite, BUILDING_HEIGHTS, ISO_S } from './iso-buildings';
@@ -414,12 +414,6 @@ export class Renderer {
         SH[sy * W4 + sx2] = hv < 0 ? 0 : hv > 1 ? 1 : hv;
       }
 
-    const isLand = (tx: number, ty: number) => {
-      if (tx < 0 || ty < 0 || tx >= w || ty >= h) return false;
-      const t = terrain[ty * w + tx];
-      return t === T_GRASS || t === T_ROUGH;
-    };
-
     // ===== 1) BASE : couleur + relief par SOUS-TUILE via ImageData (rapide,
     // dense). Frontières de terrain déformées par bruit (fini les carrés nets).
     const small = document.createElement('canvas');
@@ -546,49 +540,47 @@ export class Renderer {
             b = b * (1 - plateauTone * 0.24) + 122 * plateauTone;
           }
         } else {
-          // === EAU : bleu naturel, lisible, non dominant ===
-          // Dégradé continu (hauts-fonds teal → profond bleu moyen)
-          // Fini le noir quasi-abyssal : on reste dans le registre bleu naturel
+          // === EAU : bleu naturel, dégradé profondeur, rives tintées au sol ===
           const depth = Math.max(0, Math.min(1, (0.22 - e) / 0.22));
-          const wR = 60 - depth * 40;   // 60 (teal) → 20 (bleu foncé)
-          const wG = 148 - depth * 90;  // 148 → 58
-          const wB = 188 - depth * 68;  // 188 → 120
-          const wBlend = 0.52 + depth * 0.34;
+          const wR = 62 - depth * 42;   // hauts-fonds teal → profond bleu
+          const wG = 150 - depth * 92;
+          const wB = 192 - depth * 72;
+          const wBlend = 0.50 + depth * 0.36;
           r = r * (1 - wBlend) + wR * wBlend;
           gn = gn * (1 - wBlend) + wG * wBlend;
           b = b * (1 - wBlend) + wB * wBlend;
+          // rives proches (openContact = voisins terre) : teinte sableuse organique
+          if (openContact > 0 && depth < 0.60) {
+            const sBlend = Math.min(0.30, openContact * 0.10) * (1 - depth * 1.7);
+            r += (shoreRGB[0] * 0.52 - r) * sBlend;
+            gn += (shoreRGB[1] * 0.52 - gn) * sBlend;
+            b += (shoreRGB[2] * 0.52 - b) * sBlend;
+          }
           // micro-ondulations très discrètes
-          const rip = (grain(fx * 4.5, fy * 2.2) - 0.5) * 7 + (tint(fx * 2.2, fy * 4.5) - 0.5) * 4;
-          r += rip * 0.09; gn += rip * 0.18; b += rip * 0.35;
+          const rip = (grain(fx * 4.5, fy * 2.2) - 0.5) * 6 + (tint(fx * 2.2, fy * 4.5) - 0.5) * 3;
+          r += rip * 0.08; gn += rip * 0.16; b += rip * 0.32;
         }
 
-        // === RELIEF CONTINU : normal-based diffuse + très légère terrasse ===
+        // === RELIEF CONTINU : normal-based diffuse équilibré, ombre douce, AO léger ===
         const xm = sx2 > 0 ? sx2 - 1 : sx2, xp = sx2 < W4 - 1 ? sx2 + 1 : sx2;
         const ym = sy > 0 ? sy - 1 : sy, yp = sy < H4 - 1 ? sy + 1 : sy;
         const hl = SH[sy * W4 + xm], hr = SH[sy * W4 + xp], hu = SH[ym * W4 + sx2], hd = SH[yp * W4 + sx2];
         const dxh = hr - hl, dyh = hd - hu;
-        // Éclairage directionnel continu (lumière NW → 45°)
-        // Normal = (-dxh, -dyh, 1) normalisé ; light = (0.6, 0.6, 1) normalisé
+        // Diffuse : amplitude modérée pour lire les pentes sans noircir les vallées
         const nlen = Math.sqrt(dxh * dxh + dyh * dyh + 0.004);
-        const diffuse = ((-dxh * 0.6 + -dyh * 0.6 + 0.063) / (nlen * 1.1)) * 0.52 + 0.72;
-        // Terrasses très douces : 4 paliers, ±0.08/-0.16 max (vs ±0.50/±0.80 avant)
-        const LEVELS = 4;
-        const myL = Math.floor(e * LEVELS);
-        let terrStep = 0;
-        if (t !== T_WATER) {
-          if (myL > Math.floor(hr * LEVELS) || myL > Math.floor(hd * LEVELS)) terrStep += 0.07;
-          if (myL < Math.floor(hl * LEVELS) || myL < Math.floor(hu * LEVELS)) terrStep -= 0.14;
-        }
-        let relief = diffuse + terrStep;
-        if (relief < 0.22) relief = 0.22; else if (relief > 1.65) relief = 1.65;
-        // ombre portée longue (soleil NW → ombre vers SE)
+        const diffuse = ((-dxh * 0.6 + -dyh * 0.6 + 0.063) / (nlen * 1.1)) * 0.55 + 0.76;
+        let relief = diffuse;
+        if (relief < 0.28) relief = 0.28; else if (relief > 1.60) relief = 1.60;
+        // Ombre portée très douce (moins d'artefact "peint sur le sol")
         let cast = 0;
         for (let s = 1; s <= 9; s++) {
           const ax = sx2 - s * 2, ay = sy - s * 2; if (ax < 0 || ay < 0) break;
-          const diff = SH[ay * W4 + ax] - e - s * 0.0144;
+          const diff = SH[ay * W4 + ax] - e - s * 0.016;
           if (diff > cast) cast = diff;
         }
-        const m = relief * (1 - Math.min(0.72, cast * 5.0));
+        // AO léger (vallées 8% plus sombres max) — pas d'enfoncement brutal
+        const ao = Math.max(0, (0.42 - e) * 0.10);
+        const m = relief * (1 - Math.min(0.32, cast * 2.4) - ao);
         r *= m; gn *= m; b *= m;
 
         const o = i4 * 4;
@@ -603,72 +595,12 @@ export class Renderer {
     tc.imageSmoothingEnabled = true; tc.imageSmoothingQuality = 'high';
     tc.drawImage(small, 0, 0, W4, H4, 0, 0, c.width, c.height);
 
-    const rng = mulberry32(w * 31 + h);
     const SS = spx;             // taille d'une sous-tuile en pixels
 
-    // ===== 2) RIVAGES : plage sableuse + arête côtière + liseré d'écume
+    // ===== 2) RIVAGES : transitions gérées entièrement per-pixel (warp organique
+    // + shore tinting dans la boucle pixel). Aucun tracé par bord de tuile
+    // → pas de grille/staircase visible au bord de l'eau.
     const icyShore = g.map.theme === 'snow';
-    const shr = shoreRGB;
-    for (let ty = 0; ty < h; ty++)
-      for (let tx = 0; tx < w; tx++) {
-        if (terrain[ty * w + tx] !== T_WATER) continue;
-        const neigh: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-        for (const [dx, dy] of neigh) {
-          if (!isLand(tx + dx, ty + dy)) continue;
-          const ex = (tx + (dx > 0 ? 1 : 0)) * tpx, ey = (ty + (dy > 0 ? 1 : 0)) * tpx;
-          // --- bande de plage (sable) côté eau, juste derrière la rive
-          if (!icyShore) {
-            const beachW = tpx * 0.52;
-            const bx0 = dx !== 0 ? ex - dx * beachW : tx * tpx;
-            const by0 = dy !== 0 ? ey - dy * beachW : ty * tpx;
-            const bx1 = dx !== 0 ? ex : tx * tpx + tpx;
-            const by1 = dy !== 0 ? ey : ty * tpx + tpx;
-            const sg = tc.createLinearGradient(
-              dx !== 0 ? bx0 : bx0, dy !== 0 ? by0 : by0,
-              dx !== 0 ? bx1 : bx1, dy !== 0 ? by1 : by1,
-            );
-            sg.addColorStop(0, `rgba(${shr[0]},${shr[1]},${shr[2]},0.0)`);
-            sg.addColorStop(0.45, `rgba(${shr[0]},${shr[1]},${shr[2]},0.38)`);
-            sg.addColorStop(1, `rgba(${shr[0]},${shr[1]},${shr[2]},0.65)`);
-            tc.fillStyle = sg;
-            tc.fillRect(Math.min(bx0, bx1), Math.min(by0, by1), Math.abs(bx1 - bx0) + tpx * (dx === 0 ? 1 : 0), Math.abs(by1 - by0) + tpx * (dy === 0 ? 1 : 0));
-          }
-          // --- liseré côtier adouci
-          tc.lineWidth = Math.max(1.0, SS * 0.38);
-          tc.strokeStyle = icyShore ? 'rgba(220,240,255,0.55)' : `rgba(${Math.min(255, shr[0] + 28)},${Math.min(255, shr[1] + 18)},${Math.min(255, shr[2] + 10)},0.48)`;
-          tc.beginPath();
-          for (let s = 0; s <= SUB; s++) {
-            const jit = (warpA(tx + s * 0.3, ty + s * 0.3) - 0.5) * SS * 1.4;
-            const x = dx !== 0 ? ex + jit * 0.28 : tx * tpx + s * SS;
-            const y = dy !== 0 ? ey + jit * 0.28 : ty * tpx + s * SS;
-            if (s === 0) tc.moveTo(x, y); else tc.lineTo(x, y);
-          }
-          tc.stroke();
-          // --- second liseré côté eau (limite turquoise)
-          tc.strokeStyle = 'rgba(120,210,220,0.30)';
-          tc.lineWidth = Math.max(1, SS * 0.35);
-          tc.beginPath();
-          for (let s = 0; s <= SUB; s++) {
-            const jit = (warpB(tx + s * 0.22 + 5, ty + s * 0.22 + 3) - 0.5) * SS * 1.1;
-            const x = dx !== 0 ? ex - dx * SS * 0.55 + jit * 0.22 : tx * tpx + s * SS;
-            const y = dy !== 0 ? ey - dy * SS * 0.55 + jit * 0.22 : ty * tpx + s * SS;
-            if (s === 0) tc.moveTo(x, y); else tc.lineTo(x, y);
-          }
-          tc.stroke();
-          if (icyShore) {
-            tc.strokeStyle = 'rgba(160,215,235,0.30)';
-            tc.lineWidth = Math.max(1, SS * 0.28);
-            tc.beginPath();
-            for (let s = 0; s <= SUB; s++) {
-              const jit = (warpB(tx + s * 0.22 + 7, ty + s * 0.22 + 2) - 0.5) * SS * 1.1;
-              const x = dx !== 0 ? ex + dx * SS * 0.45 + jit * 0.25 : tx * tpx + s * SS;
-              const y = dy !== 0 ? ey + dy * SS * 0.45 + jit * 0.25 : ty * tpx + s * SS;
-              if (s === 0) tc.moveTo(x, y); else tc.lineTo(x, y);
-            }
-            tc.stroke();
-          }
-        }
-      }
 
     if (icyShore) {
       // Plaques de glace et fissures légères sur les lacs : visuel uniquement,
@@ -743,7 +675,7 @@ export class Renderer {
       const lvl = (xx: number, yy: number) =>
         Math.floor((height[Math.max(0, Math.min(h - 1, yy)) * w + Math.max(0, Math.min(w - 1, xx))] ?? 0.5) * LEVELS);
       const wallRng = mulberry32(w * 613 + h * 271 + 5);
-      const drawWall = (ax: number, ay: number, bx: number, by: number, hw: number, jitterSalt: number) => {
+      const drawWall = (ax: number, ay: number, bx: number, by: number, hw: number) => {
         tc.save();
         tc.translate(ax, ay);
         tc.transform(0.5, -0.5, 1, 1, 0, 0);   // inverse du cisaillement iso
@@ -822,12 +754,12 @@ export class Renderer {
           if (mask & 4) {   // face SUD
             const dL = Math.max(1, Math.min(4, myL - lvl(tx, ty + 1)));
             const hw = tpx * (0.46 + 0.30 * dL);
-            drawWall(px, py + tpx, tpx, 0.5 * tpx, hw, tx + ty * 3);
+            drawWall(px, py + tpx, tpx, 0.5 * tpx, hw);
           }
           if (mask & 2) {   // face EST
             const dL = Math.max(1, Math.min(4, myL - lvl(tx + 1, ty)));
             const hw = tpx * (0.46 + 0.30 * dL);
-            drawWall(px + tpx, py, -tpx, 0.5 * tpx, hw, tx * 2 + ty);
+            drawWall(px + tpx, py, -tpx, 0.5 * tpx, hw);
           }
         }
     }
@@ -3168,11 +3100,24 @@ export class Renderer {
     const def = UNITS[u.type];
     const z = proj.z;
     const wx = ox ?? u.x, wy = oy ?? u.y;
-    const px = proj.sx(wx, wy), py = proj.sy(wx, wy);
+    const px = proj.sx(wx, wy);
+    // Ancrage au relief visuel : décaler l'unité vers le haut selon la hauteur
+    // du terrain sous elle — évite l'effet "glisse au-dessus" sur terrain élevé.
+    const mH = g.map.height, mW = g.map.w, mHt = g.map.h;
+    const clampMx = (v: number) => Math.max(0, Math.min(mW - 1, v | 0));
+    const clampMy = (v: number) => Math.max(0, Math.min(mHt - 1, v | 0));
+    const tx0h = clampMx(Math.floor(wx)), ty0h = clampMy(Math.floor(wy));
+    const fxH = wx - Math.floor(wx), fyH = wy - Math.floor(wy);
+    const terrH = (mH[ty0h * mW + tx0h] ?? 0.46) * (1 - fxH) * (1 - fyH)
+                + (mH[ty0h * mW + clampMx(tx0h + 1)] ?? 0.46) * fxH * (1 - fyH)
+                + (mH[clampMy(ty0h + 1) * mW + tx0h] ?? 0.46) * (1 - fxH) * fyH
+                + (mH[clampMy(ty0h + 1) * mW + clampMx(tx0h + 1)] ?? 0.46) * fxH * fyH;
+    // Décalage positif seulement (terrain en hauteur lève l'unité, creux imperceptible)
+    const groundLift = Math.max(0, terrH - 0.44) * z * 0.38;
+    const py = proj.sy(wx, wy) - groundLift;
     const col = PLAYER_COLORS[u.owner];
     const spr = this.unitSprites(u.type, u.owner);
     const visualScale = this.unitVisualScale(u.type, def);
-
 
     if (selected) {
       const rr0 = (def.radius + 0.42) * z;
@@ -3192,13 +3137,17 @@ export class Renderer {
       ctx.beginPath(); ctx.ellipse(px, py, rr1 * 1.18, rr1 * 0.59, 0, 0, Math.PI * 2); ctx.stroke();
     }
 
-    // ----- ombre au sol : blob radial PRÉ-CUIT (un dégradé par unité et par
-    // frame coûtait cher) étiré en ellipse, décalé SE (direction de la lumière)
+    // ----- ombre de contact : ellipse plate DURE (ancrage net au sol) + halo doux
     {
       const inf = def.armor === 'inf';
-      const rad = (inf ? def.radius * 1.0 : def.radius * 1.25 * visualScale) * z;
+      const rad = (inf ? def.radius * 0.95 : def.radius * 1.20 * visualScale) * z;
+      const shx = px + z * 0.14, shy = py + z * 0.09;
+      // ellipse de contact : sombre, définie, clairement au sol
+      ctx.fillStyle = 'rgba(0,0,0,0.36)';
+      ctx.beginPath(); ctx.ellipse(shx, shy, rad * 1.05, rad * 0.52, 0, 0, Math.PI * 2); ctx.fill();
+      // halo diffus autour (profondeur, lumière rasante)
       const blob = this.shadowBlob();
-      ctx.drawImage(blob, px + z * 0.14 - rad * 1.25, py + z * 0.1 - rad * 0.62, rad * 2.5, rad * 1.24);
+      ctx.drawImage(blob, shx - rad * 1.55, shy - rad * 0.78, rad * 3.1, rad * 1.56);
     }
 
     // ----- infanterie : BILLBOARD DEBOUT ANIMÉ — cycle de marche articulé
