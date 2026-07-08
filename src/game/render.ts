@@ -6,7 +6,7 @@
 // remplaçable par des PNG via le manifest (assets.ts).
 import { Game, Unit, Building } from './engine';
 import { UNITS, BUILDINGS, THEMES, PLAYER_COLORS } from './data';
-import { T_ROUGH, T_WATER, T_ROCK, mulberry32 } from './map';
+import { T_ROUGH, T_WATER, T_ROCK, mulberry32, TreeInit } from './map';
 import { prof } from './profiler';
 import { Proj, ISO_ELEV } from './proj';
 import { bakeIsoBuilding, IsoBuildingSprite, BUILDING_HEIGHTS, ISO_S } from './iso-buildings';
@@ -386,7 +386,6 @@ export class Renderer {
     const warpB = mkNoise(w * 17 + h * 53 + 2);
     const tint = mkNoise(w * 131 + h * 29 + 3);
     const grain = mkNoise(w * 211 + h * 97 + 4);
-    const forestN = mkNoise(w * 57 + h * 23 + 11);
 
     const hex2rgb = (s: string): [number, number, number] => {
       const v = parseInt(s.slice(1), 16); return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
@@ -414,19 +413,6 @@ export class Renderer {
         const hv = (interpH((sx2 + 0.5) / SUB - 0.5, (sy + 0.5) / SUB - 0.5) - 0.46) * 1.20 + 0.46;
         SH[sy * W4 + sx2] = hv < 0 ? 0 : hv > 1 ? 1 : hv;
       }
-    // ---- TERRASSEMENT : plateaux PLATS reliés par des rampes courtes.
-    // Le relief se lit comme des paliers propres (style RTS classique) au lieu
-    // d'une ondulation continue « terrain généré ». L'éclairage reste continu :
-    // aucune marche de luminosité, uniquement de vraies pentes lissées.
-    const TLV = 5, TRAMP = 0.38;
-    const SH2 = new Float32Array(W4 * H4);
-    for (let i = 0; i < W4 * H4; i++) {
-      const s = SH[i] * TLV;
-      const li = Math.floor(s);
-      const f = s - li;
-      const tt2 = f < 1 - TRAMP ? 0 : (f - (1 - TRAMP)) / TRAMP;
-      SH2[i] = (li + tt2 * tt2 * (3 - 2 * tt2)) / TLV;
-    }
     // ---- CHAMP D'EAU : fraction d'eau par tuile (1 = eau), légèrement floutée.
     // Échantillonné en bilinéaire + warp par pixel → ligne de côte ORGANIQUE
     // et continue, sans aucun tracé par tuile (fini les zigzags de bord).
@@ -518,13 +504,11 @@ export class Renderer {
         let gtx = Math.round(wx); if (gtx < 0) gtx = 0; else if (gtx >= w) gtx = w - 1;
         let gty = Math.round(wy); if (gty < 0) gty = 0; else if (gty >= h) gty = h - 1;
         const t = terrain[gty * w + gtx];
-        let rockContact = 0, openContact = 0;
+        let rockContact = 0;
         for (let ni = 0; ni < 4; ni++) {
           const nx = gtx + N4DX[ni], ny = gty + N4DY[ni];
           if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-          const nt = terrain[ny * w + nx];
-          if (nt === T_ROCK) rockContact++;
-          else if (nt !== T_WATER) openContact++;
+          if (terrain[ny * w + nx] === T_ROCK) rockContact++;
         }
         // fraction d'eau au pixel : warp dédié à amplitude modérée (la côte
         // visuelle reste proche de la vraie côte gameplay), bilinéaire continu
@@ -556,82 +540,43 @@ export class Renderer {
         let b = tileMap[i00+2] * w00 + tileMap[i10+2] * w10 + tileMap[i01+2] * w01 + tileMap[i11+2] * w11;
 
         if (t === T_ROCK) {
-          // zones infranchissables : sombres et distinctes, liseré de contact clair
-          r = r * 0.68 + 22; gn = gn * 0.64 + 18; b = b * 0.60 + 14;
-          if (openContact > 0) {
-            const rim = Math.min(0.32, openContact * 0.08);
-            r += 50 * rim; gn += 40 * rim; b += 28 * rim;
-          }
+          // socle sombre : quasi entièrement recouvert par la mesa extrudée
+          r = r * 0.42 + 12; gn = gn * 0.40 + 10; b = b * 0.38 + 9;
         } else if (rockContact > 0 && t !== T_WATER) {
-          const border = Math.min(0.36, rockContact * 0.10);
+          // pied de massif : sol légèrement assombri (terre à l'ombre)
+          const border = Math.min(0.26, rockContact * 0.08);
           r *= 1 - border; gn *= 1 - border; b *= 1 - border * 0.85;
         }
 
         const e = SH[i4];
 
-        // === SOL CONTINU (même sous l'eau : le fond sableux reste visible en
-        // zone peu profonde — l'eau est un VOILE ajouté après, pas une tuile) ===
+        // === SOL PLAT ET CONCRET : plus AUCUN faux relief peint. Le sol est
+        // une plaine propre et lisible ; le seul relief du jeu, ce sont les
+        // mesas rocheuses infranchissables (extrudées plus loin) et les creux
+        // d'eau. Vie du sol = patchs de prairie basse fréquence + grain fin.
         {
-          const hh = e - 0.50;
-          if (hh > 0) {
-            const k = Math.min(0.28, hh * 0.76);
-            r += (208 - r) * k * 0.50; gn += (192 - gn) * k * 0.42; b += (138 - b) * k * 0.26;
-          } else {
-            const k = Math.min(0.24, -hh * 0.72);
-            r += (24 - r) * k * 0.50; gn += (60 - gn) * k * 0.38; b += (46 - b) * k * 0.28;
-          }
-          // grain discret : les plateaux restent des aplats propres (1 seul
-          // appel de bruit par pixel — le second n'apportait rien de visible)
-          const j = (grain(fx * 2.6, fy * 2.6) - 0.5) * 0.11;
-          r *= 1 + j; gn *= 1 + j; b *= 1 + j;
-          const valleyTone = Math.max(0, Math.min(1, (0.40 - e) * 1.8));
-          if (valleyTone > 0) {
-            r = r * (1 - valleyTone * 0.13) + 20 * valleyTone;
-            gn = gn * (1 - valleyTone * 0.07) + 54 * valleyTone;
-            b = b * (1 - valleyTone * 0.04) + 42 * valleyTone;
-          }
-          const plateauTone = Math.max(0, Math.min(1, (e - 0.67) * 1.8));
-          if (plateauTone > 0) {
-            r = r * (1 - plateauTone * 0.11) + 185 * plateauTone;
-            gn = gn * (1 - plateauTone * 0.14) + 168 * plateauTone;
-            b = b * (1 - plateauTone * 0.22) + 122 * plateauTone;
-          }
+          const meadow = (tint(fx * 0.33 + 3.1, fy * 0.33 + 7.4) - 0.5) * 0.11;
+          const j = (grain(fx * 2.6, fy * 2.6) - 0.5) * 0.09;
+          const k2 = 1.22 * (1 + meadow + j);   // 1.22 = calibration de luminosité
+          r *= k2; gn *= k2; b *= k2;
         }
 
-        // === PLAGE : anneau de sable continu qui suit la ligne d'eau warpée ===
-        if (wf > 0.24 && t !== T_ROCK) {
-          const sandK = Math.min(1, (wf - 0.24) / 0.24) * 0.60;
+        // === BERGE : anneau de sable doux qui SUIT la forme du lac (champ
+        // d'eau warpé continu) — aucun trait, aucun motif plaqué ===
+        if (wf > 0.22 && t !== T_ROCK) {
+          const sandK = Math.min(1, (wf - 0.22) / 0.26) * 0.62;
           r += (shoreRGB[0] - r) * sandK;
           gn += (shoreRGB[1] - gn) * sandK;
           b += (shoreRGB[2] - b) * sandK;
         }
-
-        // === RELIEF EN TERRASSES : éclairage continu du champ terrassé —
-        // plateaux plats et calmes, rampes nettes, zéro marche de luminosité ===
-        const e2 = SH2[i4];
-        const xm = sx2 > 0 ? sx2 - 1 : sx2, xp = sx2 < W4 - 1 ? sx2 + 1 : sx2;
-        const ym = sy > 0 ? sy - 1 : sy, yp = sy < H4 - 1 ? sy + 1 : sy;
-        const hl = SH2[sy * W4 + xm], hr = SH2[sy * W4 + xp], hu = SH2[ym * W4 + sx2], hd = SH2[yp * W4 + sx2];
-        const dxh = hr - hl, dyh = hd - hu;
-        const nlen = Math.sqrt(dxh * dxh + dyh * dyh + 0.004);
-        const diffuse = ((-dxh * 0.6 + -dyh * 0.6 + 0.063) / (nlen * 1.1)) * 0.55 + 0.76;
-        let relief = diffuse;
-        if (relief < 0.34) relief = 0.34; else if (relief > 1.58) relief = 1.58;
-        // ombre portée douce depuis les rebords de plateaux (soleil NW)
-        let cast = 0;
-        for (let s = 1; s <= 9; s++) {
-          const ax = sx2 - s * 2, ay = sy - s * 2; if (ax < 0 || ay < 0) break;
-          const diff = SH2[ay * W4 + ax] - e2 - s * 0.016;
-          if (diff > cast) cast = diff;
+        // sable mouillé : assombrissement doux à l'approche de l'eau
+        if (wf > 0.38 && wf < 0.52) {
+          const wk = 1 - ((wf - 0.38) / 0.14) * 0.10;
+          r *= wk; gn *= wk; b *= wk;
         }
-        const wA = wf > 0.5 ? Math.min(1, (wf - 0.5) * 9) : 0;
-        const ao = Math.max(0, (0.42 - e) * 0.10) * (1 - wA);
-        let m = relief * (1 - Math.min(0.32, cast * 2.4) - ao);
-        // l'eau est PLANE : le modelé du relief s'efface sous le voile d'eau
-        if (wA > 0) m += (1.04 - m) * wA * 0.85;
-        r *= m; gn *= m; b *= m;
 
-        // === EAU : voile de profondeur par-dessus le fond, teinte du thème ===
+        // === EAU : voile de profondeur par-dessus le fond sableux ===
+        const wA = wf > 0.5 ? Math.min(1, (wf - 0.5) * 9) : 0;
         if (wA > 0) {
           const depthE = Math.max(0, Math.min(1, (0.22 - e) / 0.22));
           const depthW = Math.max(0, Math.min(1, (wf - 0.52) * 1.9));
@@ -642,19 +587,6 @@ export class Renderer {
           b += (wShal[2] + (wDeep[2] - wShal[2]) * depth - b) * wAl;
           const rip = (tint(fx * 4.5, fy * 2.2) - 0.5) * 8;
           r += rip * 0.06 * wA; gn += rip * 0.12 * wA; b += rip * 0.24 * wA;
-        }
-        // ligne d'eau : sable mouillé discret côté terre + liseré d'ÉCUME
-        // clair et irrégulier côté eau — une côte propre et lumineuse,
-        // jamais un trait sombre
-        if (wf > 0.40 && wf < 0.50) {
-          const wk = 1 - ((wf - 0.40) / 0.10) * 0.08;
-          r *= wk; gn *= wk; b *= wk;
-        } else if (wf >= 0.50 && wf < 0.56) {
-          const f0 = 1 - Math.abs(wf - 0.525) / 0.035;
-          if (f0 > 0) {
-            const foam = f0 * f0 * (0.25 + 0.75 * grain(fx * 3.1 + 9.2, fy * 3.1 + 4.4)) * 0.5;
-            r += (232 - r) * foam; gn += (246 - gn) * foam; b += (248 - b) * foam;
-          }
         }
 
         const o = i4 * 4;
@@ -709,22 +641,18 @@ export class Renderer {
       }
     }
 
-    // ===== 3) (supprimé) — les anciennes bandes claires N/O plaquées le long
-    // des bords de tuiles accentuaient l'effet « plateau rectangulaire » ;
-    // les rampes du champ terrassé assurent seules la lecture des arêtes NO.
-
-    // ===== 3bis) PAROIS ROCHEUSES VERTICALES : le terrain est cisaillé par la
-    // projection affine ; en pré-appliquant la matrice INVERSE (U), ces murs
-    // apparaissent parfaitement VERTICAUX à l'écran — le relief devient une
-    // vraie marche 3D, pas une bande sombre plate. Cuit une fois : coût nul.
+    // ===== 3) MESAS ROCHEUSES CONCRÈTES : le SEUL relief du jeu (T_ROCK,
+    // infranchissable) est réellement EXTRUDÉ — le plateau sommital est peint
+    // décalé vers le haut de l'écran (LIFT), relié au sol par des parois
+    // verticales sur les faces S/E et occultant le terrain derrière lui au
+    // N/O, exactement comme un vrai volume iso. Plus aucune ambiguïté :
+    // ce qui est haut est bloquant, ce qui est plat est praticable.
     {
-      const LEVELS = 9;
       const rockBase = THEMES[g.map.theme].rock[0];
       const wallTop = shade(rockBase, +0.14);
       const wallBot = shade(rockBase, -0.55);
-      const lvl = (xx: number, yy: number) =>
-        Math.floor((height[Math.max(0, Math.min(h - 1, yy)) * w + Math.max(0, Math.min(w - 1, xx))] ?? 0.5) * LEVELS);
       const wallRng = mulberry32(w * 613 + h * 271 + 5);
+      const LIFT = tpx * 0.62;   // hauteur d'extrusion (canvas → verticale écran)
       // Jitter DÉTERMINISTE par SOMMET du treillis : deux segments adjacents
       // partagent leurs sommets → le contour du plateau devient une polyligne
       // organique CONTINUE. Fini les plateaux rectangulaires découpés au cordeau.
@@ -802,47 +730,104 @@ export class Renderer {
         }
         tc.restore();
       };
-      // Bande de crête rocheuse le long de la lèvre, CÔTÉ PLATEAU : ancre la
-      // paroi dans le sol du plateau (ox,oy = normale vers l'intérieur).
-      const crest = (x1: number, y1: number, x2: number, y2: number, nx2: number, ny2: number) => {
-        tc.strokeStyle = 'rgba(0,0,0,0.16)';
-        tc.lineWidth = SS * 1.3;
-        tc.lineCap = 'round';
-        tc.beginPath();
-        tc.moveTo(x1 + nx2 * SS * 0.5, y1 + ny2 * SS * 0.5);
-        tc.lineTo(x2 + nx2 * SS * 0.5, y2 + ny2 * SS * 0.5);
-        tc.stroke();
-        for (let k = 0; k < 3; k++) {
-          const tK = 0.15 + wallRng() * 0.7;
-          const cxK = x1 + (x2 - x1) * tK + nx2 * SS * (0.3 + wallRng() * 0.9) + (wallRng() - 0.5) * SS;
-          const cyK = y1 + (y2 - y1) * tK + ny2 * SS * (0.3 + wallRng() * 0.9) + (wallRng() - 0.5) * SS;
-          tc.fillStyle = shade(rockBase, -0.08 + wallRng() * 0.3);
-          tc.beginPath();
-          tc.ellipse(cxK, cyK, SS * (0.28 + wallRng() * 0.38), SS * (0.18 + wallRng() * 0.26), wallRng() * 3, 0, Math.PI * 2);
-          tc.fill();
-        }
-      };
+      // sommet jitteré du treillis, en pixels canvas
+      const vpx = (vx: number, vy: number): [number, number] =>
+        [vx * tpx + vjx(vx, vy), vy * tpx + vjy(vx, vy)];
+      const isRock = (xx: number, yy: number) =>
+        xx >= 0 && yy >= 0 && xx < w && yy < h && terrain[yy * w + xx] === T_ROCK;
+
+      // --- 3a) OMBRE PORTÉE au sol (soleil NO → ombre SE des parois S/E),
+      // dessinée sous les parois : le volume s'ancre dans la plaine.
+      tc.fillStyle = 'rgba(4,8,6,0.20)';
       for (let ty = 0; ty < h; ty++)
         for (let tx = 0; tx < w; tx++) {
-          const i = ty * w + tx;
-          const mask = cliff[i] ?? 0;
-          if (!mask || terrain[i] === T_WATER) continue;
-          const myL = lvl(tx, ty);
-          if (mask & 4) {   // face SUD : sommets (tx,ty+1) → (tx+1,ty+1)
-            const dL = Math.max(1, Math.min(4, myL - lvl(tx, ty + 1)));
-            const hw = tpx * (0.46 + 0.30 * dL) * (0.92 + 0.16 * warpA(tx * 0.9 + 1.5, ty * 0.9));
-            const ax = tx * tpx + vjx(tx, ty + 1), ay = (ty + 1) * tpx + vjy(tx, ty + 1);
-            const bx2 = (tx + 1) * tpx + vjx(tx + 1, ty + 1), by2 = (ty + 1) * tpx + vjy(tx + 1, ty + 1);
-            drawWall(ax, ay, bx2 - ax, by2 - ay, hw);
-            crest(ax, ay, bx2, by2, 0, -1);
+          const mask = cliff[ty * w + tx] ?? 0;
+          if (!mask) continue;
+          const sh = LIFT * 0.7;
+          if (mask & 4) {
+            const [x1, y1] = vpx(tx, ty + 1), [x2, y2] = vpx(tx + 1, ty + 1);
+            tc.beginPath();
+            tc.moveTo(x1, y1); tc.lineTo(x2, y2);
+            tc.lineTo(x2 + sh * 0.95, y2 + sh * 0.16); tc.lineTo(x1 + sh * 0.95, y1 + sh * 0.16);
+            tc.closePath(); tc.fill();
           }
-          if (mask & 2) {   // face EST : sommets (tx+1,ty) → (tx+1,ty+1)
-            const dL = Math.max(1, Math.min(4, myL - lvl(tx + 1, ty)));
-            const hw = tpx * (0.46 + 0.30 * dL) * (0.92 + 0.16 * warpB(tx * 0.9, ty * 0.9 + 2.5));
-            const ax = (tx + 1) * tpx + vjx(tx + 1, ty), ay = ty * tpx + vjy(tx + 1, ty);
-            const bx2 = (tx + 1) * tpx + vjx(tx + 1, ty + 1), by2 = (ty + 1) * tpx + vjy(tx + 1, ty + 1);
-            drawWall(ax, ay, bx2 - ax, by2 - ay, hw);
-            crest(ax, ay, bx2, by2, -1, 0);
+          if (mask & 2) {
+            const [x1, y1] = vpx(tx + 1, ty), [x2, y2] = vpx(tx + 1, ty + 1);
+            tc.beginPath();
+            tc.moveTo(x1, y1); tc.lineTo(x2, y2);
+            tc.lineTo(x2 + sh * 0.95, y2 + sh * 0.16); tc.lineTo(x1 + sh * 0.95, y1 + sh * 0.16);
+            tc.closePath(); tc.fill();
+          }
+        }
+
+      // --- 3b) PAROIS S/E : du bord du plateau SURÉLEVÉ (décalé de LIFT vers
+      // le haut-écran) jusqu'au sol — hauteur exactement LIFT, le pied atterrit
+      // pile sur l'arête au sol (occlusion + éboulis inclus dans drawWall).
+      for (let ty = 0; ty < h; ty++)
+        for (let tx = 0; tx < w; tx++) {
+          const mask = cliff[ty * w + tx] ?? 0;
+          if (!mask) continue;
+          if (mask & 4) {
+            const [x1, y1] = vpx(tx, ty + 1), [x2, y2] = vpx(tx + 1, ty + 1);
+            drawWall(x1 - LIFT, y1 - LIFT, x2 - x1, y2 - y1, LIFT);
+          }
+          if (mask & 2) {
+            const [x1, y1] = vpx(tx + 1, ty), [x2, y2] = vpx(tx + 1, ty + 1);
+            drawWall(x1 - LIFT, y1 - LIFT, x2 - x1, y2 - y1, LIFT);
+          }
+        }
+
+      // --- 3c) SOMMETS : un quad rocheux par tuile, coins = sommets jitterés
+      // PARTAGÉS (surface continue), le tout décalé de (−LIFT,−LIFT) → le
+      // plateau plane réellement au-dessus de la plaine et occulte le terrain
+      // derrière lui (nord/ouest), comme tout volume iso.
+      const topRng = mulberry32(w * 149 + h * 761 + 13);
+      for (let ty = 0; ty < h; ty++)
+        for (let tx = 0; tx < w; tx++) {
+          if (terrain[ty * w + tx] !== T_ROCK) continue;
+          // plateau clair (éclairé du ciel) : UNE base + variation basse
+          // fréquence — surface continue, aucun damier par tuile
+          const base = rockP[0];
+          const tone = 1.45 + (warpA(tx * 0.29 + 4.4, ty * 0.29 + 8.8) - 0.5) * 0.24 + (topRng() - 0.5) * 0.03;
+          tc.fillStyle = `rgb(${Math.round(Math.min(255, base[0] * tone + 34))},${Math.round(Math.min(255, base[1] * tone + 31))},${Math.round(Math.min(255, base[2] * tone + 27))})`;
+          const [xa, ya] = vpx(tx, ty), [xb, yb] = vpx(tx + 1, ty);
+          const [xc, yc] = vpx(tx + 1, ty + 1), [xd, yd] = vpx(tx, ty + 1);
+          tc.beginPath();
+          tc.moveTo(xa - LIFT, ya - LIFT); tc.lineTo(xb - LIFT, yb - LIFT);
+          tc.lineTo(xc - LIFT, yc - LIFT); tc.lineTo(xd - LIFT, yd - LIFT);
+          tc.closePath();
+          tc.fill();
+          // trait de la même couleur : tue les coutures d'anti-aliasing
+          tc.strokeStyle = tc.fillStyle as string; tc.lineWidth = 1; tc.stroke();
+          // matière : dabs sombres/clairs discrets
+          if (topRng() < 0.6) {
+            const px2 = (tx + topRng()) * tpx - LIFT, py2 = (ty + topRng()) * tpx - LIFT;
+            tc.fillStyle = `rgba(${topRng() < 0.5 ? '0,0,0' : '255,246,224'},${0.05 + topRng() * 0.07})`;
+            tc.beginPath();
+            tc.ellipse(px2, py2, SS * (0.5 + topRng() * 0.8), SS * (0.3 + topRng() * 0.5), topRng() * 3, 0, Math.PI * 2);
+            tc.fill();
+          }
+        }
+
+      // --- 3d) LISERÉS du contour sommital : arête claire côté soleil (N/O),
+      // rebord sombre discret côté S/E (haut de paroi) — le volume se lit.
+      tc.lineCap = 'round';
+      for (let ty = 0; ty < h; ty++)
+        for (let tx = 0; tx < w; tx++) {
+          if (terrain[ty * w + tx] !== T_ROCK) continue;
+          const edges: [boolean, [number, number], [number, number], boolean][] = [
+            [!isRock(tx, ty - 1), vpx(tx, ty), vpx(tx + 1, ty), true],        // N (éclairée)
+            [!isRock(tx - 1, ty), vpx(tx, ty), vpx(tx, ty + 1), true],        // O (éclairée)
+            [!isRock(tx, ty + 1), vpx(tx, ty + 1), vpx(tx + 1, ty + 1), false], // S (rebord)
+            [!isRock(tx + 1, ty), vpx(tx + 1, ty), vpx(tx + 1, ty + 1), false], // E (rebord)
+          ];
+          for (const [on, [x1, y1], [x2, y2], lit] of edges) {
+            if (!on) continue;
+            tc.strokeStyle = lit ? 'rgba(255,250,226,0.40)' : 'rgba(0,0,0,0.34)';
+            tc.lineWidth = Math.max(1, SS * (lit ? 0.34 : 0.26));
+            tc.beginPath();
+            tc.moveTo(x1 - LIFT, y1 - LIFT); tc.lineTo(x2 - LIFT, y2 - LIFT);
+            tc.stroke();
           }
         }
     }
@@ -937,335 +922,35 @@ export class Renderer {
         }
       }
 
-    // ===== 5) VÉGÉTATION riche : arbres, buissons, touffes, cailloux, galets
-    const tropical = g.map.theme === 'tropical';
-    const arctic = g.map.theme === 'snow';
-    const badlands = g.map.theme === 'badlands';
+    // ===== 5) TEXTURE DE SOL LÉGÈRE : uniquement des touffes d'herbe très
+    // discrètes (matière du sol). Tous les anciens symboles peints — arbres,
+    // buissons, cailloux, fougères, lichens — sont SUPPRIMÉS : les arbres sont
+    // désormais de VRAIS objets du monde (map.trees), rendus comme entités.
+    const desertG = g.map.theme === 'desert';
     const vegRng = mulberry32(w * 17 + h * 101 + 55);
-
-    // Pré-cuisson des sprites d'arbres avec iso-compensation intégrée
-    // (1 drawImage par arbre). REFONTE ART : vrais arbres ombrés en 3 tons
-    // (masse sombre → flanc éclairé NO → bouquets de lumière), vraie ombre
-    // portée SE dessinée À PLAT dans l'espace sol AVANT le redressement iso
-    // (cohérente avec bâtiments/véhicules), 2 teintes × 3 tailles par style.
-    const mkTreeStamp = (style: 'pine' | 'oak' | 'palm' | 'dead', scale: number, hue: number): [HTMLCanvasElement, number, number] => {
-      const T = tpx * 1.15 * scale;
-      const sw = Math.ceil(T * 4.0), sh = Math.ceil(T * 3.2);
-      const sc2 = document.createElement('canvas');
-      sc2.width = sw; sc2.height = sh;
-      const cx = sc2.getContext('2d')!;
-      const anX = T * 2.5, anY = T * 2.5;
-      // ombre portée au sol (espace sol, à plat) décalée SE
-      cx.fillStyle = 'rgba(10,14,8,0.30)';
-      cx.beginPath();
-      cx.ellipse(anX + T * 0.30, anY + T * 0.14,
-        T * (style === 'pine' ? 0.62 : style === 'dead' ? 0.45 : 0.78),
-        T * (style === 'pine' ? 0.25 : 0.31), 0.22, 0, Math.PI * 2);
-      cx.fill();
-      // redressement iso : l'arbre est DEBOUT à l'écran une fois projeté
-      cx.translate(anX, anY);
-      cx.transform(0.5, -0.5, 1, 1, 0, 0);
-      cx.translate(-anX, -anY);
-      const X = anX, Y = anY;
-      if (style === 'pine') {
-        const deep = arctic ? '#1c3a30' : hue ? '#123e20' : '#0f3820';
-        const mid = arctic ? '#2a5244' : hue ? '#1f5c2e' : '#1a5230';
-        const lite = arctic ? '#49705e' : hue ? '#357c3e' : '#2c6e40';
-        // tronc conique
-        cx.fillStyle = '#3d2a18';
-        cx.beginPath();
-        cx.moveTo(X - T * 0.07, Y); cx.lineTo(X + T * 0.07, Y);
-        cx.lineTo(X + T * 0.025, Y - T * 0.6); cx.lineTo(X - T * 0.025, Y - T * 0.6);
-        cx.closePath(); cx.fill();
-        // 4 étages de feuillage aux bords tombants, ombrés 3 tons
-        for (let tier = 3; tier >= 0; tier--) {
-          const cyT = Y - T * (0.38 + 0.37 * (3 - tier));
-          const wt = T * (0.26 + 0.115 * tier);
-          const ht = T * 0.50;
-          cx.fillStyle = deep;
-          cx.beginPath();
-          cx.moveTo(X, cyT - ht);
-          cx.quadraticCurveTo(X + wt * 0.9, cyT - ht * 0.25, X + wt, cyT + ht * 0.12);
-          cx.quadraticCurveTo(X, cyT + ht * 0.30, X - wt, cyT + ht * 0.12);
-          cx.quadraticCurveTo(X - wt * 0.9, cyT - ht * 0.25, X, cyT - ht);
-          cx.fill();
-          // flanc éclairé côté NO (gauche)
-          cx.fillStyle = mid;
-          cx.beginPath();
-          cx.moveTo(X, cyT - ht * 0.96);
-          cx.quadraticCurveTo(X - wt * 0.82, cyT - ht * 0.2, X - wt * 0.88, cyT + ht * 0.06);
-          cx.quadraticCurveTo(X - wt * 0.28, cyT - ht * 0.1, X, cyT - ht * 0.04);
-          cx.closePath(); cx.fill();
-          cx.fillStyle = lite;
-          cx.beginPath();
-          cx.moveTo(X - wt * 0.1, cyT - ht * 0.86);
-          cx.quadraticCurveTo(X - wt * 0.56, cyT - ht * 0.3, X - wt * 0.6, cyT - ht * 0.02);
-          cx.quadraticCurveTo(X - wt * 0.22, cyT - ht * 0.28, X - wt * 0.06, cyT - ht * 0.58);
-          cx.closePath(); cx.fill();
-          if (arctic) {
-            // givre sur le versant supérieur droit
-            cx.fillStyle = 'rgba(232,244,250,0.50)';
-            cx.beginPath();
-            cx.moveTo(X, cyT - ht);
-            cx.quadraticCurveTo(X + wt * 0.5, cyT - ht * 0.55, X + wt * 0.72, cyT - ht * 0.2);
-            cx.quadraticCurveTo(X + wt * 0.22, cyT - ht * 0.42, X, cyT - ht * 0.68);
-            cx.closePath(); cx.fill();
-          }
-        }
-      } else if (style === 'oak') {
-        const deep = tropical ? '#0c3d14' : hue ? '#17441a' : '#123c18';
-        const mid = tropical ? '#177036' : hue ? '#2a6828' : '#215c26';
-        const lite = tropical ? '#37a04c' : hue ? '#4d8a40' : '#3f7e38';
-        // tronc + départs de branches
-        cx.strokeStyle = '#4a3520'; cx.lineCap = 'round';
-        cx.lineWidth = T * 0.11;
-        cx.beginPath(); cx.moveTo(X, Y); cx.lineTo(X + T * 0.03, Y - T * 0.62); cx.stroke();
-        cx.lineWidth = T * 0.055;
-        cx.beginPath(); cx.moveTo(X + T * 0.02, Y - T * 0.5); cx.lineTo(X + T * 0.28, Y - T * 0.78); cx.stroke();
-        cx.beginPath(); cx.moveTo(X + T * 0.02, Y - T * 0.46); cx.lineTo(X - T * 0.24, Y - T * 0.72); cx.stroke();
-        // couronne : lobes sombres → masse médiane → bouquets clairs côté NO
-        const cy0 = Y - T * 1.05, R = T * 0.68;
-        cx.fillStyle = deep;
-        for (const [lx, ly, lr] of [[-0.55, 0.1, 0.55], [0.55, 0.12, 0.52], [0, 0.34, 0.6],
-          [-0.3, -0.35, 0.5], [0.34, -0.32, 0.5], [0, -0.55, 0.45]] as const) {
-          cx.beginPath(); cx.arc(X + lx * R, cy0 + ly * R, lr * R, 0, Math.PI * 2); cx.fill();
-        }
-        cx.fillStyle = mid;
-        for (const [lx, ly, lr] of [[-0.42, -0.1, 0.48], [0.3, -0.18, 0.44],
-          [-0.05, -0.42, 0.42], [0.02, 0.12, 0.5]] as const) {
-          cx.beginPath(); cx.arc(X + lx * R - R * 0.08, cy0 + ly * R - R * 0.1, lr * R, 0, Math.PI * 2); cx.fill();
-        }
-        cx.fillStyle = lite;
-        for (const [lx, ly, lr] of [[-0.5, -0.35, 0.3], [-0.12, -0.6, 0.26], [-0.35, 0.05, 0.24]] as const) {
-          cx.beginPath(); cx.arc(X + lx * R, cy0 + ly * R, lr * R, 0, Math.PI * 2); cx.fill();
-        }
-        // trouées de lumière
-        cx.fillStyle = 'rgba(214,240,180,0.28)';
-        for (let q = 0; q < 5; q++) {
-          const aq = q * 1.7 + hue * 0.9;
-          cx.beginPath();
-          cx.arc(X + Math.cos(aq) * R * 0.5 - R * 0.2, cy0 + Math.sin(aq) * R * 0.42 - R * 0.22, R * 0.09, 0, Math.PI * 2);
-          cx.fill();
-        }
-      } else if (style === 'palm') {
-        // tronc incurvé
-        cx.strokeStyle = '#7c5c36'; cx.lineCap = 'round';
-        cx.lineWidth = T * 0.085;
-        cx.beginPath(); cx.moveTo(X, Y);
-        cx.quadraticCurveTo(X + T * 0.06, Y - T * 0.6, X + T * 0.22, Y - T * 1.1);
-        cx.stroke();
-        const tx3 = X + T * 0.22, ty3 = Y - T * 1.1;
-        // 7 frondes courbées, deux tons (dessous sombre / dessus clair)
-        for (let q = 0; q < 7; q++) {
-          const aq = -Math.PI * 0.95 + (q / 6) * Math.PI * 1.9;
-          const dxq = Math.cos(aq), dyq = Math.sin(aq) * 0.5 - 0.32;
-          const exq = tx3 + dxq * T * 0.78, eyq = ty3 + dyq * T * 0.5 + T * 0.3;
-          cx.strokeStyle = hue ? '#1d6a2c' : '#175e26';
-          cx.lineWidth = T * 0.075;
-          cx.beginPath(); cx.moveTo(tx3, ty3);
-          cx.quadraticCurveTo(tx3 + dxq * T * 0.42, ty3 + dyq * T * 0.28 - T * 0.12, exq, eyq);
-          cx.stroke();
-          cx.strokeStyle = hue ? '#37954a' : '#2f8a40';
-          cx.lineWidth = T * 0.042;
-          cx.beginPath(); cx.moveTo(tx3, ty3);
-          cx.quadraticCurveTo(tx3 + dxq * T * 0.40, ty3 + dyq * T * 0.26 - T * 0.14, exq - dxq * T * 0.05, eyq - T * 0.03);
-          cx.stroke();
-        }
-        // noix de coco
-        cx.fillStyle = '#4e351c';
-        cx.beginPath(); cx.arc(tx3 - T * 0.05, ty3 + T * 0.08, T * 0.055, 0, Math.PI * 2); cx.fill();
-        cx.beginPath(); cx.arc(tx3 + T * 0.05, ty3 + T * 0.1, T * 0.05, 0, Math.PI * 2); cx.fill();
-      } else {
-        // arbre mort : tronc tordu + branches effilées
-        cx.strokeStyle = '#54422c'; cx.lineCap = 'round';
-        cx.lineWidth = T * 0.09;
-        cx.beginPath(); cx.moveTo(X, Y);
-        cx.quadraticCurveTo(X - T * 0.06, Y - T * 0.5, X + T * 0.04, Y - T * 0.95);
-        cx.stroke();
-        cx.lineWidth = T * 0.05;
-        for (const [a0, len] of [[-2.4, 0.42], [-0.7, 0.48], [-1.8, 0.3], [-1.1, 0.26]] as const) {
-          const sy0 = Y - T * (0.45 + 0.4 * Math.abs(Math.sin(a0)));
-          cx.beginPath(); cx.moveTo(X, sy0);
-          cx.quadraticCurveTo(X + Math.cos(a0) * T * len * 0.5, sy0 + Math.sin(a0) * T * len * 0.4,
-            X + Math.cos(a0) * T * len, sy0 + Math.sin(a0) * T * len * 0.8);
-          cx.stroke();
-        }
-      }
-      return [sc2, anX, anY];
-    };
-    const treeStamps: Record<string, [HTMLCanvasElement, number, number][]> = { pine: [], oak: [], palm: [], dead: [] };
-    for (const st of ['pine', 'oak', 'palm', 'dead'] as const)
-      for (const s of st === 'dead' ? [0.6, 0.8, 1.0] : [0.8, 1.0, 1.25])
-        for (const hu of [0, 1]) treeStamps[st].push(mkTreeStamp(st, s, hu));
-    const stampTree = (px: number, py: number, style: string) => {
-      const arr = treeStamps[style];
-      const [sc2, ax, ay] = arr[(vegRng() * arr.length) | 0];
-      tc.drawImage(sc2, px - ax, py - ay);
-    };
-
-    const vegCount = Math.floor(w * h * 1.0);
+    const vegCount = Math.floor(w * h * 0.5);
     for (let k = 0; k < vegCount; k++) {
       const tx = (vegRng() * w) | 0, ty = (vegRng() * h) | 0;
-      const t = terrain[ty * w + tx];
-      if (t === T_WATER) continue;
-      // RIEN ne déborde dans l'eau visuelle : le champ d'eau flouté couvre
-      // la côte warpée + 1 tuile de marge → tout décor y est interdit.
-      if (WF[ty * w + tx] > 0.04) continue;
-      const px = tx * tpx + vegRng() * tpx, py = ty * tpx + vegRng() * tpx;
-      const r = vegRng();
-      // MASSIFS FORESTIERS : bruit basse fréquence → les arbres poussent en
-      // bosquets denses avec clairières, pas en semis uniforme « généré ».
-      const fN = forestN(tx * 0.16 + 3.1, ty * 0.16 + 5.7);
-      const fFac = fN > 0.56 ? 0.35 + ((fN - 0.56) / 0.44) * 3.4 : 0.10;
-
-      if (t === T_ROCK) {
-        // zones rocheuses : cailloux + fissures + lichens
-        if (r < 0.50) {
-          const rs = SS * (0.5 + vegRng() * 0.9);
-          tc.fillStyle = `rgba(0,0,0,${0.16 + vegRng() * 0.18})`;
-          tc.beginPath(); tc.ellipse(px, py, rs * 1.4, rs * 0.9, vegRng() * Math.PI, 0, Math.PI * 2); tc.fill();
-          tc.fillStyle = `rgba(255,245,215,${0.06 + vegRng() * 0.06})`;
-          tc.beginPath(); tc.ellipse(px - rs * 0.3, py - rs * 0.25, rs * 0.8, rs * 0.45, 0, 0, Math.PI * 2); tc.fill();
-        }
-        if (r < 0.18) { // lichens verts sur roche
-          tc.fillStyle = `rgba(68,90,40,${0.18 + vegRng() * 0.16})`;
-          tc.beginPath(); tc.ellipse(px, py, SS * (0.6 + vegRng() * 0.7), SS * (0.35 + vegRng() * 0.4), vegRng() * Math.PI, 0, Math.PI * 2); tc.fill();
-        }
-      } else if (arctic) {
-        if (r < 0.042 * fFac && !roads[ty * w + tx]) {
-          stampTree(px, py, 'pine');
-        } else if (r < 0.10) {
-          tc.fillStyle = 'rgba(38,52,58,0.24)';
-          tc.beginPath(); tc.ellipse(px, py, SS * (0.9 + vegRng() * 0.8), SS * (0.48 + vegRng() * 0.38), vegRng() * Math.PI, 0, Math.PI * 2); tc.fill();
-          tc.fillStyle = 'rgba(240,248,254,0.42)';
-          tc.beginPath(); tc.ellipse(px - SS * 0.18, py - SS * 0.18, SS * (0.7 + vegRng() * 0.5), SS * 0.28, vegRng() * Math.PI, 0, Math.PI * 2); tc.fill();
-        } else if (r < 0.22) {
-          const len = SS * (0.9 + vegRng() * 0.9);
-          tc.strokeStyle = 'rgba(22,40,36,0.26)'; tc.lineWidth = 1;
-          for (let q = 0; q < 2; q++) { tc.beginPath(); tc.moveTo(px + (vegRng() - 0.5) * SS, py + SS * 0.4); tc.lineTo(px + (vegRng() - 0.5) * SS * 0.6, py - len); tc.stroke(); }
-        }
-      } else if (tropical) {
-        if (r < 0.048 * (0.5 + fFac) && !roads[ty * w + tx]) {
-          stampTree(px, py, 'palm');
-        } else if (r < 0.11 && t !== T_ROCK) {
-          // fougères / grandes herbes tropicales
-          tc.fillStyle = 'rgba(12,52,20,0.55)';
-          for (let q = 0; q < 4; q++) { tc.beginPath(); tc.arc(px + (vegRng() - 0.5) * SS * 2.2, py + (vegRng() - 0.5) * SS * 2.2, SS * (0.45 + vegRng() * 0.5), 0, Math.PI * 2); tc.fill(); }
-          tc.fillStyle = 'rgba(30,80,32,0.42)';
-          for (let q = 0; q < 3; q++) { tc.beginPath(); tc.arc(px + (vegRng() - 0.5) * SS * 1.6, py + (vegRng() - 0.5) * SS * 1.6, SS * (0.30 + vegRng() * 0.35), 0, Math.PI * 2); tc.fill(); }
-        } else if (r < 0.30) {
-          tc.fillStyle = 'rgba(8,48,16,0.40)';
-          tc.beginPath(); tc.ellipse(px, py, SS * (0.8 + vegRng() * 1.0), SS * (0.5 + vegRng() * 0.6), vegRng() * Math.PI, 0, Math.PI * 2); tc.fill();
-        }
-      } else if (badlands) {
-        if (r < 0.028 * (0.3 + fFac) && !roads[ty * w + tx]) {
-          stampTree(px, py, 'dead');
-        } else if (r < 0.20) {
-          // cailloux brûlés
-          tc.fillStyle = `rgba(0,0,0,${0.14 + vegRng() * 0.16})`;
-          tc.beginPath(); tc.ellipse(px, py, SS * (0.8 + vegRng() * 0.9), SS * (0.45 + vegRng() * 0.45), vegRng() * Math.PI, 0, Math.PI * 2); tc.fill();
-        } else if (r < 0.32) {
-          // touffes rabougries
-          const len = SS * (0.5 + vegRng() * 0.6);
-          tc.strokeStyle = 'rgba(100,70,38,0.35)'; tc.lineWidth = 1;
-          tc.beginPath(); tc.moveTo(px, py); tc.lineTo(px + (vegRng() - 0.5) * SS * 0.8, py - len); tc.stroke();
-        }
-      } else {
-        // TEMPERATE + DESERT + MIST : arbres, herbes, buissons
-        const isDesert = g.map.theme === 'desert';
-        if (!isDesert && r < 0.055 * fFac && !roads[ty * w + tx] && t !== T_ROCK) {
-          stampTree(px, py, vegRng() < 0.60 ? 'pine' : 'oak');
-        } else if (r < 0.28) {
-          // touffes d'herbe / végétation basse (variées)
-          const len = SS * (0.9 + vegRng() * 1.1);
-          const leafAlpha = isDesert ? 0.12 : 0.20;
-          tc.strokeStyle = isDesert ? `rgba(140,100,40,${leafAlpha})` : `rgba(0,0,0,${leafAlpha})`;
-          tc.lineWidth = 1;
-          for (let q = 0; q < 2 + (r < 0.10 ? 2 : 0); q++) {
-            tc.beginPath(); tc.moveTo(px + (vegRng() - 0.5) * SS * 1.2, py); tc.lineTo(px + (vegRng() - 0.5) * SS, py - len * (0.6 + vegRng() * 0.5)); tc.stroke();
-          }
-          tc.strokeStyle = isDesert ? 'rgba(220,190,120,0.12)' : 'rgba(255,255,230,0.18)';
-          tc.beginPath(); tc.moveTo(px + 0.7, py); tc.lineTo(px + 0.7 + (vegRng() - 0.5) * SS, py - len * 0.75); tc.stroke();
-        } else if (r < 0.38 && !isDesert) {
-          // buisson dense ombré 3 tons (masse sombre → milieu → lumière NO)
-          tc.fillStyle = 'rgba(16,44,14,0.42)';
-          for (let q = 0; q < 4; q++) { tc.beginPath(); tc.arc(px + (vegRng() - 0.5) * SS * 2.0, py + (vegRng() - 0.5) * SS * 2.0, SS * (0.42 + vegRng() * 0.45), 0, Math.PI * 2); tc.fill(); }
-          tc.fillStyle = 'rgba(38,84,30,0.36)';
-          tc.beginPath(); tc.arc(px, py - SS * 0.3, SS * (0.8 + vegRng() * 0.5), 0, Math.PI * 2); tc.fill();
-          tc.fillStyle = 'rgba(110,170,90,0.22)';
-          tc.beginPath(); tc.arc(px - SS * 0.4, py - SS * 0.55, SS * (0.38 + vegRng() * 0.3), 0, Math.PI * 2); tc.fill();
-        } else if (r < 0.405) {
-          // galet / caillou — rare et discret (le semis dense faisait « bricolé »)
-          tc.fillStyle = `rgba(80,68,48,${0.13 + vegRng() * 0.11})`;
-          tc.beginPath(); tc.ellipse(px, py, SS * (1.0 + vegRng() * 0.7), SS * (0.6 + vegRng() * 0.45), vegRng() * 3, 0, Math.PI * 2); tc.fill();
-          tc.fillStyle = `rgba(255,242,210,${0.04 + vegRng() * 0.04})`;
-          tc.beginPath(); tc.ellipse(px - SS * 0.3, py - SS * 0.3, SS * 0.6, SS * 0.32, 0, 0, Math.PI * 2); tc.fill();
-        }
-      }
-    }
-
-    // ===== 6) ÉROSION / ACCIDENTS DE SOL : détails discrets alignés sur la
-    // pente. Cela donne une lecture plus naturelle des plateaux et vallées sans
-    // changer une seule tuile de gameplay.
-    const erosionRng = mulberry32(w * 409 + h * 37 + 23);
-    const erosionCount = Math.floor(w * h * 0.30);
-    for (let k = 0; k < erosionCount; k++) {
-      const tx = (erosionRng() * w) | 0, ty = (erosionRng() * h) | 0;
       const i = ty * w + tx;
       const t = terrain[i];
-      if (t === T_WATER || roads[i]) continue;
-      if (WF[i] > 0.04) continue;   // jamais de marques dans l'eau visuelle
-      const leftH = height[ty * w + Math.max(0, tx - 1)];
-      const rightH = height[ty * w + Math.min(w - 1, tx + 1)];
-      const upH = height[Math.max(0, ty - 1) * w + tx];
-      const downH = height[Math.min(h - 1, ty + 1) * w + tx];
-      const sxh = rightH - leftH, syh = downH - upH;
-      const slope = Math.hypot(sxh, syh);
-      const px = tx * tpx + erosionRng() * tpx;
-      const py = ty * tpx + erosionRng() * tpx;
-      const angle = slope > 0.015 ? Math.atan2(syh, sxh) + Math.PI / 2 : erosionRng() * Math.PI;
-      tc.save();
-      tc.translate(px, py);
-      tc.rotate(angle + (erosionRng() - 0.5) * 0.45);
-      if (t === T_ROCK || slope > 0.045) {
-        // fissures + stries d'érosion (plus larges et sombres)
-        tc.strokeStyle = snow ? 'rgba(30,42,52,0.28)' : t === T_ROCK ? 'rgba(0,0,0,0.42)' : 'rgba(48,36,18,0.28)';
-        tc.lineWidth = Math.max(1.2, SS * 0.28);
-        const len = tpx * (0.30 + erosionRng() * 0.52);
-        tc.beginPath();
-        tc.moveTo(-len * 0.5, 0);
-        tc.quadraticCurveTo(erosionRng() * SS * 0.4, (erosionRng() - 0.5) * SS * 1.2, len * 0.5, 0);
-        tc.stroke();
-        tc.strokeStyle = snow ? 'rgba(255,255,255,0.18)' : 'rgba(255,245,210,0.14)';
+      if (t === T_WATER || t === T_ROCK || roads[i]) continue;
+      if (WF[i] > 0.04) continue;
+      const px = tx * tpx + vegRng() * tpx, py = ty * tpx + vegRng() * tpx;
+      if (vegRng() < 0.55) {
+        const len = SS * (0.8 + vegRng() * 1.0);
+        tc.strokeStyle = desertG ? 'rgba(140,100,40,0.12)' : 'rgba(0,0,0,0.16)';
         tc.lineWidth = 1;
-        tc.beginPath();
-        tc.moveTo(-len * 0.38, -SS * 0.22);
-        tc.lineTo(len * 0.38, -SS * 0.22);
-        tc.stroke();
-        // second sillon décalé
-        if (erosionRng() < 0.55) {
-          tc.strokeStyle = snow ? 'rgba(24,36,46,0.18)' : 'rgba(0,0,0,0.22)';
-          tc.lineWidth = Math.max(1, SS * 0.18);
-          const len2 = len * (0.5 + erosionRng() * 0.4);
+        for (let q = 0; q < 2; q++) {
           tc.beginPath();
-          tc.moveTo(-len2 * 0.5 + (erosionRng() - 0.5) * SS, SS * 0.5);
-          tc.quadraticCurveTo(0, SS * 0.5 + (erosionRng() - 0.5) * SS * 0.6, len2 * 0.5 + (erosionRng() - 0.5) * SS, SS * 0.5);
+          tc.moveTo(px + (vegRng() - 0.5) * SS * 1.2, py);
+          tc.lineTo(px + (vegRng() - 0.5) * SS, py - len * (0.6 + vegRng() * 0.5));
           tc.stroke();
         }
-      } else if (t === T_ROUGH) {
-        tc.fillStyle = snow ? 'rgba(60,72,82,0.22)' : desert ? 'rgba(130,90,48,0.24)' : 'rgba(72,58,38,0.26)';
-        tc.beginPath();
-        tc.ellipse(0, 0, tpx * (0.22 + erosionRng() * 0.22), SS * (0.52 + erosionRng() * 0.52), 0, 0, Math.PI * 2);
-        tc.fill();
-      } else if (slope > 0.018 && erosionRng() < 0.38) {
-        // traces d'érosion UNIQUEMENT sur les pentes : les plats restent propres
-        tc.fillStyle = snow ? 'rgba(230,240,248,0.13)' : desert ? 'rgba(158,118,62,0.16)' : 'rgba(128,106,62,0.16)';
-        tc.beginPath();
-        tc.ellipse(0, 0, tpx * (0.18 + erosionRng() * 0.15), SS * (0.40 + erosionRng() * 0.40), 0, 0, Math.PI * 2);
-        tc.fill();
+        tc.strokeStyle = desertG ? 'rgba(220,190,120,0.10)' : 'rgba(255,255,230,0.13)';
+        tc.beginPath(); tc.moveTo(px + 0.7, py); tc.lineTo(px + 0.7 + (vegRng() - 0.5) * SS, py - len * 0.7); tc.stroke();
       }
-      tc.restore();
     }
+
 
     if (snow) {
       // Stries de vent, plaques grises et neige compactée : augmente la richesse
@@ -1522,7 +1207,7 @@ export class Renderer {
     }
     // tri peintre UNIFIÉ par profondeur iso (x+y) : une entité plus « avant »
     // (vers le bas de l'écran) est dessinée après celles qu'elle recouvre.
-    interface DepthEnt { key: number; b?: Building; u?: Unit; }
+    interface DepthEnt { key: number; b?: Building; u?: Unit; tr?: TreeInit; }
     const ents: DepthEnt[] = [];
     for (const b of depthBuildings) {
       ents.push({ key: (b.tx - 0.5 + b.w) + (b.ty - 0.5 + b.h) - 0.35, b });
@@ -1534,12 +1219,22 @@ export class Renderer {
       if (!revealAll && u.owner !== this.pov && !g.isVisibleTo(this.pov, u.x, u.y)) continue;
       ents.push({ key: u.x + u.y, u });
     }
+    // arbres : VRAIS objets du monde, triés en profondeur avec les unités —
+    // une unité passe devant ou derrière un arbre, jamais à travers. Visibles
+    // dès que la tuile a été explorée (le brouillard, dessiné au-dessus, les
+    // assombrit en zone hors de vue).
+    for (const tr of g.map.trees) {
+      if (tr.x < tx0 - 1 || tr.x > tx1 + 1 || tr.y < ty0 - 2 || tr.y > ty1 + 1) continue;
+      if (!revealAll && fog[Math.round(tr.y) * mw + Math.round(tr.x)] === 0) continue;
+      ents.push({ key: tr.x + tr.y, tr });
+    }
     ents.sort((a, b2) => a.key - b2.key);
     if (prof.enabled) { prof.count('render.entCount', ents.length); prof.count('render.entFrames'); }
     const _re = prof.enabled ? performance.now() : 0;
     for (const e of ents) {
       if (e.b) this.drawBuildingSprite(ctx, g, e.b, proj, v.selectedBuilding === e.b.id);
       else if (e.u) this.drawUnitSprite(ctx, g, e.u, proj, v.selectedUnits.includes(e.u.id));
+      else if (e.tr) this.drawTree(ctx, g, e.tr, proj);
     }
     if (prof.enabled) prof.add('render.entities', performance.now() - _re);
 
@@ -2454,6 +2149,172 @@ export class Renderer {
     c.fillRect(0, 0, 64, 64);
     this.shadowBlobCv = cv;
     return cv;
+  }
+
+  // ---------------------------------------- arbres : VRAIS objets du monde
+  //
+  // Les arbres viennent de map.trees (génération déterministe) : ils bloquent
+  // déplacement, tirs directs, vision et construction côté moteur, et sont
+  // rendus ici comme des BILLBOARDS debout triés en profondeur avec les
+  // unités/bâtiments — une unité passe devant OU derrière un arbre, jamais
+  // « à travers ». Art ombré 3 tons, cuit une fois par (style, teinte).
+  private treeBillboards = new Map<string, { cv: HTMLCanvasElement; ax: number; ay: number; artH: number }>();
+  private treeBillboard(style: 'pine' | 'oak' | 'palm' | 'dead', hue: number, frost: boolean):
+    { cv: HTMLCanvasElement; ax: number; ay: number; artH: number } {
+    const key = `${style}:${hue}:${frost ? 1 : 0}`;
+    const hit = this.treeBillboards.get(key);
+    if (hit) return hit;
+    const T = 64;                                  // unité d'art (bake haute résolution)
+    const cv = document.createElement('canvas');
+    cv.width = Math.ceil(T * 2.6); cv.height = Math.ceil(T * 2.2);
+    const cx = cv.getContext('2d')!;
+    const X = cv.width / 2, Y = cv.height - T * 0.12;
+    if (style === 'pine') {
+      const deep = frost ? '#1c3a30' : hue ? '#123e20' : '#0f3820';
+      const mid = frost ? '#2a5244' : hue ? '#1f5c2e' : '#1a5230';
+      const lite = frost ? '#49705e' : hue ? '#357c3e' : '#2c6e40';
+      cx.fillStyle = '#3d2a18';
+      cx.beginPath();
+      cx.moveTo(X - T * 0.07, Y); cx.lineTo(X + T * 0.07, Y);
+      cx.lineTo(X + T * 0.025, Y - T * 0.6); cx.lineTo(X - T * 0.025, Y - T * 0.6);
+      cx.closePath(); cx.fill();
+      for (let tier = 3; tier >= 0; tier--) {
+        const cyT = Y - T * (0.38 + 0.37 * (3 - tier));
+        const wt = T * (0.26 + 0.115 * tier);
+        const ht = T * 0.50;
+        cx.fillStyle = deep;
+        cx.beginPath();
+        cx.moveTo(X, cyT - ht);
+        cx.quadraticCurveTo(X + wt * 0.9, cyT - ht * 0.25, X + wt, cyT + ht * 0.12);
+        cx.quadraticCurveTo(X, cyT + ht * 0.30, X - wt, cyT + ht * 0.12);
+        cx.quadraticCurveTo(X - wt * 0.9, cyT - ht * 0.25, X, cyT - ht);
+        cx.fill();
+        cx.fillStyle = mid;
+        cx.beginPath();
+        cx.moveTo(X, cyT - ht * 0.96);
+        cx.quadraticCurveTo(X - wt * 0.82, cyT - ht * 0.2, X - wt * 0.88, cyT + ht * 0.06);
+        cx.quadraticCurveTo(X - wt * 0.28, cyT - ht * 0.1, X, cyT - ht * 0.04);
+        cx.closePath(); cx.fill();
+        cx.fillStyle = lite;
+        cx.beginPath();
+        cx.moveTo(X - wt * 0.1, cyT - ht * 0.86);
+        cx.quadraticCurveTo(X - wt * 0.56, cyT - ht * 0.3, X - wt * 0.6, cyT - ht * 0.02);
+        cx.quadraticCurveTo(X - wt * 0.22, cyT - ht * 0.28, X - wt * 0.06, cyT - ht * 0.58);
+        cx.closePath(); cx.fill();
+        if (frost) {
+          cx.fillStyle = 'rgba(232,244,250,0.50)';
+          cx.beginPath();
+          cx.moveTo(X, cyT - ht);
+          cx.quadraticCurveTo(X + wt * 0.5, cyT - ht * 0.55, X + wt * 0.72, cyT - ht * 0.2);
+          cx.quadraticCurveTo(X + wt * 0.22, cyT - ht * 0.42, X, cyT - ht * 0.68);
+          cx.closePath(); cx.fill();
+        }
+      }
+    } else if (style === 'oak') {
+      const deep = hue ? '#17441a' : '#123c18';
+      const mid = hue ? '#2a6828' : '#215c26';
+      const lite = hue ? '#4d8a40' : '#3f7e38';
+      cx.strokeStyle = '#4a3520'; cx.lineCap = 'round';
+      cx.lineWidth = T * 0.11;
+      cx.beginPath(); cx.moveTo(X, Y); cx.lineTo(X + T * 0.03, Y - T * 0.62); cx.stroke();
+      cx.lineWidth = T * 0.055;
+      cx.beginPath(); cx.moveTo(X + T * 0.02, Y - T * 0.5); cx.lineTo(X + T * 0.28, Y - T * 0.78); cx.stroke();
+      cx.beginPath(); cx.moveTo(X + T * 0.02, Y - T * 0.46); cx.lineTo(X - T * 0.24, Y - T * 0.72); cx.stroke();
+      const cy0 = Y - T * 1.05, R = T * 0.68;
+      cx.fillStyle = deep;
+      for (const [lx, ly, lr] of [[-0.55, 0.1, 0.55], [0.55, 0.12, 0.52], [0, 0.34, 0.6],
+        [-0.3, -0.35, 0.5], [0.34, -0.32, 0.5], [0, -0.55, 0.45]] as const) {
+        cx.beginPath(); cx.arc(X + lx * R, cy0 + ly * R, lr * R, 0, Math.PI * 2); cx.fill();
+      }
+      cx.fillStyle = mid;
+      for (const [lx, ly, lr] of [[-0.42, -0.1, 0.48], [0.3, -0.18, 0.44],
+        [-0.05, -0.42, 0.42], [0.02, 0.12, 0.5]] as const) {
+        cx.beginPath(); cx.arc(X + lx * R - R * 0.08, cy0 + ly * R - R * 0.1, lr * R, 0, Math.PI * 2); cx.fill();
+      }
+      cx.fillStyle = lite;
+      for (const [lx, ly, lr] of [[-0.5, -0.35, 0.3], [-0.12, -0.6, 0.26], [-0.35, 0.05, 0.24]] as const) {
+        cx.beginPath(); cx.arc(X + lx * R, cy0 + ly * R, lr * R, 0, Math.PI * 2); cx.fill();
+      }
+      cx.fillStyle = 'rgba(214,240,180,0.28)';
+      for (let q = 0; q < 5; q++) {
+        const aq = q * 1.7 + hue * 0.9;
+        cx.beginPath();
+        cx.arc(X + Math.cos(aq) * R * 0.5 - R * 0.2, cy0 + Math.sin(aq) * R * 0.42 - R * 0.22, R * 0.09, 0, Math.PI * 2);
+        cx.fill();
+      }
+    } else if (style === 'palm') {
+      cx.strokeStyle = '#7c5c36'; cx.lineCap = 'round';
+      cx.lineWidth = T * 0.085;
+      cx.beginPath(); cx.moveTo(X, Y);
+      cx.quadraticCurveTo(X + T * 0.06, Y - T * 0.6, X + T * 0.22, Y - T * 1.1);
+      cx.stroke();
+      const tx3 = X + T * 0.22, ty3 = Y - T * 1.1;
+      for (let q = 0; q < 7; q++) {
+        const aq = -Math.PI * 0.95 + (q / 6) * Math.PI * 1.9;
+        const dxq = Math.cos(aq), dyq = Math.sin(aq) * 0.5 - 0.32;
+        const exq = tx3 + dxq * T * 0.78, eyq = ty3 + dyq * T * 0.5 + T * 0.3;
+        cx.strokeStyle = hue ? '#1d6a2c' : '#175e26';
+        cx.lineWidth = T * 0.075;
+        cx.beginPath(); cx.moveTo(tx3, ty3);
+        cx.quadraticCurveTo(tx3 + dxq * T * 0.42, ty3 + dyq * T * 0.28 - T * 0.12, exq, eyq);
+        cx.stroke();
+        cx.strokeStyle = hue ? '#37954a' : '#2f8a40';
+        cx.lineWidth = T * 0.042;
+        cx.beginPath(); cx.moveTo(tx3, ty3);
+        cx.quadraticCurveTo(tx3 + dxq * T * 0.40, ty3 + dyq * T * 0.26 - T * 0.14, exq - dxq * T * 0.05, eyq - T * 0.03);
+        cx.stroke();
+      }
+      cx.fillStyle = '#4e351c';
+      cx.beginPath(); cx.arc(tx3 - T * 0.05, ty3 + T * 0.08, T * 0.055, 0, Math.PI * 2); cx.fill();
+      cx.beginPath(); cx.arc(tx3 + T * 0.05, ty3 + T * 0.1, T * 0.05, 0, Math.PI * 2); cx.fill();
+    } else {
+      cx.strokeStyle = '#54422c'; cx.lineCap = 'round';
+      cx.lineWidth = T * 0.09;
+      cx.beginPath(); cx.moveTo(X, Y);
+      cx.quadraticCurveTo(X - T * 0.06, Y - T * 0.5, X + T * 0.04, Y - T * 0.95);
+      cx.stroke();
+      cx.lineWidth = T * 0.05;
+      for (const [a0, len] of [[-2.4, 0.42], [-0.7, 0.48], [-1.8, 0.3], [-1.1, 0.26]] as const) {
+        const sy0 = Y - T * (0.45 + 0.4 * Math.abs(Math.sin(a0)));
+        cx.beginPath(); cx.moveTo(X, sy0);
+        cx.quadraticCurveTo(X + Math.cos(a0) * T * len * 0.5, sy0 + Math.sin(a0) * T * len * 0.4,
+          X + Math.cos(a0) * T * len, sy0 + Math.sin(a0) * T * len * 0.8);
+        cx.stroke();
+      }
+    }
+    const done = { cv, ax: X, ay: Y, artH: T * (style === 'pine' ? 1.88 : style === 'dead' ? 1.1 : 1.75) };
+    this.treeBillboards.set(key, done);
+    return done;
+  }
+
+  /** Dessine un arbre-entité (ombre de contact + billboard debout). */
+  private drawTree(ctx: CanvasRenderingContext2D, g: Game, tr: TreeInit, proj: Proj) {
+    const z = proj.z;
+    const px = proj.sx(tr.x, tr.y), py = proj.sy(tr.x, tr.y);
+    const theme = g.map.theme;
+    const style: 'pine' | 'oak' | 'palm' | 'dead' =
+      theme === 'snow' ? 'pine'
+      : theme === 'tropical' ? 'palm'
+      : theme === 'badlands' || theme === 'desert' ? 'dead'
+      : tr.v < 2 ? 'pine' : 'oak';
+    // LOD dézoom : silhouette compacte sans ombre (des milliers d'arbres
+    // peuvent être à l'écran → coût par arbre minimal, lisibilité conservée)
+    if (z < 14) {
+      const rr = Math.max(1.2, tr.s * z * 0.34);
+      ctx.fillStyle = style === 'dead' ? 'rgba(74,58,38,0.85)' : 'rgba(20,56,28,0.92)';
+      ctx.beginPath(); ctx.arc(px, py - rr * 0.5, rr, 0, Math.PI * 2); ctx.fill();
+      return;
+    }
+    const spr = this.treeBillboard(style, tr.v & 1, theme === 'snow');
+    // ombre de contact au sol (SE, cohérente avec unités/bâtiments)
+    const shR = tr.s * z * (style === 'pine' ? 0.42 : 0.55);
+    ctx.fillStyle = 'rgba(0,0,0,0.26)';
+    ctx.beginPath();
+    ctx.ellipse(px + z * 0.16, py + z * 0.08, shR * 1.2, shR * 0.52, 0.2, 0, Math.PI * 2);
+    ctx.fill();
+    const hPx = tr.s * z * (style === 'pine' ? 2.0 : style === 'dead' ? 1.15 : 1.75);
+    const s = hPx / spr.artH;
+    ctx.drawImage(spr.cv, px - spr.ax * s, py - spr.ay * s, spr.cv.width * s, spr.cv.height * s);
   }
 
   // ------------------------------------------ infanterie : billboards debout
@@ -3836,6 +3697,10 @@ export class Renderer {
           bb = Math.floor(bb * 0.72 + 22);
         }
         const road = g.map.roads[i] === 1;
+        if (g.map.tree[i]) {
+          // forêts : vert sombre — obstacles réels, ils se lisent sur la carte
+          r = Math.floor(r * 0.4 + 14); gg = Math.floor(gg * 0.5 + 44); bb = Math.floor(bb * 0.4 + 16);
+        }
         img.data[i * 4] = road ? Math.floor(r * 0.56 + 96 * 0.44) : r;
         img.data[i * 4 + 1] = road ? Math.floor(gg * 0.56 + 80 * 0.44) : gg;
         img.data[i * 4 + 2] = road ? Math.floor(bb * 0.56 + 62 * 0.44) : bb;

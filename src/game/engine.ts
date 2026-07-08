@@ -263,12 +263,15 @@ export class Game {
     const cost = new Float32Array(w * h);
     const fireBlock = new Uint8Array(w * h);
     const visBlock = new Uint8Array(w * h);
+    const treeTiles = this.map.tree;
     for (let i = 0; i < w * h; i++) {
       const t = terrain[i];
-      pass[i] = t === T_GRASS || t === T_ROUGH ? 1 : 0;
+      // Les arbres sont des objets CONCRETS : la tuile est infranchissable,
+      // bloque les tirs directs et la ligne de vue (comme la roche).
+      pass[i] = (t === T_GRASS || t === T_ROUGH) && !treeTiles[i] ? 1 : 0;
       cost[i] = t === T_ROUGH ? 1.6 : 1;
-      fireBlock[i] = t === T_ROCK ? 1 : 0;
-      visBlock[i] = t === T_ROCK ? 1 : 0;   // montagnes/falaises bloquent la vue
+      fireBlock[i] = t === T_ROCK || treeTiles[i] ? 1 : 0;
+      visBlock[i] = t === T_ROCK || treeTiles[i] ? 1 : 0;
     }
     this.nav = { w, h, pass, cost, fireBlock, visBlock };
     this.buildVisCoarse();   // grille grossière de bloqueurs (early-out vision)
@@ -446,8 +449,8 @@ export class Game {
     const { w, h, terrain } = this.map;
     for (let i = 0; i < w * h; i++) {
       const t = terrain[i];
-      this.nav.pass[i] = t === T_GRASS || t === T_ROUGH ? 1 : 0;
-      this.nav.fireBlock[i] = t === T_ROCK ? 1 : 0;
+      this.nav.pass[i] = (t === T_GRASS || t === T_ROUGH) && !this.map.tree[i] ? 1 : 0;
+      this.nav.fireBlock[i] = t === T_ROCK || this.map.tree[i] ? 1 : 0;
     }
     this.buildGrid.fill(0);
     this.buildings = []; this.buildingById.clear();
@@ -543,6 +546,7 @@ export class Game {
         const i = y * w + x;
         const t = this.map.terrain[i];
         if (t === T_WATER || t === T_ROCK) return false;
+        if (this.map.tree[i]) return false;     // on ne construit pas sur un arbre
         if (this.buildGrid[i] !== 0) return false;
         if (this.players[owner].isHuman && this.players[owner].fog[i] === 0) return false;
       }
@@ -872,6 +876,7 @@ export class Game {
         const i = y * w + x;
         const t = this.map.terrain[i];
         if (t === T_WATER || t === T_ROCK) return false;
+        if (this.map.tree[i]) return false;
         if (this.buildGrid[i] !== 0) return false;
       }
     }
@@ -2093,8 +2098,8 @@ export class Game {
         const i = y * this.map.w + x;
         this.buildGrid[i] = 0;
         const t = this.map.terrain[i];
-        this.nav.pass[i] = t === T_GRASS || t === T_ROUGH ? 1 : 0;
-        this.nav.fireBlock[i] = t === T_ROCK ? 1 : 0;
+        this.nav.pass[i] = (t === T_GRASS || t === T_ROUGH) && !this.map.tree[i] ? 1 : 0;
+        this.nav.fireBlock[i] = t === T_ROCK || this.map.tree[i] ? 1 : 0;
       }
     const c = this.buildingCenter(b);
     this.effects.push({ kind: 'boom', x: c.x, y: c.y, age: 0, dur: 0.8, r: Math.max(b.w, b.h) * 0.8 });

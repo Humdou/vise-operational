@@ -18,6 +18,18 @@ export interface GameMap {
   starts: { x: number; y: number }[];
   nodes: OreNodeInit[];
   theme: ThemeId;
+  /** Arbres CONCRETS : vrais objets du monde (bloquent déplacement, tirs
+   *  directs, vision et construction ; rendus comme entités triées en
+   *  profondeur). Génération déterministe → identique en multijoueur. */
+  trees: TreeInit[];
+  /** Occupation par tuile (1 = un arbre bloque cette tuile). */
+  tree: Uint8Array;
+}
+
+export interface TreeInit {
+  x: number; y: number;   // position monde (centre du pied, ± petit décalage)
+  s: number;              // échelle visuelle
+  v: number;              // variante visuelle (0-3)
 }
 
 export function mulberry32(seed: number) {
@@ -84,6 +96,51 @@ function pointInPolygon(x: number, y: number, poly: [number, number][]): boolean
 }
 
 const CLIFF_N = 1, CLIFF_E = 2, CLIFF_S = 4, CLIFF_W = 8;
+
+// ---------------------------------------------------------- arbres concrets
+// Massifs forestiers denses (bruit basse fréquence) avec éclaircies. Jamais :
+// sur/à côté d'une route (les routes relient les départs → connectivité
+// garantie), à côté de l'eau ou de la roche, près d'un départ ou d'un
+// gisement. Un arbre occupe UNE tuile qui devient infranchissable.
+function generateTrees(
+  w: number, h: number, terrain: Uint8Array, roads: Uint8Array,
+  starts: { x: number; y: number }[], nodes: OreNodeInit[], seed: number,
+): { trees: TreeInit[]; tree: Uint8Array } {
+  const rng = mulberry32(seed * 7919 + 101);
+  const forest = makeNoise(rng, 48);
+  const tree = new Uint8Array(w * h);
+  const trees: TreeInit[] = [];
+  for (let y = 2; y < h - 2; y++)
+    for (let x = 2; x < w - 2; x++) {
+      const i = y * w + x;
+      const t = terrain[i];
+      if (t !== T_GRASS && t !== T_ROUGH) continue;
+      const f = forest(x * 0.11, y * 0.11);
+      if (f < 0.655) continue;                       // hors massif
+      const dens = 0.26 + (f - 0.655) * 1.55;        // cœur plus dense
+      if (rng() >= dens) continue;
+      // voisinage interdit : eau, roche, route (Chebyshev 1)
+      let ok = true;
+      for (let dy = -1; dy <= 1 && ok; dy++)
+        for (let dx = -1; dx <= 1 && ok; dx++) {
+          const ni = (y + dy) * w + (x + dx);
+          const nt = terrain[ni];
+          if (nt === T_WATER || nt === T_ROCK || roads[ni]) ok = false;
+        }
+      if (!ok) continue;
+      for (const s of starts) if (Math.hypot(x - s.x, y - s.y) < 11) { ok = false; break; }
+      if (ok) for (const nd of nodes) if (Math.abs(x - nd.tx) <= 2 && Math.abs(y - nd.ty) <= 2) { ok = false; break; }
+      if (!ok) continue;
+      tree[i] = 1;
+      trees.push({
+        x: x + (rng() - 0.5) * 0.36,
+        y: y + (rng() - 0.5) * 0.36,
+        s: 0.85 + rng() * 0.5,
+        v: (rng() * 4) | 0,
+      });
+    }
+  return { trees, tree };
+}
 
 function computeVisualRelief(
   w: number, h: number, terrain: Uint8Array, roads: Uint8Array, shade: Float32Array,
@@ -800,7 +857,8 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
   }
 
   const relief = computeVisualRelief(n, n, terrain, roads, shade, elev);
-  return { w: n, h: n, terrain, roads, shade, ...relief, starts, nodes, theme };
+  const forestry = generateTrees(n, n, terrain, roads, starts, nodes, seed);
+  return { w: n, h: n, terrain, roads, shade, ...relief, starts, nodes, theme, ...forestry };
 }
 
 // ---------------------------------------------------------- cartes spéciales
@@ -937,5 +995,6 @@ function generateSpecialMap(special: SpecialMapId, theme: ThemeId, playerCount: 
   }
 
   const relief = computeVisualRelief(w, h, terrain, roads, shade);
-  return { w, h, terrain, roads, shade, ...relief, starts, nodes, theme };
+  const forestry = generateTrees(w, h, terrain, roads, starts, nodes, seed);
+  return { w, h, terrain, roads, shade, ...relief, starts, nodes, theme, ...forestry };
 }
