@@ -471,6 +471,10 @@ function GameScreen({ settings, mp, onEnd, onQuit }: {
       game.players[0].ore = 1000;
       game.recomputePower();
     }
+    // ?mapview[=Z@X,Y] : outil dev — révèle toute la carte, cadre la caméra
+    // (Z = zoom, X,Y = centre en tuiles) et désactive l'IA. Sert à inspecter
+    // la direction artistique de la map (screenshots headless).
+    const mapview = !mp && /[?&]mapview/.test(window.location.search);
     // L'IA ne tourne QUE sur l'hôte (autoritatif). En solo, sur la machine
     // unique. Le client NE crée PAS de contrôleurs IA : il prédit les unités
     // adverses en continuant leurs ordres, corrigé par les snapshots de l'hôte.
@@ -483,7 +487,7 @@ function GameScreen({ settings, mp, onEnd, onQuit }: {
           if (sl.kind === 'ai') { ais.push(new AIController(game, sl.player, settings.difficulty)); aiOwned.add(sl.player); }
         }
       }
-    } else {
+    } else if (!mapview) {
       for (let i = 1; i < game.players.length; i++) ais.push(new AIController(game, i, settings.difficulty));
     }
     // synchronisation réseau : host-authoritative + prédiction client (NetGame)
@@ -532,6 +536,13 @@ function GameScreen({ settings, mp, onEnd, onQuit }: {
     controlsRef.current = controls;
     const renderer = new Renderer(canvas, mm);
     renderer.pov = pov;
+    if (mapview) {
+      renderer.revealAll = true;
+      const mv = /[?&]mapview=([\d.]+)(?:@([\d.]+),([\d.]+))?/.exec(window.location.search);
+      controls.cam.zoom = mv?.[1] ? parseFloat(mv[1]) : 9;
+      controls.cam.x = mv?.[2] ? parseFloat(mv[2]) : game.map.w / 2;
+      controls.cam.y = mv?.[3] ? parseFloat(mv[3]) : game.map.h / 2;
+    }
     controls.iconProvider = renderer;   // miniatures du menu = vrais sprites des bâtiments
     // banc de test : accès à l'état pour l'outillage (?net=local, ?mpdebug, ?prof)
     if (mpDebugActive || prof.enabled) {
