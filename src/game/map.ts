@@ -108,6 +108,7 @@ function generateTrees(
 ): { trees: TreeInit[]; tree: Uint8Array } {
   const rng = mulberry32(seed * 7919 + 101);
   const forest = makeNoise(rng, 48);
+  const region = makeNoise(rng, 24);
   const tree = new Uint8Array(w * h);
   const trees: TreeInit[] = [];
   for (let y = 2; y < h - 2; y++)
@@ -115,9 +116,15 @@ function generateTrees(
       const i = y * w + x;
       const t = terrain[i];
       if (t !== T_GRASS && t !== T_ROUGH) continue;
+      // Deux échelles : grandes RÉGIONS forestières (très basse fréquence) qui
+      // abaissent le seuil local, + massifs (fréquence moyenne). Résultat :
+      // vraies forêts denses par endroits, bosquets épars ailleurs, plaines
+      // vraiment ouvertes entre les deux → contraste net entre les zones.
+      const reg = region(x * 0.032, y * 0.032);
       const f = forest(x * 0.11, y * 0.11);
-      if (f < 0.655) continue;                       // hors massif
-      const dens = 0.26 + (f - 0.655) * 1.55;        // cœur plus dense
+      const thr = 0.70 - Math.max(0, reg - 0.48) * 0.30;
+      if (f < thr) continue;                         // hors massif
+      const dens = 0.24 + (f - thr) * 1.5 + Math.max(0, reg - 0.5) * 0.4;
       if (rng() >= dens) continue;
       // voisinage interdit : eau, roche, route (Chebyshev 1)
       let ok = true;
@@ -298,20 +305,49 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
       }
   };
 
-  // Lacs intérieurs : quelques plans d'eau aux contours irréguliers, plus
-  // nombreux sur les grandes cartes (repères visuels + obstacles tactiques).
-  const lakeCount = 3 + Math.floor(n / 55) + (theme === 'tropical' ? 4 : 0);
+  // ÉCHANTILLONNAGE STRATIFIÉ : la carte est découpée en 3×3 secteurs parcourus
+  // dans un ordre mélangé — chaque famille d'éléments (lacs, massifs, chaînes,
+  // plateaux) est ainsi RÉPARTIE SUR TOUTE LA CARTE au lieu de s'agglutiner là
+  // où le hasard uniforme est tombé. Le point reste aléatoire DANS son secteur.
+  const sectorPick = (() => {
+    const order: [number, number][] = [];
+    for (let sy = 0; sy < 3; sy++) for (let sx = 0; sx < 3; sx++) order.push([sx, sy]);
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = (rng() * (i + 1)) | 0;
+      [order[i], order[j]] = [order[j], order[i]];
+    }
+    let si = 0;
+    return () => {
+      const [sx, sy] = order[si++ % order.length];
+      return {
+        x: Math.floor(n * (0.12 + ((sx + 0.1 + rng() * 0.8) / 3) * 0.76)),
+        y: Math.floor(n * (0.12 + ((sy + 0.1 + rng() * 0.8) / 3) * 0.76)),
+      };
+    };
+  })();
+
+  // Lacs intérieurs : plans d'eau aux contours irréguliers répartis sur toute
+  // la carte (repères visuels + obstacles tactiques), certains avec un étang
+  // satellite → petits archipels de zones humides.
+  const lakeCount = 4 + Math.floor(n / 44) + (theme === 'tropical' ? 4 : 0);
   for (let i = 0; i < lakeCount; i++) {
-    blob(Math.floor(n * (0.16 + rng() * 0.68)), Math.floor(n * (0.16 + rng() * 0.68)), 5 + rng() * (n * 0.065), T_WATER);
+    const p = sectorPick();
+    blob(p.x, p.y, 5 + rng() * (n * 0.06), T_WATER);
+    if (rng() < 0.4) {
+      const a = rng() * Math.PI * 2, d = n * (0.03 + rng() * 0.03);
+      blob(Math.floor(p.x + Math.cos(a) * d), Math.floor(p.y + Math.sin(a) * d), 3 + rng() * (n * 0.025), T_WATER);
+    }
   }
-  const largeLakeCount = 1 + Math.floor(n / 150) + (theme === 'tropical' ? 1 : 0);
+  const largeLakeCount = 1 + Math.floor(n / 120) + (theme === 'tropical' ? 1 : 0);
   for (let i = 0; i < largeLakeCount; i++) {
-    blob(Math.floor(n * (0.16 + rng() * 0.68)), Math.floor(n * (0.16 + rng() * 0.68)), 9 + rng() * (n * 0.075), T_WATER, 0.58);
+    const p = sectorPick();
+    blob(p.x, p.y, 9 + rng() * (n * 0.075), T_WATER, 0.58);
   }
   // Massifs rocheux : barrières naturelles qui structurent les couloirs.
-  const ridgeCount = 2 + Math.floor(n / 75);
+  const ridgeCount = 3 + Math.floor(n / 55);
   for (let i = 0; i < ridgeCount; i++) {
-    blob(Math.floor(n * (0.15 + rng() * 0.7)), Math.floor(n * (0.15 + rng() * 0.7)), 3 + rng() * (n * 0.03), T_ROCK, 0.5);
+    const p = sectorPick();
+    blob(p.x, p.y, 3 + rng() * (n * 0.032), T_ROCK, 0.5);
   }
 
   const paintTerrain = (x: number, y: number, fill: number, minElev?: number) => {
@@ -325,10 +361,11 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
   // découpent la carte en vallées. Elles serpentent sur une grande distance et
   // sont assez épaisses pour structurer les déplacements ; les corridors tracés
   // plus bas y percent les rares PASSAGES → vrais goulots stratégiques.
-  const rangeCount = Math.max(2, Math.floor(n / 105) + Math.floor(playerCount / 12));
-  const rangeThick = 2 + Math.floor(n / 150);
+  const rangeCount = Math.max(3, Math.floor(n / 78) + Math.floor(playerCount / 10));
+  const rangeThick = 2 + Math.floor(n / 130);
   for (let i = 0; i < rangeCount; i++) {
-    let rx = n * (0.15 + rng() * 0.7), ry = n * (0.15 + rng() * 0.7);
+    const rp = sectorPick();
+    let rx = rp.x, ry = rp.y;
     let ang = rng() * Math.PI * 2;
     const len = Math.floor(n * (0.62 + rng() * 0.55));
     for (let s = 0; s < len; s++) {
@@ -390,10 +427,11 @@ function generateStandardMap(sizeId: MapSizeId, theme: ThemeId, playerCount: num
   // Plateaux fracturés : grandes zones rugueuses avec quelques dents rocheuses.
   // Elles donnent des axes d'embuscade et cassent les plaines, tout en restant
   // majoritairement franchissables.
-  const plateauCount = 4 + Math.floor(n / 62);
+  const plateauCount = 5 + Math.floor(n / 48);
   for (let k = 0; k < plateauCount; k++) {
-    const px0 = Math.floor(n * (0.12 + rng() * 0.76));
-    const py0 = Math.floor(n * (0.12 + rng() * 0.76));
+    const pp = sectorPick();
+    const px0 = pp.x;
+    const py0 = pp.y;
     const rx = 5 + rng() * (n * 0.035);
     const ry = 4 + rng() * (n * 0.028);
     const ang = rng() * Math.PI * 2;
