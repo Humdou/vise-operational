@@ -1029,6 +1029,9 @@ export class Renderer {
           for (const [dx, dy] of dirs8) {
             const nx = tx + dx, ny = ty + dy;
             if (nx < 0 || ny < 0 || nx >= w || ny >= h || !roads[ny * w + nx]) continue;
+            // liaison diagonale redondante (déjà couverte par deux tronçons
+            // orthogonaux) : la sauter évite l'effet « treillis » en X
+            if (dx && dy && roads[ty * w + nx] && roads[ny * w + tx]) continue;
             const nxp = (nx + 0.5) * tpx, nyp = (ny + 0.5) * tpx;
             const len = Math.hypot(dx, dy);
             const ox = (-dy / len), oy = (dx / len);            // perpendiculaire unitaire
@@ -1098,7 +1101,7 @@ export class Renderer {
     }
 
     // 5b) touffes d'herbe : brins sombres + brin clair (matière du sol)
-    const vegCount = Math.floor(w * h * 0.5);
+    const vegCount = Math.floor(w * h * 0.85);
     for (let k = 0; k < vegCount; k++) {
       const tx = (vegRng() * w) | 0, ty = (vegRng() * h) | 0;
       const i = ty * w + tx;
@@ -1121,14 +1124,14 @@ export class Renderer {
       }
     }
 
-    // 5c) cailloux épars : petit galet gris ombré + reflet — surtout sur le
-    // terrain accidenté (matière minérale discrète)
-    const pebbleCount = Math.floor(w * h * 0.07);
+    // 5c) cailloux épars : petit galet gris ombré + reflet — terrain accidenté
+    // et plages (galets de berge) — matière minérale discrète
+    const pebbleCount = Math.floor(w * h * 0.10);
     for (let k = 0; k < pebbleCount; k++) {
       const tx = (vegRng() * w) | 0, ty = (vegRng() * h) | 0;
       const i = ty * w + tx;
       const t = terrain[i];
-      if (t === T_WATER || t === T_ROCK || roads[i] || WF[i] > 0.04) continue;
+      if (t === T_WATER || t === T_ROCK || roads[i] || WF[i] > 0.30) continue;
       if (t === T_GRASS && vegRng() < 0.55) continue;   // plus rares sur l'herbe grasse
       const px = tx * tpx + vegRng() * tpx, py = ty * tpx + vegRng() * tpx;
       const pr = SS * (0.22 + vegRng() * 0.3);
@@ -1145,7 +1148,7 @@ export class Renderer {
     // (pas en désert / neige) — la prairie prend vie sans devenir brouillonne
     if (!desertG && !snowG) {
       const flowerCols = ['rgba(255,245,235,0.55)', 'rgba(252,220,90,0.5)', 'rgba(214,150,220,0.45)', 'rgba(250,150,130,0.45)'];
-      const flowerCount = Math.floor(w * h * 0.045);
+      const flowerCount = Math.floor(w * h * 0.07);
       for (let k = 0; k < flowerCount; k++) {
         const tx = (vegRng() * w) | 0, ty = (vegRng() * h) | 0;
         const i = ty * w + tx;
@@ -1339,6 +1342,19 @@ export class Renderer {
       // gisement « affleure » au lieu de flotter sur l'herbe)
       ctx.fillStyle = 'rgba(0,0,0,0.24)';
       ctx.beginPath(); ctx.ellipse(px, py + z * 0.08, baseR * 1.15, baseR * 0.62, 0, 0, Math.PI * 2); ctx.fill();
+      // roche-mère : petit affleurement de pierres grises sous les cristaux —
+      // le gisement est POSÉ sur un socle minéral, pas sur l'herbe nue
+      for (let k = 0; k < 4; k++) {
+        const a2 = n.id * 1.31 + k * 1.62;
+        const dd = baseR * (0.42 + ((n.id * 3 + k * 7) % 5) * 0.12);
+        const sx2 = px + Math.cos(a2) * dd, sy2 = py + z * 0.05 + Math.sin(a2) * dd * 0.5;
+        const sr = baseR * (0.28 + ((n.id + k) % 3) * 0.09);
+        const gtone = 88 + ((n.id * 5 + k * 11) % 4) * 14;
+        ctx.fillStyle = `rgb(${gtone},${gtone - 5},${gtone - 12})`;
+        ctx.beginPath(); ctx.ellipse(sx2, sy2, sr, sr * 0.62, a2, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = 'rgba(255,250,235,0.18)';
+        ctx.beginPath(); ctx.ellipse(sx2 - sr * 0.25, sy2 - sr * 0.2, sr * 0.4, sr * 0.22, a2 - 0.3, 0, Math.PI * 2); ctx.fill();
+      }
       ctx.fillStyle = rare ? 'rgba(190,60,86,0.5)' : 'rgba(212,168,60,0.45)';
       for (let k = 0; k < 5; k++) {
         const a2 = n.id * 2.3 + k * 1.9;
@@ -2538,12 +2554,46 @@ export class Renderer {
       : theme === 'tropical' ? 'palm'
       : theme === 'badlands' || theme === 'desert' ? 'dead'
       : tr.v < 2 ? 'pine' : 'oak';
-    // LOD dézoom : silhouette compacte sans ombre (des milliers d'arbres
-    // peuvent être à l'écran → coût par arbre minimal, lisibilité conservée)
+    // LOD dézoom : vraie SILHOUETTE d'arbre à coût minimal (2-3 fills) —
+    // au zoom stratégique les forêts restent des forêts, pas des pois.
     if (z < 14) {
-      const rr = Math.max(1.2, tr.s * z * 0.34);
-      ctx.fillStyle = style === 'dead' ? 'rgba(74,58,38,0.85)' : 'rgba(20,56,28,0.92)';
-      ctx.beginPath(); ctx.arc(px, py - rr * 0.5, rr, 0, Math.PI * 2); ctx.fill();
+      const s = Math.max(2.2, tr.s * z * 0.52);
+      const frost = theme === 'snow';
+      if (style === 'pine') {
+        // cône : corps sombre + facette éclairée côté soleil (NO)
+        ctx.fillStyle = frost ? 'rgba(44,84,72,0.95)' : 'rgba(18,52,28,0.95)';
+        ctx.beginPath();
+        ctx.moveTo(px, py - s * 1.5);
+        ctx.lineTo(px + s * 0.46, py);
+        ctx.lineTo(px - s * 0.46, py);
+        ctx.closePath(); ctx.fill();
+        ctx.fillStyle = frost ? 'rgba(214,236,240,0.55)' : 'rgba(64,122,66,0.60)';
+        ctx.beginPath();
+        ctx.moveTo(px, py - s * 1.5);
+        ctx.lineTo(px - s * 0.40, py - s * 0.06);
+        ctx.lineTo(px - s * 0.05, py);
+        ctx.closePath(); ctx.fill();
+      } else if (style === 'oak') {
+        // couronne : masse sombre + calotte claire décalée vers le soleil
+        ctx.fillStyle = 'rgba(24,62,28,0.95)';
+        ctx.beginPath(); ctx.ellipse(px, py - s * 0.62, s * 0.62, s * 0.55, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = 'rgba(84,140,66,0.65)';
+        ctx.beginPath(); ctx.ellipse(px - s * 0.18, py - s * 0.78, s * 0.36, s * 0.3, -0.3, 0, Math.PI * 2); ctx.fill();
+      } else if (style === 'palm') {
+        ctx.fillStyle = 'rgba(20,80,40,0.9)';
+        ctx.beginPath(); ctx.ellipse(px, py - s * 0.7, s * 0.58, s * 0.34, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = 'rgba(70,140,70,0.6)';
+        ctx.beginPath(); ctx.ellipse(px - s * 0.14, py - s * 0.8, s * 0.3, s * 0.16, -0.35, 0, Math.PI * 2); ctx.fill();
+      } else {
+        // arbre mort : fût + moignons (silhouette anguleuse)
+        ctx.strokeStyle = 'rgba(78,58,36,0.9)';
+        ctx.lineWidth = Math.max(1, s * 0.16);
+        ctx.beginPath();
+        ctx.moveTo(px, py); ctx.lineTo(px + s * 0.06, py - s * 1.05);
+        ctx.moveTo(px + s * 0.02, py - s * 0.55); ctx.lineTo(px + s * 0.34, py - s * 0.85);
+        ctx.moveTo(px + s * 0.03, py - s * 0.45); ctx.lineTo(px - s * 0.28, py - s * 0.72);
+        ctx.stroke();
+      }
       return;
     }
     const spr = this.treeBillboard(style, tr.v & 1, theme === 'snow');

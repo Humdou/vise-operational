@@ -314,7 +314,9 @@ export const THEMES: Record<ThemeId, {
     // roche gris-anthracite chaud. Rupture franche avec l'ancien vert olive terne.
     name: 'Plaine',
     grass: ['#3c7228', '#487e30', '#547a38', '#3e6820', '#5a8a3c', '#406230'],
-    rough: ['#8a6838', '#9a7848', '#7e5c30', '#a47c50', '#7a5e36'],
+    // terre accidentée : ocre-olive doux (proche de l'herbe sèche) — les
+    // zones rough se FONDENT dans la prairie au lieu de trancher en orange
+    rough: ['#7d6b41', '#8b784c', '#71603c', '#93814f', '#6d5e3e'],
     water: '#1e6898', rock: ['#423c34', '#524840', '#38342c', '#4e4640'],
     ore: '#d8b020', oreGlow: '#ffe84a', shore: '#cdb068',
   },
