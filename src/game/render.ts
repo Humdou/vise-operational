@@ -1614,12 +1614,28 @@ export class Renderer {
       }
       ctx.restore();
     }
+    // couche SOL des bâtiments (dalle, tarmac, marquages, ombre — cuits à
+    // part) : dessinée ici, SOUS toutes les entités triées → les véhicules
+    // roulent dessus, l'impression de « passer sous le bâtiment » disparaît
+    for (const b of depthBuildings) {
+      if (getBuildingAsset(b.type as keyof typeof BUILDINGS)) continue;
+      if (!b.built && b.progress < 0.22) continue;   // le chantier pose sa propre dalle
+      const spr = this.isoSprite(b.type, b.owner);
+      const sG = proj.z / ISO_S;
+      const pcG = proj.toScreen(b.tx - 0.5 + b.w / 2, b.ty - 0.5 + b.h / 2);
+      ctx.globalAlpha = b.built ? 1 : Math.min(1, (b.progress - 0.22) / 0.3);
+      ctx.drawImage(spr.ground, pcG.x - spr.ax * sG, pcG.y - spr.ay * sG, spr.ground.width * sG, spr.ground.height * sG);
+    }
+    ctx.globalAlpha = 1;
     // tri peintre UNIFIÉ par profondeur iso (x+y) : une entité plus « avant »
     // (vers le bas de l'écran) est dessinée après celles qu'elle recouvre.
     interface DepthEnt { key: number; b?: Building; u?: Unit; tr?: TreeInit; }
     const ents: DepthEnt[] = [];
     for (const b of depthBuildings) {
-      ents.push({ key: (b.tx - 0.5 + b.w) + (b.ty - 0.5 + b.h) - 0.35, b });
+      // clé reculée d'un demi-petit-côté : une unité qui longe la façade sud
+      // ou est passe DEVANT le bâtiment (elle n'est plus avalée par le sprite),
+      // sans faire surgir devant lui les unités qui passent derrière
+      ents.push({ key: (b.tx - 0.5 + b.w) + (b.ty - 0.5 + b.h) - (Math.min(b.w, b.h) * 0.5 + 0.15), b });
     }
     for (const u of g.units) {
       if (u.transportedBy) continue;
@@ -1901,6 +1917,7 @@ export class Renderer {
       const pc = proj.toScreen(v.placeTx - 0.5 + def.w / 2, v.placeTy - 0.5 + def.h / 2);
       ctx.save();
       ctx.globalAlpha = 0.55;
+      ctx.drawImage(spr.ground, pc.x - spr.ax * s, pc.y - spr.ay * s, spr.ground.width * s, spr.ground.height * s);
       ctx.drawImage(spr.canvas, pc.x - spr.ax * s, pc.y - spr.ay * s, spr.canvas.width * s, spr.canvas.height * s);
       ctx.restore();
     }
@@ -2344,9 +2361,21 @@ export class Renderer {
     return s;
   }
 
-  /** Canvas du sprite (icônes du menu de construction, aperçus). */
+  /** Canvas du sprite COMPLET, sol + structure (icônes du menu, aperçus). */
+  private compositeSpriteCache = new Map<string, HTMLCanvasElement>();
   private buildingSprite(type: string, owner: number): HTMLCanvasElement {
-    return this.isoSprite(type, owner).canvas;
+    const key = `c:${type}:${owner}`;
+    let cv = this.compositeSpriteCache.get(key);
+    if (!cv) {
+      const s = this.isoSprite(type, owner);
+      cv = document.createElement('canvas');
+      cv.width = s.canvas.width; cv.height = s.canvas.height;
+      const c = cv.getContext('2d')!;
+      c.drawImage(s.ground, 0, 0);
+      c.drawImage(s.canvas, 0, 0);
+      this.compositeSpriteCache.set(key, cv);
+    }
+    return cv;
   }
 
   // -------------------------------------------- halo de sol travaillé
