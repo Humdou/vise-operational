@@ -179,16 +179,23 @@ class VKit {
     }
   }
 
-  /** Panneau couleur d'équipe + liseré (identification, pas de repeinte totale). */
+  /** Panneau couleur d'équipe + liseré : peinture MATE désaturée (marquage
+   *  militaire peint sur le blindage, pas un aplat criard). */
   teamPanel(x: number, y: number, w: number, h: number, team: string) {
     const c = this.c;
-    c.fillStyle = team;
+    let r = 128, g = 128, b = 128;
+    if (team.startsWith('#')) {
+      r = parseInt(team.slice(1, 3), 16); g = parseInt(team.slice(3, 5), 16); b = parseInt(team.slice(5, 7), 16);
+    }
+    const l = r * 0.299 + g * 0.587 + b * 0.114;
+    const mix = (v: number) => Math.round((v * 0.6 + l * 0.4) * 0.84);
+    c.fillStyle = `rgb(${mix(r)},${mix(g)},${mix(b)})`;
     c.fillRect(x, y, w, h);
     c.strokeStyle = 'rgba(0,0,0,0.5)';
     c.lineWidth = 1;
     c.strokeRect(x, y, w, h);
-    c.fillStyle = 'rgba(255,255,255,0.25)';
-    c.fillRect(x, y, w, 1.4);
+    c.fillStyle = 'rgba(255,255,255,0.16)';
+    c.fillRect(x, y, w, 1.2);
   }
 
   /** Chevron peint (marquage tactique). */

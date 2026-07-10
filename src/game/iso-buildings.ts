@@ -61,6 +61,18 @@ function shade(color: string, f: number): string {
   return `rgb(${k(r)},${k(g)},${k(b)})`;
 }
 
+/** Couleur d'équipe « peinture mate » : désaturée et assombrie — un marquage
+ *  militaire peint sur le bâtiment, jamais un aplat criard ni un néon. */
+function paintTeam(col: string): string {
+  let r = 128, g = 128, b = 128;
+  if (col.startsWith('#')) {
+    r = parseInt(col.slice(1, 3), 16); g = parseInt(col.slice(3, 5), 16); b = parseInt(col.slice(5, 7), 16);
+  }
+  const l = r * 0.299 + g * 0.587 + b * 0.114;
+  const mix = (v: number) => Math.round((v * 0.58 + l * 0.42) * 0.8);
+  return `rgb(${mix(r)},${mix(g)},${mix(b)})`;
+}
+
 // palette industrielle commune
 const CONCRETE = '#8a8d86';
 const CONCRETE_D = '#6e716b';
@@ -136,6 +148,37 @@ class Kit {
     this.fillP([[u1, v0, h1], [u1, v1, h1], [u1, v1, h0], [u1, v0, h0]], 'transparent', false);
     c.fillStyle = gr; c.fill();
     if (!opts?.noOutline) { c.stroke(); }
+    // MATIÈRE des murs : coulures verticales discrètes (pluie, poussière) +
+    // occlusion en pied de mur — les grandes faces ne sont plus des aplats.
+    const wallStreaks = (pts: [number, number, number][]) => {
+      if (h1 - h0 < 0.3) return;
+      c.save();
+      this.path(pts); c.clip();
+      const xA = this.lx(pts[0][0], pts[0][1]), xB = this.lx(pts[1][0], pts[1][1]);
+      const yTopA = this.ly(pts[0][0], pts[0][1], h1), yTopB = this.ly(pts[1][0], pts[1][1], h1);
+      const wallHpx = (h1 - h0) * EL;
+      const nS = Math.max(2, Math.round(Math.abs(xB - xA) / 15));
+      for (let i = 0; i < nS; i++) {
+        const t = 0.08 + this.rng() * 0.84;
+        const x = xA + (xB - xA) * t;
+        const yT = yTopA + (yTopB - yTopA) * t;
+        const len = wallHpx * (0.25 + this.rng() * 0.55);
+        const g = c.createLinearGradient(0, yT, 0, yT + len);
+        g.addColorStop(0, `rgba(18,20,16,${0.10 + this.rng() * 0.09})`);
+        g.addColorStop(1, 'rgba(18,20,16,0)');
+        c.fillStyle = g;
+        c.fillRect(x - 0.8, yT, 1.5 + this.rng() * 1.4, len);
+      }
+      const yBot = Math.max(this.ly(pts[0][0], pts[0][1], h0), this.ly(pts[1][0], pts[1][1], h0));
+      const gAO = c.createLinearGradient(0, yBot - wallHpx * 0.24, 0, yBot);
+      gAO.addColorStop(0, 'rgba(10,12,10,0)');
+      gAO.addColorStop(1, 'rgba(10,12,10,0.20)');
+      c.fillStyle = gAO;
+      c.fillRect(Math.min(xA, xB) - 2, yBot - wallHpx * 0.26, Math.abs(xB - xA) + 4, wallHpx * 0.3);
+      c.restore();
+    };
+    wallStreaks([[u0, v1, h1], [u1, v1, h1], [u1, v1, h0], [u0, v1, h0]]);
+    wallStreaks([[u1, v0, h1], [u1, v1, h1], [u1, v1, h0], [u1, v0, h0]]);
     // toit
     const roofCol = opts?.roof ?? shade(base, LIT.top);
     const gt = c.createLinearGradient(this.lx(u0, v1), this.ly(u0, v1, h1), this.lx(u1, v0), this.ly(u1, v0, h1));
@@ -144,6 +187,22 @@ class Kit {
     this.fillP([[u0, v0, h1], [u1, v0, h1], [u1, v1, h1], [u0, v1, h1]], 'transparent', false);
     c.fillStyle = gt; c.fill();
     c.strokeStyle = 'rgba(10,12,10,0.55)'; c.lineWidth = 1.4; c.stroke();
+    // MATIÈRE du toit : mouchetis d'usure clair/sombre discret
+    {
+      c.save();
+      this.path([[u0, v0, h1], [u1, v0, h1], [u1, v1, h1], [u0, v1, h1]]); c.clip();
+      const nD = Math.max(3, Math.round((u1 - u0) * (v1 - v0) * 7));
+      for (let i = 0; i < nD; i++) {
+        const uu = u0 + this.rng() * (u1 - u0), vv = v0 + this.rng() * (v1 - v0);
+        c.fillStyle = this.rng() < 0.6
+          ? `rgba(14,16,12,${0.05 + this.rng() * 0.07})`
+          : `rgba(240,238,225,${0.04 + this.rng() * 0.05})`;
+        c.beginPath();
+        c.ellipse(this.lx(uu, vv), this.ly(uu, vv, h1), 1.5 + this.rng() * 5, 1 + this.rng() * 2.6, this.rng() * 3, 0, Math.PI * 2);
+        c.fill();
+      }
+      c.restore();
+    }
     if (opts?.roofBorder) {
       c.strokeStyle = 'rgba(255,250,235,0.16)'; c.lineWidth = 1;
       this.path([[u0 + 0.06, v0 + 0.06, h1], [u1 - 0.06, v0 + 0.06, h1], [u1 - 0.06, v1 - 0.06, h1], [u0 + 0.06, v1 - 0.06, h1]]);
@@ -304,7 +363,7 @@ class Kit {
       const p: [number, number, number][] = side === 'left'
         ? [[aa - 0.025, fixed, h], [aa + 0.025, fixed, h], [aa + 0.025, fixed, 0], [aa - 0.025, fixed, 0]]
         : [[fixed, aa - 0.025, h], [fixed, aa + 0.025, h], [fixed, aa + 0.025, 0], [fixed, aa - 0.025, 0]];
-      this.fillP(p, shade(team, -0.1), false);
+      this.fillP(p, paintTeam(team), false);
     }
     c.fillStyle = 'rgba(0,0,0,0.28)';
   }
@@ -325,16 +384,27 @@ class Kit {
     }
   }
 
-  /** Bande peinte couleur d'équipe sur un mur (identification, pas de néon). */
+  /** Bande peinte couleur d'équipe sur un mur : peinture MATE désaturée,
+   *  fine, avec arête basse sombre — identification discrète, pas de néon. */
   teamBand(side: 'left' | 'right', a0: number, a1: number, fixed: number, h: number, team: string) {
+    const col = paintTeam(team);
     const pts: [number, number, number][] = side === 'left'
-      ? [[a0, fixed, h + 0.07], [a1, fixed, h + 0.07], [a1, fixed, h], [a0, fixed, h]]
-      : [[fixed, a0, h + 0.07], [fixed, a1, h + 0.07], [fixed, a1, h], [fixed, a0, h]];
-    this.fillP(pts, shade(team, -0.05), false);
-    this.c.globalAlpha = 0.35;
-    this.fillP(pts, 'rgba(0,0,0,0.4)', false);
-    this.c.globalAlpha = 1;
-    this.fillP(pts, shade(team, 0.02), false);
+      ? [[a0, fixed, h + 0.055], [a1, fixed, h + 0.055], [a1, fixed, h], [a0, fixed, h]]
+      : [[fixed, a0, h + 0.055], [fixed, a1, h + 0.055], [fixed, a1, h], [fixed, a0, h]];
+    this.fillP(pts, col, false);
+    // usure : la peinture est écaillée par endroits (entaille du fond)
+    const c = this.c;
+    c.strokeStyle = 'rgba(0,0,0,0.22)'; c.lineWidth = 1;
+    const p0 = side === 'left' ? this.lx(a0, fixed) : this.lx(fixed, a0);
+    const p1 = side === 'left' ? this.lx(a1, fixed) : this.lx(fixed, a1);
+    const y0 = side === 'left' ? this.ly(a0, fixed, h) : this.ly(fixed, a0, h);
+    const y1 = side === 'left' ? this.ly(a1, fixed, h) : this.ly(fixed, a1, h);
+    c.beginPath(); c.moveTo(p0, y0); c.lineTo(p1, y1); c.stroke();
+    for (let i = 0; i < 3; i++) {
+      const t = 0.15 + this.rng() * 0.7;
+      c.fillStyle = 'rgba(30,32,28,0.3)';
+      c.fillRect(p0 + (p1 - p0) * t, y0 + (y1 - y0) * t - 2 - this.rng() * 2, 1.4 + this.rng() * 1.6, 1.4);
+    }
   }
 
   /** Mât en treillis + optionnel drapeau d'équipe. */
@@ -353,7 +423,7 @@ class Kit {
       c.beginPath(); c.moveTo(x - k, yy); c.lineTo(x + k, yy - 4); c.stroke();
     }
     if (flagCol) {
-      c.fillStyle = shade(flagCol, 0.05);
+      c.fillStyle = paintTeam(flagCol);
       c.beginPath();
       c.moveTo(x + 1, yT);
       c.quadraticCurveTo(x + 9, yT + 1.5, x + 15, yT - 1);
@@ -401,6 +471,44 @@ class Kit {
     c.beginPath(); c.moveTo(x, this.ly(u, v, h - 0.3)); c.lineTo(x, y); c.stroke();
   }
 
+  /** Dalle de FONDATION commune à tous les bâtiments : béton clair usé,
+   *  plinthe sombre en périphérie, taches et fissures — l'assise partagée
+   *  qui unifie visuellement toute la base. */
+  slab(u0: number, v0: number, u1: number, v1: number) {
+    const c = this.c;
+    // plinthe sombre (assoit la dalle dans le sol)
+    this.fillP([[u0, v0, 0], [u1, v0, 0], [u1, v1, 0], [u0, v1, 0]], 'rgba(40,42,38,0.4)', false);
+    // dalle claire
+    const m = 0.07;
+    this.fillP([[u0 + m, v0 + m, 0], [u1 - m, v0 + m, 0], [u1 - m, v1 - m, 0], [u0 + m, v1 - m, 0]], 'rgba(158,155,142,0.72)', false);
+    // joints de coulée
+    c.strokeStyle = 'rgba(0,0,0,0.14)'; c.lineWidth = 1;
+    const n = Math.max(1, Math.round(u1 - u0) - 1);
+    for (let i = 1; i <= n; i++) {
+      const uu = u0 + ((u1 - u0) * i) / (n + 1);
+      c.beginPath();
+      c.moveTo(this.lx(uu, v0 + m), this.ly(uu, v0 + m));
+      c.lineTo(this.lx(uu, v1 - m), this.ly(uu, v1 - m));
+      c.stroke();
+    }
+    // taches d'huile + fissures
+    for (let i = 0; i < 3; i++) {
+      const su = u0 + 0.2 + this.rng() * (u1 - u0 - 0.4), sv = v0 + 0.2 + this.rng() * (v1 - v0 - 0.4);
+      c.fillStyle = `rgba(24,24,20,${0.1 + this.rng() * 0.12})`;
+      c.beginPath();
+      c.ellipse(this.lx(su, sv), this.ly(su, sv), 3 + this.rng() * 6, 2 + this.rng() * 3, this.rng() * 3, 0, Math.PI * 2);
+      c.fill();
+    }
+    c.strokeStyle = 'rgba(0,0,0,0.16)'; c.lineWidth = 1;
+    for (let i = 0; i < 3; i++) {
+      const su = u0 + this.rng() * (u1 - u0), sv = v0 + this.rng() * (v1 - v0);
+      c.beginPath();
+      c.moveTo(this.lx(su, sv), this.ly(su, sv));
+      c.lineTo(this.lx(su + 0.2 + this.rng() * 0.3, sv + this.rng() * 0.2), this.ly(su + 0.3, sv + 0.15));
+      c.stroke();
+    }
+  }
+
   /** Dalle au sol (tarmac, parade, quai) avec bordure. */
   pad(u0: number, v0: number, u1: number, v1: number, col: string, border = 'rgba(220,220,210,0.28)') {
     this.fillP([[u0, v0, 0], [u1, v0, 0], [u1, v1, 0], [u0, v1, 0]], col, false);
@@ -434,7 +542,7 @@ class Kit {
     for (let i = 0; i < n; i++) {
       const du = (this.rng() - 0.5) * 0.5, dv = (this.rng() - 0.5) * 0.5;
       const s = 0.16 + this.rng() * 0.14;
-      const col = this.rng() < 0.3 ? shade(team, -0.25) : this.rng() < 0.6 ? RUST : STEEL;
+      const col = this.rng() < 0.3 ? shade(paintTeam(team), -0.12) : this.rng() < 0.6 ? RUST : STEEL;
       this.box(u + du - s, v + dv - s, u + du + s, v + dv + s, 0, s * (1.2 + this.rng()), col, { noOutline: false });
     }
   }
@@ -515,18 +623,18 @@ function bakeTurretTop(kind: 'mg' | 'at' | 'aa', team: string): HTMLCanvasElemen
   };
   if (kind === 'mg') {
     body(15, STEEL);
-    c.fillStyle = shade(team, -0.1); c.fillRect(-13, -2.4, 8, 4.8);
+    c.fillStyle = paintTeam(team); c.fillRect(-13, -2.4, 8, 4.8);
     gun(26, 4.5);
     gun(26, 4.5); c.save(); c.translate(0, 5); gun(24, 3.2); c.restore();
     c.save(); c.translate(0, -5); gun(24, 3.2); c.restore();
   } else if (kind === 'at') {
     body(17, '#565e56');
-    c.fillStyle = shade(team, -0.1); c.fillRect(-15, -3, 9, 6);
+    c.fillStyle = paintTeam(team); c.fillRect(-15, -3, 9, 6);
     gun(40, 6);
     c.fillStyle = '#20261f'; c.fillRect(16, -4.4, 6, 8.8);
   } else {
     body(15, '#4c5450');
-    c.fillStyle = shade(team, -0.1); c.fillRect(-13, -2.6, 8, 5.2);
+    c.fillStyle = paintTeam(team); c.fillRect(-13, -2.6, 8, 5.2);
     for (const dy of [-5.4, -1.8, 1.8, 5.4]) {
       c.save(); c.translate(0, dy); gun(30, 2.6); c.restore();
     }
@@ -552,7 +660,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
 
   switch (type) {
     case 'hq': {
-      K.pad(0, 0, 3, 3, 'rgba(70,74,70,0.5)');
+      K.slab(0, 0, 3, 3);
       K.shadow(0.15, 0.15, 2.85, 2.85, 1.6);
       // bloc principal deux niveaux + aile
       K.box(0.15, 0.15, 2.4, 2.4, 0, 1.05, CONCRETE, { roofBorder: true });
@@ -578,7 +686,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       break;
     }
     case 'power': {
-      K.pad(0, 0, 2, 2, 'rgba(72,74,70,0.42)');
+      K.slab(0, 0, 2, 2);
       K.shadow(0.1, 0.15, 1.9, 1.85, 1.2);
       // hall turbine
       K.gable(0.1, 0.95, 1.9, 1.85, 0.62, 0.95, CONCRETE_D, METAL_ROOF, 'u');
@@ -597,7 +705,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       break;
     }
     case 'power2': {
-      K.pad(0, 0, 2, 2, 'rgba(66,68,66,0.45)');
+      K.slab(0, 0, 2, 2);
       K.shadow(0.1, 0.1, 1.9, 1.9, 1.8);
       // hall haut à sheds + rangée de 3 cheminées fines
       K.box(0.1, 0.75, 1.9, 1.9, 0, 1.0, shade(CONCRETE, -0.1), { roofBorder: true });
@@ -620,7 +728,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       break;
     }
     case 'refinery': {
-      K.pad(0, 0, 3, 3, 'rgba(74,72,64,0.45)');
+      K.slab(0, 0, 3, 3);
       K.shadow(0.1, 0.1, 2.9, 2.9, 1.5);
       // quai de déchargement du récolteur (identifiable : entonnoir + marquages)
       K.pad(1.15, 1.9, 2.85, 2.95, 'rgba(52,54,50,0.85)', 'rgba(214,178,80,0.5)');
@@ -645,7 +753,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       break;
     }
     case 'refinery2': {
-      K.pad(0, 0, 3, 3, 'rgba(64,64,60,0.5)');
+      K.slab(0, 0, 3, 3);
       K.shadow(0.1, 0.1, 2.9, 2.9, 2.0);
       // quai double + trémie élargie
       K.pad(1.0, 2.0, 2.9, 2.95, 'rgba(48,50,46,0.9)', 'rgba(214,178,80,0.55)');
@@ -653,9 +761,9 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       door = { u: 1.95, v: 2.9 };
       K.fillP([[1.2, 2.0, 1.3], [2.7, 2.0, 1.3], [2.45, 2.25, 0.7], [1.45, 2.25, 0.7]], shade(RUST, 0.02));
       // batterie de 3 grands silos reliés par portique
-      K.cyl(0.6, 0.7, 0.44, 0, 2.05, '#8b8d85', { band: shade(team, -0.15), bandAt: 0.2 });
-      K.cyl(1.55, 0.55, 0.44, 0, 2.25, '#93958c', { band: shade(team, -0.15), bandAt: 0.18 });
-      K.cyl(2.5, 0.7, 0.44, 0, 2.05, '#8b8d85', { band: shade(team, -0.15), bandAt: 0.2 });
+      K.cyl(0.6, 0.7, 0.44, 0, 2.05, '#8b8d85', { band: paintTeam(team), bandAt: 0.2 });
+      K.cyl(1.55, 0.55, 0.44, 0, 2.25, '#93958c', { band: paintTeam(team), bandAt: 0.18 });
+      K.cyl(2.5, 0.7, 0.44, 0, 2.05, '#8b8d85', { band: paintTeam(team), bandAt: 0.2 });
       K.pipe(0.6, 0.7, 1.95, 1.55, 0.55, 2.15);
       K.pipe(1.55, 0.55, 2.15, 2.5, 0.7, 1.95);
       // hall de craquage + colonnes fines
@@ -671,7 +779,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       break;
     }
     case 'barracks': {
-      K.pad(0, 0, 2, 2, 'rgba(80,82,72,0.35)');
+      K.slab(0, 0, 2, 2);
       K.shadow(0.1, 0.3, 1.9, 1.75, 0.75);
       // baraquement long à toit de tôle + auvent
       K.gable(0.1, 0.3, 1.9, 1.2, 0.55, 0.85, '#5d6154', '#575b48', 'u');
@@ -693,7 +801,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       break;
     }
     case 'barracks2': {
-      K.pad(0, 0, 2, 2, 'rgba(74,76,70,0.4)');
+      K.slab(0, 0, 2, 2);
       K.shadow(0.1, 0.1, 1.9, 1.9, 1.3);
       // bloc d'instruction béton deux étages
       K.box(0.1, 0.35, 1.55, 1.9, 0, 1.3, CONCRETE, { roofBorder: true });
@@ -719,7 +827,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       break;
     }
     case 'factory': {
-      K.pad(0, 0, 3, 3, 'rgba(70,72,68,0.45)');
+      K.slab(0, 0, 3, 3);
       K.shadow(0.05, 0.1, 2.95, 2.9, 1.3);
       // grand hangar d'assemblage, faîte vers le quai sud
       K.gable(0.3, 0.1, 2.9, 2.1, 0.95, 1.5, shade(STEEL, -0.02), '#57604f', 'v');
@@ -743,7 +851,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       break;
     }
     case 'factory2': {
-      K.pad(0, 0, 3, 3, 'rgba(64,66,62,0.5)');
+      K.slab(0, 0, 3, 3);
       K.shadow(0.05, 0.05, 2.95, 2.95, 1.8);
       // double travée parallèle + tour d'assemblage lourde
       K.gable(0.1, 0.1, 2.6, 1.35, 0.9, 1.35, shade(STEEL, -0.08), '#4e574c', 'u');
@@ -778,7 +886,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       break;
     }
     case 'radar': {
-      K.pad(0, 0, 2, 2, 'rgba(70,74,72,0.4)');
+      K.slab(0, 0, 2, 2);
       K.shadow(0.15, 0.2, 1.85, 1.8, 1.0);
       // bunker technique bas
       K.box(0.15, 0.5, 1.5, 1.8, 0, 0.62, CONCRETE_D, { roofBorder: true });
@@ -798,7 +906,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       break;
     }
     case 'radarcenter': {
-      K.pad(0, 0, 2, 2, 'rgba(66,70,70,0.45)');
+      K.slab(0, 0, 2, 2);
       K.shadow(0.1, 0.1, 1.9, 1.9, 1.4);
       // socle octogonal + grand radôme (dôme = silhouette unique)
       K.box(0.25, 0.5, 1.75, 1.9, 0, 0.72, shade(CONCRETE, -0.05), { roofBorder: true });
@@ -847,7 +955,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       overlays.push({ kind: 'beacon', u: 0.5, v: 1.55, h: 1.78, s: 1 });
       // manche à air
       K.whip(2.75, 1.75, 0, 0.6);
-      c.fillStyle = shade(team, 0.05);
+      c.fillStyle = paintTeam(team);
       c.beginPath();
       c.moveTo(K.lx(2.75, 1.75) + 2, K.ly(2.75, 1.75, 0.6));
       c.lineTo(K.lx(2.75, 1.75) + 12, K.ly(2.75, 1.75, 0.6) + 2);
@@ -893,7 +1001,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       break;
     }
     case 'turret': {
-      K.pad(0.02, 0.02, 0.98, 0.98, 'rgba(70,72,66,0.5)');
+      K.slab(0.02, 0.02, 0.98, 0.98);
       K.shadow(0.1, 0.15, 0.9, 0.9, 0.5);
       // bunker circulaire + sacs de sable
       K.cyl(0.5, 0.5, 0.4, 0, 0.42, CONCRETE_D);
@@ -909,7 +1017,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       break;
     }
     case 'atgun': {
-      K.pad(0.02, 0.02, 0.98, 0.98, 'rgba(68,70,64,0.5)');
+      K.slab(0.02, 0.02, 0.98, 0.98);
       K.shadow(0.1, 0.15, 0.92, 0.9, 0.55);
       // casemate angulaire (blindage apparent)
       K.fillP([[0.1, 0.3, 0.5], [0.9, 0.3, 0.5], [0.98, 0.55, 0.28], [0.9, 0.9, 0], [0.1, 0.9, 0], [0.02, 0.55, 0.28]], shade('#4f574f', -0.05));
@@ -920,7 +1028,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       break;
     }
     case 'aa': {
-      K.pad(0.02, 0.02, 0.98, 0.98, 'rgba(66,70,68,0.5)');
+      K.slab(0.02, 0.02, 0.98, 0.98);
       K.shadow(0.12, 0.15, 0.9, 0.88, 0.55);
       // plateforme croisillon + rampe radar
       K.box(0.15, 0.15, 0.85, 0.85, 0, 0.4, '#565e58', { roofBorder: true });
@@ -931,7 +1039,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       break;
     }
     case 'tech': {
-      K.pad(0, 0, 2, 2, 'rgba(70,72,68,0.42)');
+      K.slab(0, 0, 2, 2);
       K.shadow(0.12, 0.12, 1.88, 1.88, 1.1);
       // atelier d'études : bloc + shed vitré + banc d'essai
       K.box(0.15, 0.5, 1.5, 1.85, 0, 0.85, CONCRETE, { roofBorder: true });
@@ -956,7 +1064,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       // zone logistique : allées peintes + rangées de conteneurs + grue portique
       K.paint(0.15, 1.0, 1.85, 1.0, 'rgba(214,178,80,0.35)', 2);
       // conteneurs alignés
-      K.box(0.2, 0.2, 0.95, 0.55, 0, 0.34, shade(team, -0.3));
+      K.box(0.2, 0.2, 0.95, 0.55, 0, 0.34, shade(paintTeam(team), -0.15));
       K.box(0.25, 0.62, 0.9, 0.95, 0, 0.3, RUST);
       K.box(0.3, 0.62, 0.85, 0.95, 0.3, 0.55, '#5d665e');
       K.box(1.1, 0.25, 1.8, 0.6, 0, 0.32, '#57605a');
@@ -982,7 +1090,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       break;
     }
     case 'lab': {
-      K.pad(0, 0, 3, 3, 'rgba(66,68,66,0.45)');
+      K.slab(0, 0, 3, 3);
       K.shadow(0.1, 0.1, 2.9, 2.9, 1.6);
       // laboratoire avancé : bloc principal + dôme d'essai + réservoirs cryo
       K.box(0.15, 0.9, 2.1, 2.55, 0, 1.15, shade(CONCRETE, -0.02), { roofBorder: true });

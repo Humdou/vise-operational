@@ -569,9 +569,14 @@ export class Renderer {
           // (vert profond) ↔ herbes sèches (jaune-olive). Donne au sol une vraie
           // variété de couleur à l'échelle de la carte, pas juste de la clarté.
           if (t === T_GRASS) {
+            // léger désaturage vers la luminance + pointe chaude : herbe
+            // naturelle (feutrée), pas « gazon synthétique » saturé
+            const lum = r * 0.30 + gn * 0.56 + b * 0.14;
+            r += (lum - r) * 0.10; gn += (lum - gn) * 0.10; b += (lum - b) * 0.10;
+            r *= 1.015;
             const dry = tint(fx * 0.085 + 15.2, fy * 0.085 + 27.9) - 0.5;
-            if (dry > 0) { const k3 = dry * 0.34; r *= 1 + k3 * 0.55; gn *= 1 + k3 * 0.18; b *= 1 - k3 * 0.5; }
-            else { const k3 = -dry * 0.30; r *= 1 - k3 * 0.45; gn *= 1 + k3 * 0.10; b *= 1 - k3 * 0.12; }
+            if (dry > 0) { const k3 = dry * 0.27; r *= 1 + k3 * 0.5; gn *= 1 + k3 * 0.16; b *= 1 - k3 * 0.42; }
+            else { const k3 = -dry * 0.24; r *= 1 - k3 * 0.40; gn *= 1 + k3 * 0.09; b *= 1 - k3 * 0.10; }
           }
         }
 
@@ -1040,63 +1045,168 @@ export class Renderer {
       return n;
     };
     tc.lineCap = 'round'; tc.lineJoin = 'round';
-    // layer 0 : assise creusée ; 1 : terre battue ; 2 : bords ; 3 : ornières ; 4 : crête.
-    // Les ornières/bords/crête ne sont tracés que sur les TRONÇONS FINS (≤4 voisins) :
-    // les zones-route denses (carrefours/places de départ) restent en terre pleine,
-    // ce qui évite l'effet « grille » sur les amas de tuiles-route.
-    for (let layer = 0; layer < 5; layer++) {
-      for (let ty = 0; ty < h; ty++)
-        for (let tx = 0; tx < w; tx++) {
-          if (!roads[ty * w + tx]) continue;
-          const cx = (tx + 0.5) * tpx, cy = (ty + 0.5) * tpx;
-          const nbr = roadN(tx, ty);
-          const thin = nbr <= 4;
-          // tonalité et largeur variables par tuile (piste vivante, pas uniforme)
-          const tone = 0.82 + (warpA(tx * 0.9, ty * 0.9) - 0.5) * 0.4;
-          const wide = tpx * (0.5 + (warpB(tx * 0.7 + 5, ty * 0.7) - 0.5) * 0.18);
-          if ((layer === 2 || layer === 3 || layer === 4) && !thin) continue;
-          // remplissage plein de la chaussée (disques fusionnés → pas de grille)
-          if (layer === 0) {
-            tc.fillStyle = 'rgba(0,0,0,0.09)';
-            tc.beginPath(); tc.arc(cx, cy + tpx * 0.06, wide * 0.62 + tpx * 0.08, 0, Math.PI * 2); tc.fill();
-          } else if (layer === 1) {
-            tc.fillStyle = `rgba(${Math.round(dirtMid[0] * tone)},${Math.round(dirtMid[1] * tone)},${Math.round(dirtMid[2] * tone)},${ROAD_A})`;
-            tc.beginPath(); tc.arc(cx, cy, wide * 0.62, 0, Math.PI * 2); tc.fill();
-          }
-          for (const [dx, dy] of dirs8) {
-            const nx = tx + dx, ny = ty + dy;
-            if (nx < 0 || ny < 0 || nx >= w || ny >= h || !roads[ny * w + nx]) continue;
-            // liaison diagonale redondante (déjà couverte par deux tronçons
-            // orthogonaux) : la sauter évite l'effet « treillis » en X
-            if (dx && dy && roads[ty * w + nx] && roads[ny * w + tx]) continue;
-            const nxp = (nx + 0.5) * tpx, nyp = (ny + 0.5) * tpx;
-            const len = Math.hypot(dx, dy);
-            const ox = (-dy / len), oy = (dx / len);            // perpendiculaire unitaire
-            if (layer === 0) {                                   // assise creusée
-              tc.strokeStyle = 'rgba(0,0,0,0.09)'; tc.lineWidth = wide + tpx * 0.18;
-              tc.beginPath(); tc.moveTo(cx, cy + tpx * 0.06); tc.lineTo(nxp, nyp + tpx * 0.06); tc.stroke();
-            } else if (layer === 1) {                            // terre battue
-              tc.strokeStyle = `rgba(${Math.round(dirtMid[0] * tone)},${Math.round(dirtMid[1] * tone)},${Math.round(dirtMid[2] * tone)},${ROAD_A})`;
-              tc.lineWidth = wide;
-              tc.beginPath(); tc.moveTo(cx, cy); tc.lineTo(nxp, nyp); tc.stroke();
-            } else if (layer === 2) {                            // bords assombris (usure)
-              tc.strokeStyle = roadEdge; tc.lineWidth = Math.max(1, tpx * 0.07);
-              for (const sgn of [-1, 1]) {
-                const eo = sgn * wide * 0.46;
-                tc.beginPath(); tc.moveTo(cx + ox * eo, cy + oy * eo); tc.lineTo(nxp + ox * eo, nyp + oy * eo); tc.stroke();
-              }
-            } else if (layer === 3) {                            // ornières jumelles
-              tc.strokeStyle = roadRut; tc.lineWidth = Math.max(1, tpx * 0.06);
-              for (const sgn of [-1, 1]) {
-                const eo = sgn * wide * 0.2;
-                tc.beginPath(); tc.moveTo(cx + ox * eo, cy + oy * eo); tc.lineTo(nxp + ox * eo, nyp + oy * eo); tc.stroke();
-              }
-            } else {                                             // crête de poussière claire
-              tc.strokeStyle = roadCrest; tc.lineWidth = Math.max(1, tpx * 0.09);
-              tc.beginPath(); tc.moveTo(cx, cy); tc.lineTo(nxp, nyp); tc.stroke();
-            }
-          }
+    // 4a) GRAPHE des routes : arêtes centre-à-centre. Les diagonales redondantes
+    // (déjà couvertes par deux tronçons orthogonaux) sont sautées — pas de
+    // treillis en X. On en extrait ensuite des CHAÎNES (jonction → jonction)
+    // qui sont jittées puis lissées (Chaikin ×2) : la piste devient une vraie
+    // COURBE continue au lieu d'une suite de segments tuile-à-tuile.
+    type Pt = { x: number; y: number };
+    const adj = new Map<number, number[]>();
+    const pushAdj = (a: number, b: number) => {
+      let l = adj.get(a); if (!l) { l = []; adj.set(a, l); } l.push(b);
+    };
+    for (let ty = 0; ty < h; ty++)
+      for (let tx = 0; tx < w; tx++) {
+        if (!roads[ty * w + tx]) continue;
+        for (const [dx, dy] of dirs8) {
+          const nx = tx + dx, ny = ty + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h || !roads[ny * w + nx]) continue;
+          if (dx && dy && roads[ty * w + nx] && roads[ny * w + tx]) continue;
+          pushAdj(ty * w + tx, ny * w + nx); pushAdj(ny * w + nx, ty * w + tx);
         }
+      }
+    // point jitté DÉTERMINISTE par tuile : les extrémités partagées de deux
+    // chaînes coïncident exactement (pas de raccord visible aux jonctions)
+    const nodePt = (i: number): Pt => {
+      const tx = i % w, ty = (i / w) | 0;
+      // jitter BASSE fréquence : les tuiles voisines dérivent ensemble →
+      // long méandre doux, pas de gribouillis tuile à tuile
+      return {
+        x: (tx + 0.5) * tpx + (warpA(tx * 0.30 + 11, ty * 0.30) - 0.5) * tpx * 0.55,
+        y: (ty + 0.5) * tpx + (warpB(tx * 0.30, ty * 0.30 + 7) - 0.5) * tpx * 0.55,
+      };
+    };
+    const eKey = (a: number, b: number) => Math.min(a, b) * w * h + Math.max(a, b);
+    const seen = new Set<number>();
+    const chains: number[][] = [];
+    const walk = (start: number, next: number) => {
+      const chain = [start, next];
+      seen.add(eKey(start, next));
+      let prev = start, cur = next;
+      for (;;) {
+        const nb = adj.get(cur);
+        if (!nb || nb.length !== 2) break;             // jonction ou impasse
+        const nxt = nb[0] === prev ? nb[1] : nb[0];
+        if (seen.has(eKey(cur, nxt))) break;
+        seen.add(eKey(cur, nxt)); chain.push(nxt); prev = cur; cur = nxt;
+      }
+      chains.push(chain);
+    };
+    for (const [i, nb] of adj) {
+      if (nb.length === 2) continue;                   // on part des jonctions/impasses
+      for (const j of nb) if (!seen.has(eKey(i, j))) walk(i, j);
+    }
+    for (const [i, nb] of adj)                          // boucles pures restantes
+      for (const j of nb) if (!seen.has(eKey(i, j))) walk(i, j);
+    const smoothChain = (pts: Pt[]): Pt[] => {
+      let p = pts;
+      // relaxation laplacienne : amortit le zigzag en escalier des corridors
+      // de tuiles (fréquence maximale du tracé) avant l'arrondi Chaikin
+      for (let it = 0; it < 4; it++) {
+        if (p.length < 3) break;
+        p = p.map((pt, k) => {
+          if (k === 0 || k === p.length - 1) return pt;
+          return { x: (p[k - 1].x + 2 * pt.x + p[k + 1].x) / 4, y: (p[k - 1].y + 2 * pt.y + p[k + 1].y) / 4 };
+        });
+      }
+      for (let it = 0; it < 2; it++) {
+        if (p.length < 3) break;
+        const q: Pt[] = [p[0]];
+        for (let k = 0; k < p.length - 1; k++) {
+          const a = p[k], b = p[k + 1];
+          q.push({ x: a.x * 0.75 + b.x * 0.25, y: a.y * 0.75 + b.y * 0.25 });
+          q.push({ x: a.x * 0.25 + b.x * 0.75, y: a.y * 0.25 + b.y * 0.75 });
+        }
+        q.push(p[p.length - 1]);
+        p = q;
+      }
+      return p;
+    };
+    // sous-échantillonnage : 1 point sur 2 (extrémités gardées) → le lissage
+    // travaille sur des segments longs, l'escalier tuile-à-tuile disparaît
+    const smoothed = chains.map(ch => {
+      const keep = ch.length > 4 ? ch.filter((_, k) => k === 0 || k === ch.length - 1 || k % 2 === 0) : ch;
+      return smoothChain(keep.map(nodePt));
+    });
+    // demi-largeur vivante (varie doucement LE LONG de la courbe)
+    const halfAt = (p: Pt) => tpx * (0.25 + (warpB(p.x / tpx * 0.7 + 5, p.y / tpx * 0.7) - 0.5) * 0.09);
+    // 4b) chaussée en RUBANS : tous les polygones sont accumulés dans un seul
+    // Path2D rempli UNE fois → les croisements/recouvrements ne s'assombrissent
+    // pas (alpha uniforme, la piste se fond dans le sol partout pareil)
+    const ribbonInto = (path: Path2D, pts: Pt[], extra: number, dy: number) => {
+      const n = pts.length;
+      if (n < 2) return;
+      const L: Pt[] = [], R: Pt[] = [];
+      for (let k = 0; k < n; k++) {
+        const a = pts[Math.max(0, k - 1)], b = pts[Math.min(n - 1, k + 1)];
+        let vx = b.x - a.x, vy = b.y - a.y;
+        const vl = Math.hypot(vx, vy) || 1; vx /= vl; vy /= vl;
+        const hw = halfAt(pts[k]) + extra;
+        L.push({ x: pts[k].x - vy * hw, y: pts[k].y + vx * hw + dy });
+        R.push({ x: pts[k].x + vy * hw, y: pts[k].y - vx * hw + dy });
+      }
+      path.moveTo(L[0].x, L[0].y);
+      for (let k = 1; k < n; k++) path.lineTo(L[k].x, L[k].y);
+      for (let k = n - 1; k >= 0; k--) path.lineTo(R[k].x, R[k].y);
+      path.closePath();
+      // bouts arrondis (impasses propres)
+      for (const e of [pts[0], pts[n - 1]]) {
+        const hw = halfAt(e) + extra;
+        path.moveTo(e.x + hw, e.y + dy);
+        path.arc(e.x, e.y + dy, hw, 0, Math.PI * 2);
+      }
+    };
+    const basePath = new Path2D(), dirtPath = new Path2D();
+    for (const pts of smoothed) {
+      ribbonInto(basePath, pts, tpx * 0.09, tpx * 0.06);   // assise creusée (ombre)
+      ribbonInto(dirtPath, pts, 0, 0);                     // terre battue
+    }
+    // zones-route DENSES (carrefours, places de départ) et tuiles isolées :
+    // disques fusionnés dans les mêmes Path2D (terre pleine, pas de grille)
+    for (let ty = 0; ty < h; ty++)
+      for (let tx = 0; tx < w; tx++) {
+        const i = ty * w + tx;
+        if (!roads[i]) continue;
+        const deg = adj.get(i)?.length ?? 0;
+        if (deg > 0 && roadN(tx, ty) <= 4) continue;
+        const cx = (tx + 0.5) * tpx, cy = (ty + 0.5) * tpx;
+        const r = halfAt({ x: cx, y: cy }) * 1.3 + tpx * 0.08;
+        basePath.moveTo(cx + r + tpx * 0.09, cy + tpx * 0.06);
+        basePath.arc(cx, cy + tpx * 0.06, r + tpx * 0.09, 0, Math.PI * 2);
+        dirtPath.moveTo(cx + r, cy);
+        dirtPath.arc(cx, cy, r, 0, Math.PI * 2);
+      }
+    tc.fillStyle = 'rgba(0,0,0,0.09)';
+    tc.fill(basePath);
+    tc.fillStyle = `rgba(${dirtMid[0]},${dirtMid[1]},${dirtMid[2]},${ROAD_A})`;
+    tc.fill(dirtPath);
+    // 4c) détails d'usure LE LONG des courbes : bords assombris, ornières
+    // jumelles, crête de poussière. Interrompus dans les zones denses (la
+    // terre pleine y suffit — pas de hachures sur les carrefours).
+    const strokeAlong = (pts: Pt[], offK: number, width: number, style: string) => {
+      tc.strokeStyle = style; tc.lineWidth = width;
+      tc.beginPath();
+      let open = false;
+      for (let k = 0; k < pts.length; k++) {
+        const p = pts[k];
+        const px = Math.max(0, Math.min(w - 1, (p.x / tpx) | 0));
+        const py = Math.max(0, Math.min(h - 1, (p.y / tpx) | 0));
+        if (roadN(px, py) > 4) { open = false; continue; }
+        const a = pts[Math.max(0, k - 1)], b = pts[Math.min(pts.length - 1, k + 1)];
+        let vx = b.x - a.x, vy = b.y - a.y;
+        const vl = Math.hypot(vx, vy) || 1; vx /= vl; vy /= vl;
+        const off = offK * halfAt(p) * 2;
+        const x = p.x - vy * off, y = p.y + vx * off;
+        if (!open) { tc.moveTo(x, y); open = true; } else tc.lineTo(x, y);
+      }
+      tc.stroke();
+    };
+    for (const pts of smoothed) {
+      strokeAlong(pts, -0.46, Math.max(1, tpx * 0.07), roadEdge);
+      strokeAlong(pts, +0.46, Math.max(1, tpx * 0.07), roadEdge);
+      strokeAlong(pts, -0.2, Math.max(1, tpx * 0.06), roadRut);
+      strokeAlong(pts, +0.2, Math.max(1, tpx * 0.06), roadRut);
+      strokeAlong(pts, 0, Math.max(1, tpx * 0.09), roadCrest);
     }
     // gravier + flaques épars sur la chaussée (déterministe)
     const grav = mulberry32(w * 53 + h * 311 + 7);
@@ -1104,6 +1214,11 @@ export class Renderer {
       for (let tx = 0; tx < w; tx++) {
         if (!roads[ty * w + tx]) continue;
         const cx = (tx + 0.5) * tpx, cy = (ty + 0.5) * tpx;
+        // nappes de tonalité douces (la piste n'est pas uniforme : plaques
+        // plus sombres/claires fondues, comme la terre tassée réelle)
+        const tt = warpA(tx * 0.9, ty * 0.9);
+        if (tt < 0.42) { tc.fillStyle = 'rgba(30,22,12,0.07)'; tc.beginPath(); tc.ellipse(cx, cy, tpx * 0.5, tpx * 0.34, tt * 6, 0, Math.PI * 2); tc.fill(); }
+        else if (tt > 0.62) { tc.fillStyle = snow ? 'rgba(240,244,250,0.07)' : 'rgba(226,208,168,0.07)'; tc.beginPath(); tc.ellipse(cx, cy, tpx * 0.48, tpx * 0.32, tt * 5, 0, Math.PI * 2); tc.fill(); }
         for (let k = 0; k < 3; k++) {
           const gx = cx + (grav() - 0.5) * tpx * 0.7, gy = cy + (grav() - 0.5) * tpx * 0.7;
           const rr = grav();
