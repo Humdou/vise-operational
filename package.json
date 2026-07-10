@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "NEXT_DIST_DIR=.next-dev next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "validate:buildings": "python3 scripts/validate-building-assets.py"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.108.1",

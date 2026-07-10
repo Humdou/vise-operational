@@ -5,7 +5,7 @@ import { UNITS, BUILDINGS, BuildingTypeId, UnitTypeId } from './data';
 import { Camera, ViewState } from './render';
 import { Sfx } from './audio';
 import { Proj } from './proj';
-import { BUILDING_HEIGHTS } from './iso-buildings';
+import { BUILDING_HEIGHTS } from './assets';
 
 interface PointerInfo { id: number; x: number; y: number; sx: number; sy: number; t: number }
 type OrderMarker = ViewState['orderMarkers'][number];

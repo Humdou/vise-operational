@@ -2,15 +2,14 @@
 // grille carrée top-down ; toute la conversion monde ↔ écran passe par
 // src/game/proj.ts. Le plan du sol (terrain pré-rendu, brouillard, décals)
 // est projeté par une transformation affine ; les entités sont des billboards
-// triés par profondeur (x+y). Bâtiments : bakery iso dédiée (iso-buildings.ts)
-// remplaçable par des PNG via le manifest (assets.ts).
+// triés par profondeur (x+y). Bâtiments : sprites raster Coalition 2045,
+// ancrés et recolorés par le manifeste central (assets.ts).
 import { Game, Unit, Building } from './engine';
 import { UNITS, BUILDINGS, THEMES, PLAYER_COLORS } from './data';
 import { T_GRASS, T_ROUGH, T_WATER, T_ROCK, mulberry32, TreeInit } from './map';
 import { prof } from './profiler';
 import { Proj, ISO_ELEV } from './proj';
-import { bakeIsoBuilding, IsoBuildingSprite, BUILDING_HEIGHTS, ISO_S } from './iso-buildings';
-import { getBuildingAsset } from './assets';
+import { buildingAssetRevision, getBuildingVisual, type BuildingVisual } from './assets';
 import { bakeVehicle } from './vehicles';
 
 export interface Camera {
@@ -1897,7 +1896,7 @@ export class Renderer {
         ctx.stroke();
       }
       const spr = this.isoSprite(v.placing, this.pov);
-      const s = z / ISO_S;
+      const s = z / spr.pxPerTile;
       const pc = proj.toScreen(v.placeTx - 0.5 + def.w / 2, v.placeTy - 0.5 + def.h / 2);
       ctx.save();
       ctx.globalAlpha = 0.55;
@@ -2332,16 +2331,9 @@ export class Renderer {
   private builtFlash = new Map<number, number>();
   private constructing = new Set<number>();
 
-  // sprites iso pré-cuits, par (type, équipe)
-  private isoSpriteCache = new Map<string, IsoBuildingSprite>();
-  private isoSprite(type: string, owner: number): IsoBuildingSprite {
-    const key = `b:${type}:${owner}`;
-    let s = this.isoSpriteCache.get(key);
-    if (!s) {
-      s = bakeIsoBuilding(type as keyof typeof BUILDINGS, PLAYER_COLORS[owner]);
-      this.isoSpriteCache.set(key, s);
-    }
-    return s;
+  // Sprite raster Coalition 2045, partagé par le jeu, la pose et le HUD.
+  private isoSprite(type: string, owner: number): BuildingVisual {
+    return getBuildingVisual(type as keyof typeof BUILDINGS, PLAYER_COLORS[owner]);
   }
 
   /** Canvas du sprite (icônes du menu de construction, aperçus). */
@@ -2440,7 +2432,7 @@ export class Renderer {
   // est exactement l'apparence en jeu. Renvoie un data-URL PNG, mis en cache.
   private iconCache = new Map<string, string>();
   buildingIcon(type: string, owner: number): string {
-    const key = `${type}:${owner}`;
+    const key = `${buildingAssetRevision()}:${type}:${owner}`;
     const hit = this.iconCache.get(key);
     if (hit) return hit;
     const src = this.buildingSprite(type, owner);
@@ -3746,9 +3738,11 @@ export class Renderer {
     const x0 = b.tx - 0.5, y0 = b.ty - 0.5;              // coin monde de l'emprise
     const pc = proj.toScreen(x0 + b.w / 2, y0 + b.h / 2); // centre au sol
     const spr = this.isoSprite(b.type, b.owner);
-    const s = z / ISO_S;
-    const hgt = BUILDING_HEIGHTS[b.type as keyof typeof BUILDING_HEIGHTS] ?? 1.2;
+    const s = z / spr.pxPerTile;
+    const hgt = spr.height;
     const topY = pc.y - hgt * z * ISO_ELEV - z * 0.45;
+    const spriteX = pc.x - spr.ax * s;
+    const spriteY = pc.y - spr.ay * s;
 
     const drawBuildProgress = (progress: number, fill: string) => {
       const barW = Math.max(18, Math.min(b.w, 3) * z * 0.8);
@@ -3771,28 +3765,19 @@ export class Renderer {
       ctx.restore();
     };
 
-    // dessine le sprite du bâtiment (bake iso ou PNG externe)
-    const asset = getBuildingAsset(b.type as keyof typeof BUILDINGS);
+    // Source unique : sprite raster Coalition 2045 déjà teinté pour l'équipe.
     const drawSprite = (alpha = 1, revealFrom = 0) => {
       ctx.save();
       ctx.globalAlpha = alpha;
-      let dx: number, dy: number, dw: number, dh: number;
-      if (asset) {
-        const sA = z / asset.pxPerTile;
-        dx = pc.x - asset.ax * sA; dy = pc.y - asset.ay * sA;
-        dw = asset.img.width * sA; dh = asset.img.height * sA;
-      } else {
-        dx = pc.x - spr.ax * s; dy = pc.y - spr.ay * s;
-        dw = spr.canvas.width * s; dh = spr.canvas.height * s;
-      }
+      const dx = spriteX, dy = spriteY;
+      const dw = spr.canvas.width * s, dh = spr.canvas.height * s;
       if (revealFrom > 0) {
         // chantier : révélation bas → haut
         ctx.beginPath();
         ctx.rect(dx - 4, dy + dh * (1 - revealFrom) - 0.5, dw + 8, dh * revealFrom + z, );
         ctx.clip();
       }
-      if (asset) ctx.drawImage(asset.img, dx, dy, dw, dh);
-      else ctx.drawImage(spr.canvas, dx, dy, dw, dh);
+      ctx.drawImage(spr.canvas, dx, dy, dw, dh);
       ctx.restore();
       return { dx, dy, dw, dh };
     };
@@ -3890,6 +3875,14 @@ export class Renderer {
       this.constructing.delete(b.id);
       this.builtFlash.set(b.id, g.time);
     }
+    // Ombre calculée sur la carte : aucun sol ni ombre n'est enfermé dans les
+    // PNG, le même asset reste donc naturel sur les six biomes.
+    ctx.save();
+    ctx.translate(z * 0.16, z * 0.11);
+    proj.footprintPath(ctx, b.tx - 0.04, b.ty - 0.04, b.w + 0.08, b.h + 0.08);
+    ctx.fillStyle = 'rgba(7,10,9,0.28)';
+    ctx.fill();
+    ctx.restore();
     drawSprite(1);
 
     // flash d'activation à l'achèvement
@@ -3906,18 +3899,17 @@ export class Renderer {
       }
     }
 
-    // ----- surcouches animées ancrées dans le bake
-    if (!asset) {
-      for (const o of spr.overlays) {
-        const opx = proj.sx(x0 + o.u, y0 + o.v);
-        const opy = proj.sy(x0 + o.u, y0 + o.v) - o.h * z * ISO_ELEV;
-        if (o.kind === 'steam') this.steam(ctx, opx, opy, z, g.time + b.id * 1.7, o.s);
-        else if (o.kind === 'flame') this.flame(ctx, opx, opy, z, g.time + b.id * 0.9, o.s);
+    // ----- surcouches animées ancrées directement dans le sprite raster
+    for (const o of spr.effects) {
+        const opx = spriteX + o.x * s;
+        const opy = spriteY + o.y * s;
+        if (o.kind === 'steam') this.steam(ctx, opx, opy, z, g.time + b.id * 1.7, o.scale);
+        else if (o.kind === 'flame') this.flame(ctx, opx, opy, z, g.time + b.id * 0.9, o.scale);
         else if (o.kind === 'smoke') {
           // panache : 3 bouffées qui montent et dérivent
           for (let k = 0; k < 3; k++) {
             const tt = ((g.time * 0.5 + b.id * 0.37 + k / 3) % 1);
-            const rr2 = z * (0.08 + tt * 0.22) * o.s;
+            const rr2 = z * (0.08 + tt * 0.22) * o.scale;
             ctx.fillStyle = `rgba(72,70,66,${0.3 * (1 - tt)})`;
             ctx.beginPath();
             ctx.arc(opx + Math.sin((tt + k) * 4.2) * z * 0.08 + tt * z * 0.22, opy - tt * z * 0.85, rr2, 0, Math.PI * 2);
@@ -3926,14 +3918,14 @@ export class Renderer {
         } else if (o.kind === 'beacon') {
           const blink = 0.5 + 0.5 * Math.sin(g.time * 3.4 + b.id);
           ctx.fillStyle = `rgba(255,84,58,${0.35 + blink * 0.6})`;
-          ctx.beginPath(); ctx.arc(opx, opy, Math.max(1.4, z * 0.05) * o.s, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(opx, opy, Math.max(1.4, z * 0.05) * o.scale, 0, Math.PI * 2); ctx.fill();
           ctx.fillStyle = `rgba(255,120,80,${blink * 0.18})`;
-          ctx.beginPath(); ctx.arc(opx, opy, Math.max(3, z * 0.14) * o.s, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(opx, opy, Math.max(3, z * 0.14) * o.scale, 0, Math.PI * 2); ctx.fill();
         } else if (o.kind === 'weld' && b.queue.length > 0) {
           const fl = Math.sin(g.time * 23 + b.id * 3.1);
           if (fl > 0.25) {
             ctx.fillStyle = `rgba(255,244,200,${0.35 + fl * 0.5})`;
-            ctx.beginPath(); ctx.arc(opx, opy, Math.max(1.5, z * 0.06) * o.s * (0.7 + fl * 0.5), 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.arc(opx, opy, Math.max(1.5, z * 0.06) * o.scale * (0.7 + fl * 0.5), 0, Math.PI * 2); ctx.fill();
             ctx.strokeStyle = `rgba(255,210,120,${fl * 0.5})`;
             ctx.lineWidth = 1;
             for (let k = 0; k < 3; k++) {
@@ -3945,29 +3937,28 @@ export class Renderer {
             }
           }
         }
-      }
-      // lumière de porte quand une unité sort (le moteur pose doorT)
-      if (spr.door && b.doorT !== undefined && g.time - b.doorT < 0.9) {
+    }
+    // lumière de porte quand une unité sort (le moteur pose doorT)
+    if (spr.door && b.doorT !== undefined && g.time - b.doorT < 0.9) {
         const k2 = 1 - (g.time - b.doorT) / 0.9;
-        const dpx = proj.sx(x0 + spr.door.u, y0 + spr.door.v);
-        const dpy = proj.sy(x0 + spr.door.u, y0 + spr.door.v);
+        const dpx = spriteX + spr.door.x * s;
+        const dpy = spriteY + spr.door.y * s;
         ctx.save();
         ctx.globalAlpha = 0.75 * k2;
         ctx.drawImage(this.warmGlow(), dpx - z * 0.8, dpy - z * 0.4, z * 1.6, z * 0.8);
         ctx.restore();
-      }
     }
 
     // ----- tourelle pivotante des défenses (posée sur le plan du sol surélevé)
-    if (spr.turret && spr.turretMount) {
+    if (spr.turret) {
       let ang = g.time * 0.3 + b.id;   // veille : balayage lent
       if (b.engageId) {
         const tgt = g.unitById.get(b.engageId);
         if (tgt) ang = Math.atan2(tgt.y - (y0 + b.h / 2), tgt.x - (x0 + b.w / 2));
       }
-      const m = spr.turretMount;
-      const mpx = proj.sx(x0 + m.u, y0 + m.v);
-      const mpy = proj.sy(x0 + m.u, y0 + m.v) - m.h * z * ISO_ELEV;
+      const m = spr.turret;
+      const mpx = spriteX + m.mount.x * s;
+      const mpy = spriteY + m.mount.y * s;
       // ombre de la pièce sur la plateforme
       ctx.fillStyle = 'rgba(0,0,0,0.25)';
       ctx.beginPath(); ctx.ellipse(mpx + z * 0.05, mpy + z * 0.06, z * 0.34, z * 0.17, 0, 0, Math.PI * 2); ctx.fill();
@@ -3975,9 +3966,8 @@ export class Renderer {
       ctx.translate(mpx, mpy);
       ctx.transform(1, 0.5, -1, 0.5, 0, 0);
       ctx.rotate(ang);
-      const sT = z / 64;
-      ctx.scale(sT, sT);
-      ctx.drawImage(spr.turret, -spr.turret.width / 2, -spr.turret.height / 2);
+      ctx.scale(s * m.scale, s * m.scale);
+      ctx.drawImage(m.canvas, -m.pivot.x, -m.pivot.y);
       ctx.restore();
       // recul/flash de tir : cd vient d'être rechargé
       if (b.engageId && b.cd > 0) {
@@ -3985,9 +3975,9 @@ export class Renderer {
         if (wdef && wdef.cooldown - b.cd < 0.09) {
           const fpx = mpx + Math.cos(ang) * z * 0.5 - Math.sin(ang) * 0;
           void fpx;
-          const muz = proj.toScreen(x0 + m.u + Math.cos(ang) * 0.55, y0 + m.v + Math.sin(ang) * 0.55);
+          const muz = proj.toScreen(x0 + b.w / 2 + Math.cos(ang) * 0.55, y0 + b.h / 2 + Math.sin(ang) * 0.55);
           ctx.fillStyle = 'rgba(255,240,190,0.9)';
-          ctx.beginPath(); ctx.arc(muz.x, muz.y - m.h * z * ISO_ELEV, z * 0.12, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(muz.x, muz.y - z * 0.4, z * 0.12, 0, Math.PI * 2); ctx.fill();
         }
       }
     }
