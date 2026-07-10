@@ -62,8 +62,9 @@ export interface Unit {
   infiltrateT?: number;
   passengers?: number[];
   transportedBy?: number;
-  // animation de sortie de bâtiment — purement visuel, jamais lu par le gameplay
-  exitFx?: { x: number; y: number; t0: number };
+  // Animation de sortie — purement visuelle. buildingId permet au rendu de
+  // partir de l'ancre de porte exacte du sprite plutôt que du centre du volume.
+  exitFx?: { x: number; y: number; t0: number; buildingId?: number };
   // correction post-snapshot (client multijoueur) : écart restant entre la
   // position affichée et la position autoritative, résorbé en ~200 ms pour
   // éviter les téléportations à chaque snapshot. x/y/dir incluent déjà cet
@@ -95,10 +96,12 @@ export interface Snapshot {
     i: number; o: number; ty: UnitTypeId; x: number; y: number; d: number; h: number;
     or: Order; cg: number; cv: number; ul: number; cd: number; ei: number; eb: boolean;
     as?: 'pad' | 'fly' | 'return'; pb?: number; am?: number; rt?: number; ps?: number[]; tb?: number;
+    xf?: [number, number, number, number?];
   }[];
   buildings: {
     i: number; o: number; ty: BuildingTypeId; tx: number; ty2: number; h: number;
     bu: boolean; pr: number; q: QueueItem[]; ra: { x: number; y: number } | null; rp: boolean; cd: number; ei: number;
+    dt?: number;
   }[];
   nodes: { i: number; a: number }[];
 }
@@ -384,12 +387,18 @@ export class Game {
         as: u.airState, pb: u.padBuildingId, am: u.ammo, rt: u.rearmT !== undefined ? r2(u.rearmT) : undefined,
         ps: u.passengers && u.passengers.length ? [...u.passengers] : undefined,
         tb: u.transportedBy,
+        xf: u.exitFx && this.time - u.exitFx.t0 < 2.2
+          ? (u.exitFx.buildingId !== undefined
+            ? [r2(u.exitFx.x), r2(u.exitFx.y), r2(u.exitFx.t0), u.exitFx.buildingId]
+            : [r2(u.exitFx.x), r2(u.exitFx.y), r2(u.exitFx.t0)])
+          : undefined,
       })),
       buildings: this.buildings.filter(b => !b.dead).map(b => ({
         i: b.id, o: b.owner, ty: b.type, tx: b.tx, ty2: b.ty, h: r2(b.hp),
         bu: b.built, pr: Math.round(b.progress * 1000) / 1000,
         q: b.queue.map(it => ({ ...it, t: r2(it.t) })),
         ra: b.rally, rp: b.repairOn, cd: r2(b.cd), ei: b.engageId,
+        dt: b.doorT !== undefined && this.time - b.doorT < 2.2 ? r2(b.doorT) : undefined,
       })),
       nodes: this.nodes.map(n => ({ i: n.id, a: Math.round(n.amount) })),
     };
@@ -427,6 +436,7 @@ export class Game {
         airState: us.as, padBuildingId: us.pb, ammo: us.am, rearmT: us.rt,
         passengers: us.ps ? [...us.ps] : undefined,
         transportedBy: us.tb,
+        exitFx: us.xf ? { x: us.xf[0], y: us.xf[1], t0: us.xf[2], buildingId: us.xf[3] } : undefined,
       };
       const old = prevById.get(us.i);
       if (old && old.type === us.ty) {
@@ -459,7 +469,8 @@ export class Game {
       const b: Building = {
         id: bs.i, owner: bs.o, type: bs.ty, tx: bs.tx, ty: bs.ty2, w: def.w, h: def.h,
         hp: bs.h, maxHp: def.hp, built: bs.bu, progress: bs.pr,
-        queue: bs.q, rally: bs.ra, repairOn: bs.rp, cd: bs.cd, engageId: bs.ei, dead: false,
+        queue: bs.q, rally: bs.ra, repairOn: bs.rp, cd: bs.cd, engageId: bs.ei,
+        doorT: bs.dt, dead: false,
       };
       this.buildings.push(b); this.buildingById.set(b.id, b);
       for (let y = b.ty; y < b.ty + def.h; y++)
@@ -1133,7 +1144,8 @@ export class Game {
             const c = this.buildingCenter(b);
             const spot = this.findFreeTileNear(c.x, b.ty + b.h + 0.5);
             const harv = this.spawnUnit(b.owner, 'harvester', spot.x, spot.y);
-            harv.exitFx = { x: c.x, y: c.y, t0: this.time };
+            harv.exitFx = { x: c.x, y: c.y, t0: this.time, buildingId: b.id };
+            harv.dir = Math.atan2(spot.y - (c.y - 0.5), spot.x - (c.x - 0.5));
             b.doorT = this.time;
             const node = this.bestNodeFor(b.owner, harv.x, harv.y);
             if (node) harv.order = { kind: 'harvest', nodeId: node.id };
@@ -1153,13 +1165,14 @@ export class Game {
               const c = this.buildingCenter(b);
               const u = this.spawnUnit(b.owner, item.unit, c.x, c.y);
               u.padBuildingId = b.id;
-              u.exitFx = { x: c.x, y: c.y, t0: this.time };
+              u.exitFx = { x: c.x, y: c.y, t0: this.time, buildingId: b.id };
               b.doorT = this.time;
             } else {
               const spot = this.findFreeTileNear(b.tx + b.w / 2, b.ty + b.h + 0.5);
               const u = this.spawnUnit(b.owner, item.unit, spot.x, spot.y);
               const bc = this.buildingCenter(b);
-              u.exitFx = { x: bc.x, y: bc.y, t0: this.time };
+              u.exitFx = { x: bc.x, y: bc.y, t0: this.time, buildingId: b.id };
+              u.dir = Math.atan2(spot.y - (bc.y - 0.5), spot.x - (bc.x - 0.5));
               b.doorT = this.time;
               if (item.unit === 'harvester') {
                 const node = this.bestNodeFor(b.owner, u.x, u.y);

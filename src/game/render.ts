@@ -1570,25 +1570,38 @@ export class Renderer {
       }
     }
 
-    // ----- unités en train de SORTIR d'un bâtiment : dessinées AVANT les
-    // bâtiments, donc sous leur toit — elles émergent par la porte sud.
-    // L'animation est purement visuelle : la position de jeu est inchangée.
+    // ----- unités en train de SORTIR : la porte s'ouvre d'abord, puis l'unité
+    // suit un couloir depuis l'ancre raster exacte jusqu'à sa tuile de jeu.
+    // Elle reste peinte avant le bâtiment : le toit et la façade la masquent
+    // réellement tant qu'elle est encore à l'intérieur.
     const exiting = new Set<number>();
     for (const u of g.units) {
       if (u.transportedBy) continue;
       if (u.airState || !u.exitFx) continue;
-      const dur = UNITS[u.type].armor === 'inf' ? 1.0 : 0.8;
-      const t = (g.time - u.exitFx.t0) / dur;
-      if (t < 0 || t >= 1) continue;
+      const inf = UNITS[u.type].armor === 'inf';
+      const wait = 0.24, travel = inf ? 1.15 : 1.48;
+      const elapsed = g.time - u.exitFx.t0;
+      if (elapsed < 0 || elapsed >= wait + travel) continue;
       if (u.x < tx0 - 2 || u.x > tx1 + 2 || u.y < ty0 - 2 || u.y > ty1 + 2) continue;
       if (u.owner !== this.pov && !g.isVisibleTo(this.pov, u.x, u.y)) continue;
-      const k = t * t * (3 - 2 * t); // lissage : démarre doucement, sort franchement
       exiting.add(u.id);
-      // le centre DESSINÉ du bâtiment est décalé d'une demi-tuile (convention
-      // de rendu des bâtiments) : on part de là pour émerger pile par la porte
-      const ex0 = u.exitFx.x - 0.5, ey0 = u.exitFx.y - 0.5;
-      this.drawUnitSprite(ctx, g, u, proj, v.selectedUnits.includes(u.id),
-        ex0 + (u.x - ex0) * k, ey0 + (u.y - ey0) * k);
+      if (elapsed < wait) continue; // porte en ouverture, unité encore invisible
+      const p = Math.max(0, Math.min(1, (elapsed - wait) / travel));
+      const k = p * p * (3 - 2 * p);
+      const host = u.exitFx.buildingId !== undefined ? g.buildingById.get(u.exitFx.buildingId) : undefined;
+      const door = host ? this.buildingDoorWorld(host) : { x: u.exitFx.x, y: u.exitFx.y };
+      const vx = u.x - door.x, vy = u.y - door.y;
+      const ex = door.x + vx * k, ey = door.y + vy * k;
+      // poussière/poids uniquement lorsque les roues ont franchi le seuil.
+      if (!inf && p > 0.28) {
+        const dust = Math.sin(Math.min(1, (p - 0.28) / 0.72) * Math.PI) * 0.18;
+        const dp = proj.toScreen(ex - vx * 0.09, ey - vy * 0.09);
+        ctx.fillStyle = `rgba(132,120,96,${dust})`;
+        ctx.beginPath();
+        ctx.ellipse(dp.x, dp.y + z * 0.06, z * 0.34, z * 0.14, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      this.drawUnitSprite(ctx, g, u, proj, v.selectedUnits.includes(u.id), ex, ey);
     }
 
     // ----- entités visibles + décals de sol
@@ -1613,6 +1626,9 @@ export class Renderer {
       }
       ctx.restore();
     }
+    // Toutes les ombres sont une couche du sol : elles passent sous unités,
+    // arbres et bâtiments, indépendamment de l'ordre du tri peintre.
+    for (const b of depthBuildings) if (b.built) this.drawBuildingShadow(ctx, b, proj);
     // tri peintre UNIFIÉ par profondeur iso (x+y) : une entité plus « avant »
     // (vers le bas de l'écran) est dessinée après celles qu'elle recouvre.
     interface DepthEnt { key: number; b?: Building; u?: Unit; tr?: TreeInit; }
@@ -2341,6 +2357,75 @@ export class Renderer {
     return this.isoSprite(type, owner).canvas;
   }
 
+  /** Convertit l'ancre raster de porte en coordonnées monde sur le plan du sol. */
+  private buildingDoorWorld(b: Building, spr = this.isoSprite(b.type, b.owner)): { x: number; y: number } {
+    const cx = b.tx - 0.5 + b.w / 2;
+    const cy = b.ty - 0.5 + b.h / 2;
+    if (!spr.door) return { x: cx, y: cy };
+    const sx = (spr.door.x - spr.ax) / spr.pxPerTile;
+    const sy = (spr.door.y - spr.ay) / spr.pxPerTile;
+    return {
+      x: cx + (sx + sy * 2) / 2,
+      y: cy + (sy * 2 - sx) / 2,
+    };
+  }
+
+  // Masque alpha noir du sprite : il permet de projeter une vraie silhouette
+  // au sol. Contrairement à un losange opaque, antennes, portiques et volumes
+  // hauts participent à l'ombre et la longueur suit réellement la hauteur.
+  private buildingShadowMasks = new Map<string, HTMLCanvasElement>();
+  private buildingShadowMask(type: string, spr: BuildingVisual): HTMLCanvasElement {
+    const key = `${buildingAssetRevision()}:${type}`;
+    const hit = this.buildingShadowMasks.get(key);
+    if (hit) return hit;
+    const cv = document.createElement('canvas');
+    cv.width = spr.canvas.width; cv.height = spr.canvas.height;
+    const c = cv.getContext('2d')!;
+    c.drawImage(spr.canvas, 0, 0);
+    c.globalCompositeOperation = 'source-in';
+    c.fillStyle = '#050807';
+    c.fillRect(0, 0, cv.width, cv.height);
+    this.buildingShadowMasks.set(key, cv);
+    return cv;
+  }
+
+  /** Ombre NW→SE partagée avec le relief, les arbres et les unités. */
+  private drawBuildingShadow(ctx: CanvasRenderingContext2D, b: Building, proj: Proj) {
+    const spr = this.isoSprite(b.type, b.owner);
+    const z = proj.z;
+    const s = z / spr.pxPerTile;
+    const cx = b.tx - 0.5 + b.w / 2, cy = b.ty - 0.5 + b.h / 2;
+    const pc = proj.toScreen(cx, cy);
+
+    // Pénombre portée : silhouette aplatie vers le sud-est. La partie sous
+    // l'ancre est exclue, car elle correspond à la façade et non à la hauteur.
+    const mask = this.buildingShadowMask(b.type, spr);
+    const cropH = Math.max(1, Math.min(mask.height, Math.round(spr.ay + 5)));
+    const reach = Math.min(1.18, 0.72 + spr.height * 0.13);
+    ctx.save();
+    ctx.translate(pc.x + z * 0.08, pc.y + z * 0.045);
+    ctx.transform(0.93, 0.12, -0.30 * reach, -0.095 * reach, 0, 0);
+    ctx.globalAlpha = 0.17;
+    ctx.filter = `blur(${Math.max(1.2, z * 0.055)}px)`;
+    ctx.drawImage(mask, 0, 0, mask.width, cropH,
+      -spr.ax * s, -spr.ay * s, mask.width * s, cropH * s);
+    ctx.restore();
+
+    // Occlusion de contact : courte, dense et légèrement douce. Elle ferme la
+    // couture bâtiment/terrain sans transformer toute l'emprise en tache noire.
+    ctx.save();
+    ctx.translate(z * 0.055, z * 0.035);
+    ctx.filter = `blur(${Math.max(0.8, z * 0.025)}px)`;
+    proj.footprintPath(ctx, b.tx + 0.04, b.ty + 0.04, b.w - 0.08, b.h - 0.08);
+    ctx.fillStyle = 'rgba(5,8,7,0.23)';
+    ctx.fill();
+    ctx.restore();
+    proj.footprintPath(ctx, b.tx + 0.07, b.ty + 0.07, b.w - 0.14, b.h - 0.14);
+    ctx.strokeStyle = 'rgba(4,7,6,0.25)';
+    ctx.lineWidth = Math.max(0.8, z * 0.035);
+    ctx.stroke();
+  }
+
   // -------------------------------------------- halo de sol travaillé
   //
   // Pour que le bâtiment ne paraisse plus « posé » sur une texture, on dessine
@@ -2397,7 +2482,24 @@ export class Renderer {
     c.fillStyle = g;
     c.fillRect(-cv.width / 2, -cv.height / 2, cv.width, cv.height);
 
-    // 2) poussière / terre claire mouchetée, plus dense vers les bords usés
+    // 2) dalle de fondation semi-transparente : le biome reste visible, mais
+    // le bâtiment repose sur une vraie plateforme avec joints et rive sombre.
+    const padX = fw * 0.46, padY = fh * 0.46;
+    c.fillStyle = 'rgba(142,143,134,0.18)';
+    c.fillRect(-padX, -padY, padX * 2, padY * 2);
+    c.strokeStyle = 'rgba(205,202,184,0.18)';
+    c.lineWidth = 1.4;
+    c.strokeRect(-padX, -padY, padX * 2, padY * 2);
+    c.strokeStyle = 'rgba(32,34,31,0.22)';
+    c.lineWidth = 1;
+    for (let x = -padX + B; x < padX; x += B) {
+      c.beginPath(); c.moveTo(x, -padY); c.lineTo(x, padY); c.stroke();
+    }
+    for (let y = -padY + B; y < padY; y += B) {
+      c.beginPath(); c.moveTo(-padX, y); c.lineTo(padX, y); c.stroke();
+    }
+
+    // 3) poussière / terre claire mouchetée, plus dense vers les bords usés
     for (let i = 0; i < 90; i++) {
       const a = rng() * Math.PI * 2, rr = Math.sqrt(rng());
       const x = Math.cos(a) * rx * rr, y = Math.sin(a) * ry * rr;
@@ -2409,17 +2511,93 @@ export class Renderer {
       c.beginPath(); c.ellipse(x, y, sz, sz * 0.7, 0, 0, Math.PI * 2); c.fill();
     }
 
-    // 3) traces de circulation : ornières estompées partant du pied vers le sud
-    //    (côté façade/sortie d'unités) → on devine l'usage du site.
-    c.strokeStyle = 'rgba(30,24,16,0.16)';
-    c.lineWidth = B * 0.16;
+    const logistics = ['refinery', 'refinery2', 'factory', 'factory2', 'depot', 'hq'].includes(type);
+    const industrial = ['power', 'power2', 'refinery', 'refinery2', 'factory', 'factory2', 'lab'].includes(type);
+    const sensors = ['radar', 'radarcenter', 'tech'].includes(type);
+    const air = type === 'airport' || type === 'helipad';
+    const defense = type === 'turret' || type === 'atgun' || type === 'aa';
+    const infantry = type === 'barracks' || type === 'barracks2';
+
+    // 4) sortie au sud-est : deux ornières alignées sur la vraie façade. Elles
+    // commencent sous le bâtiment et se dissolvent dans le terrain extérieur.
+    c.strokeStyle = `rgba(30,24,16,${logistics ? 0.22 : 0.12})`;
+    c.lineWidth = B * (logistics ? 0.12 : 0.075);
     c.lineCap = 'round';
     for (let t = 0; t < 2; t++) {
-      const ox = (t === 0 ? -1 : 1) * fw * 0.16;
+      const lane = (t === 0 ? -1 : 1) * B * (logistics ? 0.18 : 0.11);
       c.beginPath();
-      c.moveTo(ox, fh * 0.1);
-      c.bezierCurveTo(ox + (rng() - 0.5) * 20, fh * 0.4, ox + (rng() - 0.5) * 28, ry * 0.7, ox * 1.4 + (rng() - 0.5) * 30, ry * 1.02);
+      c.moveTo(fw * 0.12 + lane, fh * 0.12 - lane);
+      c.bezierCurveTo(fw * 0.30 + lane, fh * 0.34 - lane,
+        rx * 0.66 + lane, ry * 0.70 - lane,
+        rx * 0.94 + lane + (rng() - 0.5) * 5, ry * 0.96 - lane + (rng() - 0.5) * 5);
       c.stroke();
+    }
+
+    // 5) détails fonctionnels propres à chaque famille architecturale.
+    if (logistics || air) {
+      c.strokeStyle = air ? 'rgba(222,188,72,0.48)' : 'rgba(218,211,180,0.34)';
+      c.lineWidth = Math.max(1.5, B * 0.045);
+      c.setLineDash([B * 0.18, B * 0.16]);
+      c.beginPath();
+      c.moveTo(fw * 0.18, fh * 0.18);
+      c.lineTo(rx * 0.88, ry * 0.88);
+      c.stroke();
+      c.setLineDash([]);
+      // barre d'arrêt devant la porte
+      c.strokeStyle = 'rgba(211,144,46,0.52)';
+      c.lineWidth = B * 0.075;
+      c.beginPath();
+      c.moveTo(fw * 0.22 - B * 0.28, fh * 0.22 + B * 0.28);
+      c.lineTo(fw * 0.22 + B * 0.28, fh * 0.22 - B * 0.28);
+      c.stroke();
+    }
+    if (industrial) {
+      // conduite de service avec brides le long du côté nord-ouest
+      c.strokeStyle = 'rgba(42,48,46,0.48)';
+      c.lineWidth = B * 0.07;
+      c.beginPath();
+      c.moveTo(-padX * 0.92, -padY * 0.58);
+      c.lineTo(-padX * 0.58, -padY * 0.92);
+      c.lineTo(padX * 0.18, -padY * 0.92);
+      c.stroke();
+      c.fillStyle = 'rgba(116,124,116,0.55)';
+      for (const q of [-0.48, 0, 0.48]) {
+        c.beginPath(); c.arc(q * padX, -padY * 0.92, B * 0.055, 0, Math.PI * 2); c.fill();
+      }
+    }
+    if (sensors || type === 'power' || type === 'power2') {
+      // câbles de terre souples qui disparaissent dans la zone compactée
+      c.strokeStyle = 'rgba(24,29,28,0.50)';
+      c.lineWidth = B * 0.045;
+      for (const side of [-1, 1]) {
+        c.beginPath();
+        c.moveTo(side * fw * 0.28, -fh * 0.24);
+        c.quadraticCurveTo(side * rx * 0.78, -ry * 0.12, side * rx * 0.88, ry * 0.24);
+        c.stroke();
+      }
+    }
+    if (air) {
+      c.strokeStyle = 'rgba(224,194,77,0.36)';
+      c.lineWidth = B * 0.055;
+      c.beginPath(); c.ellipse(0, 0, fw * 0.35, fh * 0.35, 0, 0, Math.PI * 2); c.stroke();
+    }
+    if (infantry) {
+      c.fillStyle = 'rgba(162,157,139,0.18)';
+      c.fillRect(-fw * 0.30, -fh * 0.10, fw * 0.60, fh * 0.20);
+      c.strokeStyle = 'rgba(223,218,195,0.28)';
+      c.lineWidth = 1.3;
+      for (let x = -fw * 0.24; x <= fw * 0.24; x += B * 0.24) {
+        c.beginPath(); c.moveTo(x, -fh * 0.10); c.lineTo(x, fh * 0.10); c.stroke();
+      }
+    }
+    if (defense) {
+      c.strokeStyle = 'rgba(111,103,82,0.44)';
+      c.lineWidth = B * 0.13;
+      c.beginPath(); c.ellipse(0, 0, fw * 0.48, fh * 0.48, 0, 0, Math.PI * 2); c.stroke();
+      c.fillStyle = 'rgba(60,64,59,0.52)';
+      for (const [dx, dy] of [[-.31, -.31], [.31, -.31], [.31, .31], [-.31, .31]]) {
+        c.beginPath(); c.arc(dx * fw, dy * fh, B * 0.06, 0, Math.PI * 2); c.fill();
+      }
     }
     c.restore();
 
@@ -3875,14 +4053,6 @@ export class Renderer {
       this.constructing.delete(b.id);
       this.builtFlash.set(b.id, g.time);
     }
-    // Ombre calculée sur la carte : aucun sol ni ombre n'est enfermé dans les
-    // PNG, le même asset reste donc naturel sur les six biomes.
-    ctx.save();
-    ctx.translate(z * 0.16, z * 0.11);
-    proj.footprintPath(ctx, b.tx - 0.04, b.ty - 0.04, b.w + 0.08, b.h + 0.08);
-    ctx.fillStyle = 'rgba(7,10,9,0.28)';
-    ctx.fill();
-    ctx.restore();
     drawSprite(1);
 
     // flash d'activation à l'achèvement
@@ -3938,14 +4108,32 @@ export class Renderer {
           }
         }
     }
-    // lumière de porte quand une unité sort (le moteur pose doorT)
-    if (spr.door && b.doorT !== undefined && g.time - b.doorT < 0.9) {
-        const k2 = 1 - (g.time - b.doorT) / 0.9;
+    // Porte animée : ouverture sombre, balises latérales, maintien pendant le
+    // franchissement puis fermeture. Même sans frames dédiées, la production
+    // se lit comme un événement mécanique et non comme un spawn instantané.
+    if (spr.door && b.doorT !== undefined && g.time - b.doorT < 2.05) {
+        const elapsed = g.time - b.doorT;
+        const opening = Math.min(1, elapsed / 0.22);
+        const closing = Math.min(1, Math.max(0, (2.05 - elapsed) / 0.38));
+        const open = Math.max(0, Math.min(opening, closing));
         const dpx = spriteX + spr.door.x * s;
         const dpy = spriteY + spr.door.y * s;
         ctx.save();
-        ctx.globalAlpha = 0.75 * k2;
-        ctx.drawImage(this.warmGlow(), dpx - z * 0.8, dpy - z * 0.4, z * 1.6, z * 0.8);
+        ctx.globalAlpha = 0.45 * open;
+        ctx.drawImage(this.warmGlow(), dpx - z * 0.72, dpy - z * 0.34, z * 1.44, z * 0.68);
+        ctx.globalAlpha = 0.82 * open;
+        ctx.fillStyle = 'rgba(5,8,9,0.88)';
+        ctx.beginPath();
+        ctx.ellipse(dpx, dpy - z * 0.08, z * (b.w >= 3 ? 0.44 : 0.30) * open, z * 0.18, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(235,154,58,0.82)';
+        ctx.lineWidth = Math.max(1, z * 0.035);
+        for (const side of [-1, 1]) {
+          ctx.beginPath();
+          ctx.moveTo(dpx + side * z * (b.w >= 3 ? 0.46 : 0.32) * open, dpy - z * 0.24);
+          ctx.lineTo(dpx + side * z * (b.w >= 3 ? 0.46 : 0.32) * open, dpy + z * 0.08);
+          ctx.stroke();
+        }
         ctx.restore();
     }
 
