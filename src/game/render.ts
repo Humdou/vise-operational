@@ -747,6 +747,16 @@ export class Renderer {
           vx * tpx + (vx === 0 || vx === w ? 0 : vjx(vx, vy)),
           vy * tpx + (vy === 0 || vy === h ? 0 : vjy(vx, vy)),
         ]);
+        // passe laplacienne : aplanit le zigzag périodique des marches en
+        // diagonale AVANT Chaikin (sinon l'escalier survit en ondulation)
+        {
+          const lap: [number, number][] = [];
+          for (let i = 0; i < pts.length; i++) {
+            const p0 = pts[(i + pts.length - 1) % pts.length], p1 = pts[i], p2 = pts[(i + 1) % pts.length];
+            lap.push([(p0[0] + p1[0] * 2 + p2[0]) / 4, (p0[1] + p1[1] * 2 + p2[1]) / 4]);
+          }
+          pts = lap;
+        }
         for (let it = 0; it < 2; it++) {
           const sm: [number, number][] = [];
           for (let i = 0; i < pts.length; i++) {
@@ -811,7 +821,9 @@ export class Renderer {
         }
       const LIFT2 = tpx * 0.62;
       const isT2 = (xx: number, yy: number) =>
-        (xx < 0 || yy < 0 || xx >= w || yy >= h) ? true : rockDist[yy * w + xx] >= 3;
+        (xx < 0 || yy < 0 || xx >= w || yy >= h) ? true : rockDist[yy * w + xx] >= 2;
+      const isT3 = (xx: number, yy: number) =>
+        (xx < 0 || yy < 0 || xx >= w || yy >= h) ? true : rockDist[yy * w + xx] >= 4;
       const topRng = mulberry32(w * 149 + h * 761 + 13);
 
       // Une COUCHE de mesa = ombres portées + parois S/E + plateau + liserés,
@@ -868,6 +880,28 @@ export class Renderer {
           strip(run, 0, 0.42, wallTop);
           strip(run, 0.34, 0.78, shade(rockBase, -0.26));
           strip(run, 0.70, 1.0, wallBot);
+          // facettes verticales : colonnes rocheuses alternées (la paroi a du
+          // grain minéral, pas une simple tranche lisse)
+          {
+            let fAcc = 0, fTone = 0, fLast = 0;
+            for (let i = 1; i < run.length; i++) {
+              fAcc += Math.hypot(run[i][0] - run[i - 1][0], run[i][1] - run[i - 1][1]);
+              if (fAcc > tpx * (0.6 + wallRng() * 0.6) || i === run.length - 1) {
+                fAcc = 0;
+                if (fTone++ % 2 === 0) {
+                  const a = run[fLast], b = run[i];
+                  tc.fillStyle = wallRng() < 0.5 ? 'rgba(0,0,0,0.10)' : 'rgba(255,244,224,0.07)';
+                  tc.beginPath();
+                  tc.moveTo(a[0] - topLift + wallH * 0.05, a[1] - topLift + wallH * 0.05);
+                  tc.lineTo(b[0] - topLift + wallH * 0.05, b[1] - topLift + wallH * 0.05);
+                  tc.lineTo(b[0] - topLift + wallH * 0.97, b[1] - topLift + wallH * 0.97);
+                  tc.lineTo(a[0] - topLift + wallH * 0.97, a[1] - topLift + wallH * 0.97);
+                  tc.closePath(); tc.fill();
+                }
+                fLast = i;
+              }
+            }
+          }
           tc.strokeStyle = 'rgba(0,0,0,0.26)'; tc.lineWidth = 1;
           polyAt(run, 0.34, 2.2); tc.stroke();
           polyAt(run, 0.60, 2.2); tc.stroke();
@@ -977,9 +1011,12 @@ export class Renderer {
 
       // étage 1 : toutes les tuiles rocheuses, pied au sol
       drawMesaLayer(isRock, 0, LIFT, 1.45, 0.20);
-      // étage 2 : coeur des grands massifs, pied sur le plateau de l'étage 1 ;
+      // étage 2 : coeur des massifs, pied sur le plateau de l'étage 1 ;
       // sommet nettement plus clair (plus proche du ciel) → le ressaut se lit
-      drawMesaLayer(isT2, LIFT, LIFT2, 1.68, 0.17);
+      drawMesaLayer(isT2, LIFT, LIFT2, 1.62, 0.17);
+      // étage 3 : SOMMETS des très grands massifs — silhouette de pics clairs
+      // qui couronne les grandes chaînes (lecture immédiate des hauteurs)
+      drawMesaLayer(isT3, LIFT + LIFT2, tpx * 0.5, 1.78, 0.14);
     }
 
     // ===== 4) ROUTES en RÉSEAU réaliste : tranchée d'assise sombre → terre
@@ -1020,7 +1057,7 @@ export class Renderer {
           if ((layer === 2 || layer === 3 || layer === 4) && !thin) continue;
           // remplissage plein de la chaussée (disques fusionnés → pas de grille)
           if (layer === 0) {
-            tc.fillStyle = 'rgba(0,0,0,0.12)';
+            tc.fillStyle = 'rgba(0,0,0,0.09)';
             tc.beginPath(); tc.arc(cx, cy + tpx * 0.06, wide * 0.62 + tpx * 0.08, 0, Math.PI * 2); tc.fill();
           } else if (layer === 1) {
             tc.fillStyle = `rgba(${Math.round(dirtMid[0] * tone)},${Math.round(dirtMid[1] * tone)},${Math.round(dirtMid[2] * tone)},${ROAD_A})`;
@@ -1036,7 +1073,7 @@ export class Renderer {
             const len = Math.hypot(dx, dy);
             const ox = (-dy / len), oy = (dx / len);            // perpendiculaire unitaire
             if (layer === 0) {                                   // assise creusée
-              tc.strokeStyle = 'rgba(0,0,0,0.12)'; tc.lineWidth = wide + tpx * 0.18;
+              tc.strokeStyle = 'rgba(0,0,0,0.09)'; tc.lineWidth = wide + tpx * 0.18;
               tc.beginPath(); tc.moveTo(cx, cy + tpx * 0.06); tc.lineTo(nxp, nyp + tpx * 0.06); tc.stroke();
             } else if (layer === 1) {                            // terre battue
               tc.strokeStyle = `rgba(${Math.round(dirtMid[0] * tone)},${Math.round(dirtMid[1] * tone)},${Math.round(dirtMid[2] * tone)},${ROAD_A})`;
@@ -1067,7 +1104,7 @@ export class Renderer {
       for (let tx = 0; tx < w; tx++) {
         if (!roads[ty * w + tx]) continue;
         const cx = (tx + 0.5) * tpx, cy = (ty + 0.5) * tpx;
-        for (let k = 0; k < 5; k++) {
+        for (let k = 0; k < 3; k++) {
           const gx = cx + (grav() - 0.5) * tpx * 0.7, gy = cy + (grav() - 0.5) * tpx * 0.7;
           const rr = grav();
           if (rr < 0.7) { tc.fillStyle = snow ? `rgba(35,45,55,${0.08 + grav() * 0.1})` : `rgba(0,0,0,${0.1 + grav() * 0.12})`; tc.beginPath(); tc.arc(gx, gy, Math.max(0.6, SS * 0.28), 0, Math.PI * 2); tc.fill(); }
@@ -1111,7 +1148,7 @@ export class Renderer {
       const px = tx * tpx + vegRng() * tpx, py = ty * tpx + vegRng() * tpx;
       if (vegRng() < 0.55) {
         const len = SS * (0.8 + vegRng() * 1.0);
-        tc.strokeStyle = desertG ? 'rgba(140,100,40,0.12)' : 'rgba(0,0,0,0.16)';
+        tc.strokeStyle = desertG ? 'rgba(140,100,40,0.15)' : 'rgba(0,0,0,0.20)';
         tc.lineWidth = 1;
         for (let q = 0; q < 2; q++) {
           tc.beginPath();
@@ -1119,7 +1156,7 @@ export class Renderer {
           tc.lineTo(px + (vegRng() - 0.5) * SS, py - len * (0.6 + vegRng() * 0.5));
           tc.stroke();
         }
-        tc.strokeStyle = desertG ? 'rgba(220,190,120,0.10)' : 'rgba(255,255,230,0.13)';
+        tc.strokeStyle = desertG ? 'rgba(220,190,120,0.13)' : 'rgba(255,255,230,0.17)';
         tc.beginPath(); tc.moveTo(px + 0.7, py); tc.lineTo(px + 0.7 + (vegRng() - 0.5) * SS, py - len * 0.7); tc.stroke();
       }
     }
