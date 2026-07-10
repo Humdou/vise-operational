@@ -7,7 +7,6 @@ next-env.d.ts
 .DS_Store
 .next-build/
 .next-dev/
-public/assets/buildings/sources/
 
 # variables locales (clés Supabase) — jamais committées
 .env*.local

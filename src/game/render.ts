@@ -2,14 +2,15 @@
 // grille carrée top-down ; toute la conversion monde ↔ écran passe par
 // src/game/proj.ts. Le plan du sol (terrain pré-rendu, brouillard, décals)
 // est projeté par une transformation affine ; les entités sont des billboards
-// triés par profondeur (x+y). Bâtiments : sprites raster Coalition 2045,
-// ancrés et recolorés par le manifeste central (assets.ts).
+// triés par profondeur (x+y). Bâtiments : bakery iso dédiée (iso-buildings.ts)
+// remplaçable par des PNG via le manifest (assets.ts).
 import { Game, Unit, Building } from './engine';
 import { UNITS, BUILDINGS, THEMES, PLAYER_COLORS } from './data';
 import { T_GRASS, T_ROUGH, T_WATER, T_ROCK, mulberry32, TreeInit } from './map';
 import { prof } from './profiler';
 import { Proj, ISO_ELEV } from './proj';
-import { buildingAssetRevision, getBuildingVisual, type BuildingVisual } from './assets';
+import { bakeIsoBuilding, IsoBuildingSprite, BUILDING_HEIGHTS, ISO_S } from './iso-buildings';
+import { getBuildingAsset } from './assets';
 import { bakeVehicle } from './vehicles';
 
 export interface Camera {
@@ -1570,38 +1571,25 @@ export class Renderer {
       }
     }
 
-    // ----- unités en train de SORTIR : la porte s'ouvre d'abord, puis l'unité
-    // suit un couloir depuis l'ancre raster exacte jusqu'à sa tuile de jeu.
-    // Elle reste peinte avant le bâtiment : le toit et la façade la masquent
-    // réellement tant qu'elle est encore à l'intérieur.
+    // ----- unités en train de SORTIR d'un bâtiment : dessinées AVANT les
+    // bâtiments, donc sous leur toit — elles émergent par la porte sud.
+    // L'animation est purement visuelle : la position de jeu est inchangée.
     const exiting = new Set<number>();
     for (const u of g.units) {
       if (u.transportedBy) continue;
       if (u.airState || !u.exitFx) continue;
-      const inf = UNITS[u.type].armor === 'inf';
-      const wait = 0.24, travel = inf ? 1.15 : 1.48;
-      const elapsed = g.time - u.exitFx.t0;
-      if (elapsed < 0 || elapsed >= wait + travel) continue;
+      const dur = UNITS[u.type].armor === 'inf' ? 1.0 : 0.8;
+      const t = (g.time - u.exitFx.t0) / dur;
+      if (t < 0 || t >= 1) continue;
       if (u.x < tx0 - 2 || u.x > tx1 + 2 || u.y < ty0 - 2 || u.y > ty1 + 2) continue;
       if (u.owner !== this.pov && !g.isVisibleTo(this.pov, u.x, u.y)) continue;
+      const k = t * t * (3 - 2 * t); // lissage : démarre doucement, sort franchement
       exiting.add(u.id);
-      if (elapsed < wait) continue; // porte en ouverture, unité encore invisible
-      const p = Math.max(0, Math.min(1, (elapsed - wait) / travel));
-      const k = p * p * (3 - 2 * p);
-      const host = u.exitFx.buildingId !== undefined ? g.buildingById.get(u.exitFx.buildingId) : undefined;
-      const door = host ? this.buildingDoorWorld(host) : { x: u.exitFx.x, y: u.exitFx.y };
-      const vx = u.x - door.x, vy = u.y - door.y;
-      const ex = door.x + vx * k, ey = door.y + vy * k;
-      // poussière/poids uniquement lorsque les roues ont franchi le seuil.
-      if (!inf && p > 0.28) {
-        const dust = Math.sin(Math.min(1, (p - 0.28) / 0.72) * Math.PI) * 0.18;
-        const dp = proj.toScreen(ex - vx * 0.09, ey - vy * 0.09);
-        ctx.fillStyle = `rgba(132,120,96,${dust})`;
-        ctx.beginPath();
-        ctx.ellipse(dp.x, dp.y + z * 0.06, z * 0.34, z * 0.14, 0, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      this.drawUnitSprite(ctx, g, u, proj, v.selectedUnits.includes(u.id), ex, ey);
+      // le centre DESSINÉ du bâtiment est décalé d'une demi-tuile (convention
+      // de rendu des bâtiments) : on part de là pour émerger pile par la porte
+      const ex0 = u.exitFx.x - 0.5, ey0 = u.exitFx.y - 0.5;
+      this.drawUnitSprite(ctx, g, u, proj, v.selectedUnits.includes(u.id),
+        ex0 + (u.x - ex0) * k, ey0 + (u.y - ey0) * k);
     }
 
     // ----- entités visibles + décals de sol
@@ -1626,9 +1614,6 @@ export class Renderer {
       }
       ctx.restore();
     }
-    // Toutes les ombres sont une couche du sol : elles passent sous unités,
-    // arbres et bâtiments, indépendamment de l'ordre du tri peintre.
-    for (const b of depthBuildings) if (b.built) this.drawBuildingShadow(ctx, b, proj);
     // tri peintre UNIFIÉ par profondeur iso (x+y) : une entité plus « avant »
     // (vers le bas de l'écran) est dessinée après celles qu'elle recouvre.
     interface DepthEnt { key: number; b?: Building; u?: Unit; tr?: TreeInit; }
@@ -1912,7 +1897,7 @@ export class Renderer {
         ctx.stroke();
       }
       const spr = this.isoSprite(v.placing, this.pov);
-      const s = z / spr.pxPerTile;
+      const s = z / ISO_S;
       const pc = proj.toScreen(v.placeTx - 0.5 + def.w / 2, v.placeTy - 0.5 + def.h / 2);
       ctx.save();
       ctx.globalAlpha = 0.55;
@@ -2347,83 +2332,21 @@ export class Renderer {
   private builtFlash = new Map<number, number>();
   private constructing = new Set<number>();
 
-  // Sprite raster Coalition 2045, partagé par le jeu, la pose et le HUD.
-  private isoSprite(type: string, owner: number): BuildingVisual {
-    return getBuildingVisual(type as keyof typeof BUILDINGS, PLAYER_COLORS[owner]);
+  // sprites iso pré-cuits, par (type, équipe)
+  private isoSpriteCache = new Map<string, IsoBuildingSprite>();
+  private isoSprite(type: string, owner: number): IsoBuildingSprite {
+    const key = `b:${type}:${owner}`;
+    let s = this.isoSpriteCache.get(key);
+    if (!s) {
+      s = bakeIsoBuilding(type as keyof typeof BUILDINGS, PLAYER_COLORS[owner]);
+      this.isoSpriteCache.set(key, s);
+    }
+    return s;
   }
 
   /** Canvas du sprite (icônes du menu de construction, aperçus). */
   private buildingSprite(type: string, owner: number): HTMLCanvasElement {
     return this.isoSprite(type, owner).canvas;
-  }
-
-  /** Convertit l'ancre raster de porte en coordonnées monde sur le plan du sol. */
-  private buildingDoorWorld(b: Building, spr = this.isoSprite(b.type, b.owner)): { x: number; y: number } {
-    const cx = b.tx - 0.5 + b.w / 2;
-    const cy = b.ty - 0.5 + b.h / 2;
-    if (!spr.door) return { x: cx, y: cy };
-    const sx = (spr.door.x - spr.ax) / spr.pxPerTile;
-    const sy = (spr.door.y - spr.ay) / spr.pxPerTile;
-    return {
-      x: cx + (sx + sy * 2) / 2,
-      y: cy + (sy * 2 - sx) / 2,
-    };
-  }
-
-  // Masque alpha noir du sprite : il permet de projeter une vraie silhouette
-  // au sol. Contrairement à un losange opaque, antennes, portiques et volumes
-  // hauts participent à l'ombre et la longueur suit réellement la hauteur.
-  private buildingShadowMasks = new Map<string, HTMLCanvasElement>();
-  private buildingShadowMask(type: string, spr: BuildingVisual): HTMLCanvasElement {
-    const key = `${buildingAssetRevision()}:${type}`;
-    const hit = this.buildingShadowMasks.get(key);
-    if (hit) return hit;
-    const cv = document.createElement('canvas');
-    cv.width = spr.canvas.width; cv.height = spr.canvas.height;
-    const c = cv.getContext('2d')!;
-    c.drawImage(spr.canvas, 0, 0);
-    c.globalCompositeOperation = 'source-in';
-    c.fillStyle = '#050807';
-    c.fillRect(0, 0, cv.width, cv.height);
-    this.buildingShadowMasks.set(key, cv);
-    return cv;
-  }
-
-  /** Ombre NW→SE partagée avec le relief, les arbres et les unités. */
-  private drawBuildingShadow(ctx: CanvasRenderingContext2D, b: Building, proj: Proj) {
-    const spr = this.isoSprite(b.type, b.owner);
-    const z = proj.z;
-    const s = z / spr.pxPerTile;
-    const cx = b.tx - 0.5 + b.w / 2, cy = b.ty - 0.5 + b.h / 2;
-    const pc = proj.toScreen(cx, cy);
-
-    // Pénombre portée : silhouette aplatie vers le sud-est. La partie sous
-    // l'ancre est exclue, car elle correspond à la façade et non à la hauteur.
-    const mask = this.buildingShadowMask(b.type, spr);
-    const cropH = Math.max(1, Math.min(mask.height, Math.round(spr.ay + 5)));
-    const reach = Math.min(1.18, 0.72 + spr.height * 0.13);
-    ctx.save();
-    ctx.translate(pc.x + z * 0.08, pc.y + z * 0.045);
-    ctx.transform(0.93, 0.12, -0.30 * reach, -0.095 * reach, 0, 0);
-    ctx.globalAlpha = 0.17;
-    ctx.filter = `blur(${Math.max(1.2, z * 0.055)}px)`;
-    ctx.drawImage(mask, 0, 0, mask.width, cropH,
-      -spr.ax * s, -spr.ay * s, mask.width * s, cropH * s);
-    ctx.restore();
-
-    // Occlusion de contact : courte, dense et légèrement douce. Elle ferme la
-    // couture bâtiment/terrain sans transformer toute l'emprise en tache noire.
-    ctx.save();
-    ctx.translate(z * 0.055, z * 0.035);
-    ctx.filter = `blur(${Math.max(0.8, z * 0.025)}px)`;
-    proj.footprintPath(ctx, b.tx + 0.04, b.ty + 0.04, b.w - 0.08, b.h - 0.08);
-    ctx.fillStyle = 'rgba(5,8,7,0.23)';
-    ctx.fill();
-    ctx.restore();
-    proj.footprintPath(ctx, b.tx + 0.07, b.ty + 0.07, b.w - 0.14, b.h - 0.14);
-    ctx.strokeStyle = 'rgba(4,7,6,0.25)';
-    ctx.lineWidth = Math.max(0.8, z * 0.035);
-    ctx.stroke();
   }
 
   // -------------------------------------------- halo de sol travaillé
@@ -2482,24 +2405,7 @@ export class Renderer {
     c.fillStyle = g;
     c.fillRect(-cv.width / 2, -cv.height / 2, cv.width, cv.height);
 
-    // 2) dalle de fondation semi-transparente : le biome reste visible, mais
-    // le bâtiment repose sur une vraie plateforme avec joints et rive sombre.
-    const padX = fw * 0.46, padY = fh * 0.46;
-    c.fillStyle = 'rgba(142,143,134,0.18)';
-    c.fillRect(-padX, -padY, padX * 2, padY * 2);
-    c.strokeStyle = 'rgba(205,202,184,0.18)';
-    c.lineWidth = 1.4;
-    c.strokeRect(-padX, -padY, padX * 2, padY * 2);
-    c.strokeStyle = 'rgba(32,34,31,0.22)';
-    c.lineWidth = 1;
-    for (let x = -padX + B; x < padX; x += B) {
-      c.beginPath(); c.moveTo(x, -padY); c.lineTo(x, padY); c.stroke();
-    }
-    for (let y = -padY + B; y < padY; y += B) {
-      c.beginPath(); c.moveTo(-padX, y); c.lineTo(padX, y); c.stroke();
-    }
-
-    // 3) poussière / terre claire mouchetée, plus dense vers les bords usés
+    // 2) poussière / terre claire mouchetée, plus dense vers les bords usés
     for (let i = 0; i < 90; i++) {
       const a = rng() * Math.PI * 2, rr = Math.sqrt(rng());
       const x = Math.cos(a) * rx * rr, y = Math.sin(a) * ry * rr;
@@ -2511,93 +2417,17 @@ export class Renderer {
       c.beginPath(); c.ellipse(x, y, sz, sz * 0.7, 0, 0, Math.PI * 2); c.fill();
     }
 
-    const logistics = ['refinery', 'refinery2', 'factory', 'factory2', 'depot', 'hq'].includes(type);
-    const industrial = ['power', 'power2', 'refinery', 'refinery2', 'factory', 'factory2', 'lab'].includes(type);
-    const sensors = ['radar', 'radarcenter', 'tech'].includes(type);
-    const air = type === 'airport' || type === 'helipad';
-    const defense = type === 'turret' || type === 'atgun' || type === 'aa';
-    const infantry = type === 'barracks' || type === 'barracks2';
-
-    // 4) sortie au sud-est : deux ornières alignées sur la vraie façade. Elles
-    // commencent sous le bâtiment et se dissolvent dans le terrain extérieur.
-    c.strokeStyle = `rgba(30,24,16,${logistics ? 0.22 : 0.12})`;
-    c.lineWidth = B * (logistics ? 0.12 : 0.075);
+    // 3) traces de circulation : ornières estompées partant du pied vers le sud
+    //    (côté façade/sortie d'unités) → on devine l'usage du site.
+    c.strokeStyle = 'rgba(30,24,16,0.16)';
+    c.lineWidth = B * 0.16;
     c.lineCap = 'round';
     for (let t = 0; t < 2; t++) {
-      const lane = (t === 0 ? -1 : 1) * B * (logistics ? 0.18 : 0.11);
+      const ox = (t === 0 ? -1 : 1) * fw * 0.16;
       c.beginPath();
-      c.moveTo(fw * 0.12 + lane, fh * 0.12 - lane);
-      c.bezierCurveTo(fw * 0.30 + lane, fh * 0.34 - lane,
-        rx * 0.66 + lane, ry * 0.70 - lane,
-        rx * 0.94 + lane + (rng() - 0.5) * 5, ry * 0.96 - lane + (rng() - 0.5) * 5);
+      c.moveTo(ox, fh * 0.1);
+      c.bezierCurveTo(ox + (rng() - 0.5) * 20, fh * 0.4, ox + (rng() - 0.5) * 28, ry * 0.7, ox * 1.4 + (rng() - 0.5) * 30, ry * 1.02);
       c.stroke();
-    }
-
-    // 5) détails fonctionnels propres à chaque famille architecturale.
-    if (logistics || air) {
-      c.strokeStyle = air ? 'rgba(222,188,72,0.48)' : 'rgba(218,211,180,0.34)';
-      c.lineWidth = Math.max(1.5, B * 0.045);
-      c.setLineDash([B * 0.18, B * 0.16]);
-      c.beginPath();
-      c.moveTo(fw * 0.18, fh * 0.18);
-      c.lineTo(rx * 0.88, ry * 0.88);
-      c.stroke();
-      c.setLineDash([]);
-      // barre d'arrêt devant la porte
-      c.strokeStyle = 'rgba(211,144,46,0.52)';
-      c.lineWidth = B * 0.075;
-      c.beginPath();
-      c.moveTo(fw * 0.22 - B * 0.28, fh * 0.22 + B * 0.28);
-      c.lineTo(fw * 0.22 + B * 0.28, fh * 0.22 - B * 0.28);
-      c.stroke();
-    }
-    if (industrial) {
-      // conduite de service avec brides le long du côté nord-ouest
-      c.strokeStyle = 'rgba(42,48,46,0.48)';
-      c.lineWidth = B * 0.07;
-      c.beginPath();
-      c.moveTo(-padX * 0.92, -padY * 0.58);
-      c.lineTo(-padX * 0.58, -padY * 0.92);
-      c.lineTo(padX * 0.18, -padY * 0.92);
-      c.stroke();
-      c.fillStyle = 'rgba(116,124,116,0.55)';
-      for (const q of [-0.48, 0, 0.48]) {
-        c.beginPath(); c.arc(q * padX, -padY * 0.92, B * 0.055, 0, Math.PI * 2); c.fill();
-      }
-    }
-    if (sensors || type === 'power' || type === 'power2') {
-      // câbles de terre souples qui disparaissent dans la zone compactée
-      c.strokeStyle = 'rgba(24,29,28,0.50)';
-      c.lineWidth = B * 0.045;
-      for (const side of [-1, 1]) {
-        c.beginPath();
-        c.moveTo(side * fw * 0.28, -fh * 0.24);
-        c.quadraticCurveTo(side * rx * 0.78, -ry * 0.12, side * rx * 0.88, ry * 0.24);
-        c.stroke();
-      }
-    }
-    if (air) {
-      c.strokeStyle = 'rgba(224,194,77,0.36)';
-      c.lineWidth = B * 0.055;
-      c.beginPath(); c.ellipse(0, 0, fw * 0.35, fh * 0.35, 0, 0, Math.PI * 2); c.stroke();
-    }
-    if (infantry) {
-      c.fillStyle = 'rgba(162,157,139,0.18)';
-      c.fillRect(-fw * 0.30, -fh * 0.10, fw * 0.60, fh * 0.20);
-      c.strokeStyle = 'rgba(223,218,195,0.28)';
-      c.lineWidth = 1.3;
-      for (let x = -fw * 0.24; x <= fw * 0.24; x += B * 0.24) {
-        c.beginPath(); c.moveTo(x, -fh * 0.10); c.lineTo(x, fh * 0.10); c.stroke();
-      }
-    }
-    if (defense) {
-      c.strokeStyle = 'rgba(111,103,82,0.44)';
-      c.lineWidth = B * 0.13;
-      c.beginPath(); c.ellipse(0, 0, fw * 0.48, fh * 0.48, 0, 0, Math.PI * 2); c.stroke();
-      c.fillStyle = 'rgba(60,64,59,0.52)';
-      for (const [dx, dy] of [[-.31, -.31], [.31, -.31], [.31, .31], [-.31, .31]]) {
-        c.beginPath(); c.arc(dx * fw, dy * fh, B * 0.06, 0, Math.PI * 2); c.fill();
-      }
     }
     c.restore();
 
@@ -2610,7 +2440,7 @@ export class Renderer {
   // est exactement l'apparence en jeu. Renvoie un data-URL PNG, mis en cache.
   private iconCache = new Map<string, string>();
   buildingIcon(type: string, owner: number): string {
-    const key = `${buildingAssetRevision()}:${type}:${owner}`;
+    const key = `${type}:${owner}`;
     const hit = this.iconCache.get(key);
     if (hit) return hit;
     const src = this.buildingSprite(type, owner);
@@ -3916,11 +3746,9 @@ export class Renderer {
     const x0 = b.tx - 0.5, y0 = b.ty - 0.5;              // coin monde de l'emprise
     const pc = proj.toScreen(x0 + b.w / 2, y0 + b.h / 2); // centre au sol
     const spr = this.isoSprite(b.type, b.owner);
-    const s = z / spr.pxPerTile;
-    const hgt = spr.height;
+    const s = z / ISO_S;
+    const hgt = BUILDING_HEIGHTS[b.type as keyof typeof BUILDING_HEIGHTS] ?? 1.2;
     const topY = pc.y - hgt * z * ISO_ELEV - z * 0.45;
-    const spriteX = pc.x - spr.ax * s;
-    const spriteY = pc.y - spr.ay * s;
 
     const drawBuildProgress = (progress: number, fill: string) => {
       const barW = Math.max(18, Math.min(b.w, 3) * z * 0.8);
@@ -3943,19 +3771,28 @@ export class Renderer {
       ctx.restore();
     };
 
-    // Source unique : sprite raster Coalition 2045 déjà teinté pour l'équipe.
+    // dessine le sprite du bâtiment (bake iso ou PNG externe)
+    const asset = getBuildingAsset(b.type as keyof typeof BUILDINGS);
     const drawSprite = (alpha = 1, revealFrom = 0) => {
       ctx.save();
       ctx.globalAlpha = alpha;
-      const dx = spriteX, dy = spriteY;
-      const dw = spr.canvas.width * s, dh = spr.canvas.height * s;
+      let dx: number, dy: number, dw: number, dh: number;
+      if (asset) {
+        const sA = z / asset.pxPerTile;
+        dx = pc.x - asset.ax * sA; dy = pc.y - asset.ay * sA;
+        dw = asset.img.width * sA; dh = asset.img.height * sA;
+      } else {
+        dx = pc.x - spr.ax * s; dy = pc.y - spr.ay * s;
+        dw = spr.canvas.width * s; dh = spr.canvas.height * s;
+      }
       if (revealFrom > 0) {
         // chantier : révélation bas → haut
         ctx.beginPath();
         ctx.rect(dx - 4, dy + dh * (1 - revealFrom) - 0.5, dw + 8, dh * revealFrom + z, );
         ctx.clip();
       }
-      ctx.drawImage(spr.canvas, dx, dy, dw, dh);
+      if (asset) ctx.drawImage(asset.img, dx, dy, dw, dh);
+      else ctx.drawImage(spr.canvas, dx, dy, dw, dh);
       ctx.restore();
       return { dx, dy, dw, dh };
     };
@@ -4069,17 +3906,18 @@ export class Renderer {
       }
     }
 
-    // ----- surcouches animées ancrées directement dans le sprite raster
-    for (const o of spr.effects) {
-        const opx = spriteX + o.x * s;
-        const opy = spriteY + o.y * s;
-        if (o.kind === 'steam') this.steam(ctx, opx, opy, z, g.time + b.id * 1.7, o.scale);
-        else if (o.kind === 'flame') this.flame(ctx, opx, opy, z, g.time + b.id * 0.9, o.scale);
+    // ----- surcouches animées ancrées dans le bake
+    if (!asset) {
+      for (const o of spr.overlays) {
+        const opx = proj.sx(x0 + o.u, y0 + o.v);
+        const opy = proj.sy(x0 + o.u, y0 + o.v) - o.h * z * ISO_ELEV;
+        if (o.kind === 'steam') this.steam(ctx, opx, opy, z, g.time + b.id * 1.7, o.s);
+        else if (o.kind === 'flame') this.flame(ctx, opx, opy, z, g.time + b.id * 0.9, o.s);
         else if (o.kind === 'smoke') {
           // panache : 3 bouffées qui montent et dérivent
           for (let k = 0; k < 3; k++) {
             const tt = ((g.time * 0.5 + b.id * 0.37 + k / 3) % 1);
-            const rr2 = z * (0.08 + tt * 0.22) * o.scale;
+            const rr2 = z * (0.08 + tt * 0.22) * o.s;
             ctx.fillStyle = `rgba(72,70,66,${0.3 * (1 - tt)})`;
             ctx.beginPath();
             ctx.arc(opx + Math.sin((tt + k) * 4.2) * z * 0.08 + tt * z * 0.22, opy - tt * z * 0.85, rr2, 0, Math.PI * 2);
@@ -4088,14 +3926,14 @@ export class Renderer {
         } else if (o.kind === 'beacon') {
           const blink = 0.5 + 0.5 * Math.sin(g.time * 3.4 + b.id);
           ctx.fillStyle = `rgba(255,84,58,${0.35 + blink * 0.6})`;
-          ctx.beginPath(); ctx.arc(opx, opy, Math.max(1.4, z * 0.05) * o.scale, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(opx, opy, Math.max(1.4, z * 0.05) * o.s, 0, Math.PI * 2); ctx.fill();
           ctx.fillStyle = `rgba(255,120,80,${blink * 0.18})`;
-          ctx.beginPath(); ctx.arc(opx, opy, Math.max(3, z * 0.14) * o.scale, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(opx, opy, Math.max(3, z * 0.14) * o.s, 0, Math.PI * 2); ctx.fill();
         } else if (o.kind === 'weld' && b.queue.length > 0) {
           const fl = Math.sin(g.time * 23 + b.id * 3.1);
           if (fl > 0.25) {
             ctx.fillStyle = `rgba(255,244,200,${0.35 + fl * 0.5})`;
-            ctx.beginPath(); ctx.arc(opx, opy, Math.max(1.5, z * 0.06) * o.scale * (0.7 + fl * 0.5), 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.arc(opx, opy, Math.max(1.5, z * 0.06) * o.s * (0.7 + fl * 0.5), 0, Math.PI * 2); ctx.fill();
             ctx.strokeStyle = `rgba(255,210,120,${fl * 0.5})`;
             ctx.lineWidth = 1;
             for (let k = 0; k < 3; k++) {
@@ -4107,46 +3945,29 @@ export class Renderer {
             }
           }
         }
-    }
-    // Porte animée : ouverture sombre, balises latérales, maintien pendant le
-    // franchissement puis fermeture. Même sans frames dédiées, la production
-    // se lit comme un événement mécanique et non comme un spawn instantané.
-    if (spr.door && b.doorT !== undefined && g.time - b.doorT < 2.05) {
-        const elapsed = g.time - b.doorT;
-        const opening = Math.min(1, elapsed / 0.22);
-        const closing = Math.min(1, Math.max(0, (2.05 - elapsed) / 0.38));
-        const open = Math.max(0, Math.min(opening, closing));
-        const dpx = spriteX + spr.door.x * s;
-        const dpy = spriteY + spr.door.y * s;
+      }
+      // lumière de porte quand une unité sort (le moteur pose doorT)
+      if (spr.door && b.doorT !== undefined && g.time - b.doorT < 0.9) {
+        const k2 = 1 - (g.time - b.doorT) / 0.9;
+        const dpx = proj.sx(x0 + spr.door.u, y0 + spr.door.v);
+        const dpy = proj.sy(x0 + spr.door.u, y0 + spr.door.v);
         ctx.save();
-        ctx.globalAlpha = 0.45 * open;
-        ctx.drawImage(this.warmGlow(), dpx - z * 0.72, dpy - z * 0.34, z * 1.44, z * 0.68);
-        ctx.globalAlpha = 0.82 * open;
-        ctx.fillStyle = 'rgba(5,8,9,0.88)';
-        ctx.beginPath();
-        ctx.ellipse(dpx, dpy - z * 0.08, z * (b.w >= 3 ? 0.44 : 0.30) * open, z * 0.18, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(235,154,58,0.82)';
-        ctx.lineWidth = Math.max(1, z * 0.035);
-        for (const side of [-1, 1]) {
-          ctx.beginPath();
-          ctx.moveTo(dpx + side * z * (b.w >= 3 ? 0.46 : 0.32) * open, dpy - z * 0.24);
-          ctx.lineTo(dpx + side * z * (b.w >= 3 ? 0.46 : 0.32) * open, dpy + z * 0.08);
-          ctx.stroke();
-        }
+        ctx.globalAlpha = 0.75 * k2;
+        ctx.drawImage(this.warmGlow(), dpx - z * 0.8, dpy - z * 0.4, z * 1.6, z * 0.8);
         ctx.restore();
+      }
     }
 
     // ----- tourelle pivotante des défenses (posée sur le plan du sol surélevé)
-    if (spr.turret) {
+    if (spr.turret && spr.turretMount) {
       let ang = g.time * 0.3 + b.id;   // veille : balayage lent
       if (b.engageId) {
         const tgt = g.unitById.get(b.engageId);
         if (tgt) ang = Math.atan2(tgt.y - (y0 + b.h / 2), tgt.x - (x0 + b.w / 2));
       }
-      const m = spr.turret;
-      const mpx = spriteX + m.mount.x * s;
-      const mpy = spriteY + m.mount.y * s;
+      const m = spr.turretMount;
+      const mpx = proj.sx(x0 + m.u, y0 + m.v);
+      const mpy = proj.sy(x0 + m.u, y0 + m.v) - m.h * z * ISO_ELEV;
       // ombre de la pièce sur la plateforme
       ctx.fillStyle = 'rgba(0,0,0,0.25)';
       ctx.beginPath(); ctx.ellipse(mpx + z * 0.05, mpy + z * 0.06, z * 0.34, z * 0.17, 0, 0, Math.PI * 2); ctx.fill();
@@ -4154,8 +3975,9 @@ export class Renderer {
       ctx.translate(mpx, mpy);
       ctx.transform(1, 0.5, -1, 0.5, 0, 0);
       ctx.rotate(ang);
-      ctx.scale(s * m.scale, s * m.scale);
-      ctx.drawImage(m.canvas, -m.pivot.x, -m.pivot.y);
+      const sT = z / 64;
+      ctx.scale(sT, sT);
+      ctx.drawImage(spr.turret, -spr.turret.width / 2, -spr.turret.height / 2);
       ctx.restore();
       // recul/flash de tir : cd vient d'être rechargé
       if (b.engageId && b.cd > 0) {
@@ -4163,9 +3985,9 @@ export class Renderer {
         if (wdef && wdef.cooldown - b.cd < 0.09) {
           const fpx = mpx + Math.cos(ang) * z * 0.5 - Math.sin(ang) * 0;
           void fpx;
-          const muz = proj.toScreen(x0 + b.w / 2 + Math.cos(ang) * 0.55, y0 + b.h / 2 + Math.sin(ang) * 0.55);
+          const muz = proj.toScreen(x0 + m.u + Math.cos(ang) * 0.55, y0 + m.v + Math.sin(ang) * 0.55);
           ctx.fillStyle = 'rgba(255,240,190,0.9)';
-          ctx.beginPath(); ctx.arc(muz.x, muz.y - z * 0.4, z * 0.12, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(muz.x, muz.y - m.h * z * ISO_ELEV, z * 0.12, 0, Math.PI * 2); ctx.fill();
         }
       }
     }

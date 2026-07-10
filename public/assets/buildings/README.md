@@ -1,24 +1,24 @@
-# Bâtiments Coalition 2045
+# Sprites PNG des bâtiments (optionnels)
 
-Les 19 bâtiments du jeu utilisent exclusivement les sprites raster de ce dossier.
-`manifest.json` décrit leurs ancres, leur hauteur, les panneaux recolorés par équipe,
-les effets animés, les portes et les modules rotatifs des défenses.
+Déposez ici `<type>.png` pour remplacer le sprite procédural d'un bâtiment
+(types : hq, power, power2, refinery, refinery2, barracks, barracks2, factory,
+factory2, radar, radarcenter, airport, helipad, turret, atgun, aa, tech,
+depot, lab).
 
-Les PNG finaux sont en isométrie orthographique 2:1, sans sol ni ombre intégrée.
-Le moteur génère les ombres selon la carte et compose les couleurs des 32 équipes.
+Format attendu :
+- isométrie diamant 2:1 (mêmes angles que le jeu), bâtiment SEUL, fond
+  transparent, pas de décor ni d'unités ;
+- ombre portée intégrée (vers le bas-droite) ou aucune ;
+- cadrage au plus près : le bas du PNG = coin sud (avant) de l'emprise.
 
-Le script de production attend des sources chroma locales dans `sources/`
-(intermédiaires non versionnés), puis régénère les PNG alpha et le manifeste :
-
-```bash
-python3 scripts/process-building-assets.py
+Métadonnées optionnelles `<type>.json` :
+```json
+{ "pxPerTile": 44, "ax": 120, "ay": 180 }
 ```
+`pxPerTile` = pixels par tuile (demi-largeur du losange d'une tuile) ;
+`(ax, ay)` = point du PNG posé sur le centre de l'emprise au sol.
+Sans JSON : `pxPerTile = largeur/(w+h)`, `ax = largeur/2`,
+`ay = hauteur − (w+h)·pxPerTile/4`.
 
-Validation :
-
-```bash
-npm run validate:buildings
-```
-
-La route `/buildings` affiche la planche QA avec sélection du biome, de l’équipe,
-lecture éloignée et silhouettes noires.
+Le moteur garde ses jauges/sélection/chantier ; la couleur d'équipe n'est pas
+appliquée aux PNG (prévoir des marquages neutres ou une variante par équipe).
