@@ -1571,27 +1571,6 @@ export class Renderer {
       }
     }
 
-    // ----- unités en train de SORTIR d'un bâtiment : dessinées AVANT les
-    // bâtiments, donc sous leur toit — elles émergent par la porte sud.
-    // L'animation est purement visuelle : la position de jeu est inchangée.
-    const exiting = new Set<number>();
-    for (const u of g.units) {
-      if (u.transportedBy) continue;
-      if (u.airState || !u.exitFx) continue;
-      const dur = UNITS[u.type].armor === 'inf' ? 1.0 : 0.8;
-      const t = (g.time - u.exitFx.t0) / dur;
-      if (t < 0 || t >= 1) continue;
-      if (u.x < tx0 - 2 || u.x > tx1 + 2 || u.y < ty0 - 2 || u.y > ty1 + 2) continue;
-      if (u.owner !== this.pov && !g.isVisibleTo(this.pov, u.x, u.y)) continue;
-      const k = t * t * (3 - 2 * t); // lissage : démarre doucement, sort franchement
-      exiting.add(u.id);
-      // le centre DESSINÉ du bâtiment est décalé d'une demi-tuile (convention
-      // de rendu des bâtiments) : on part de là pour émerger pile par la porte
-      const ex0 = u.exitFx.x - 0.5, ey0 = u.exitFx.y - 0.5;
-      this.drawUnitSprite(ctx, g, u, proj, v.selectedUnits.includes(u.id),
-        ex0 + (u.x - ex0) * k, ey0 + (u.y - ey0) * k);
-    }
-
     // ----- entités visibles + décals de sol
     const depthBuildings: Building[] = [];
     for (const b of g.buildings) {
@@ -1627,15 +1606,56 @@ export class Renderer {
       ctx.drawImage(spr.ground, pcG.x - spr.ax * sG, pcG.y - spr.ay * sG, spr.ground.width * sG, spr.ground.height * sG);
     }
     ctx.globalAlpha = 1;
+
+    // ----- unités en train de SORTIR d'un bâtiment : dessinées APRÈS le sol
+    // des bâtiments mais AVANT leurs structures — elles roulent sur la dalle
+    // et émergent par la porte, cachées par les murs tant qu'elles sont dedans.
+    const exiting = new Set<number>();
+    this.exitActiveB.clear();
+    for (const u of g.units) {
+      if (u.transportedBy || u.airState) continue;
+      // sortie PILOTÉE PAR LE MOTEUR (usines/casernes) : la position de jeu
+      // est la vraie position — l'unité roule depuis l'intérieur du bâtiment
+      if (u.exiting) {
+        this.exitActiveB.add(u.exiting.bId);
+        if (u.x < tx0 - 2 || u.x > tx1 + 2 || u.y < ty0 - 2 || u.y > ty1 + 2) continue;
+        if (!revealAll && u.owner !== this.pov && !g.isVisibleTo(this.pov, u.x, u.y)) continue;
+        exiting.add(u.id);
+        this.drawUnitSprite(ctx, g, u, proj, v.selectedUnits.includes(u.id));
+        continue;
+      }
+      if (!u.exitFx) continue;
+      const dur = UNITS[u.type].armor === 'inf' ? 1.0 : 0.8;
+      const t = (g.time - u.exitFx.t0) / dur;
+      if (t < 0 || t >= 1) continue;
+      if (u.x < tx0 - 2 || u.x > tx1 + 2 || u.y < ty0 - 2 || u.y > ty1 + 2) continue;
+      if (!revealAll && u.owner !== this.pov && !g.isVisibleTo(this.pov, u.x, u.y)) continue;
+      const k = t * t * (3 - 2 * t); // lissage : démarre doucement, sort franchement
+      exiting.add(u.id);
+      // le centre DESSINÉ du bâtiment est décalé d'une demi-tuile (convention
+      // de rendu des bâtiments) : on part de là pour émerger pile par la porte
+      const ex0 = u.exitFx.x - 0.5, ey0 = u.exitFx.y - 0.5;
+      this.drawUnitSprite(ctx, g, u, proj, v.selectedUnits.includes(u.id),
+        ex0 + (u.x - ex0) * k, ey0 + (u.y - ey0) * k);
+    }
     // tri peintre UNIFIÉ par profondeur iso (x+y) : une entité plus « avant »
     // (vers le bas de l'écran) est dessinée après celles qu'elle recouvre.
-    interface DepthEnt { key: number; b?: Building; u?: Unit; tr?: TreeInit; }
+    // Les bâtiments achevés sont éclatés en PARTS (hall, silo, tour…), chacune
+    // triée avec SA clé de profondeur : une unité qui longe un module passe
+    // devant ou derrière CE module — c'est le correctif définitif du
+    // « véhicule qui passe sous le bâtiment ».
+    interface DepthEnt { key: number; b?: Building; bp?: number; u?: Unit; tr?: TreeInit; }
     const ents: DepthEnt[] = [];
     for (const b of depthBuildings) {
-      // clé reculée d'un demi-petit-côté : une unité qui longe la façade sud
-      // ou est passe DEVANT le bâtiment (elle n'est plus avalée par le sprite),
-      // sans faire surgir devant lui les unités qui passent derrière
-      ents.push({ key: (b.tx - 0.5 + b.w) + (b.ty - 0.5 + b.h) - (Math.min(b.w, b.h) * 0.5 + 0.15), b });
+      if (!b.built || getBuildingAsset(b.type as keyof typeof BUILDINGS)) {
+        // chantier / sprite PNG externe : entité unique (clé reculée d'un
+        // demi-petit-côté, meilleur compromis pour un sprite monolithique)
+        ents.push({ key: (b.tx - 0.5 + b.w) + (b.ty - 0.5 + b.h) - (Math.min(b.w, b.h) * 0.5 + 0.15), b, bp: -1 });
+        continue;
+      }
+      const sprB = this.isoSprite(b.type, b.owner);
+      const baseKey = (b.tx - 0.5) + (b.ty - 0.5);
+      for (let i = 0; i < sprB.parts.length; i++) ents.push({ key: baseKey + sprB.parts[i].key, b, bp: i });
     }
     for (const u of g.units) {
       if (u.transportedBy) continue;
@@ -1657,7 +1677,7 @@ export class Renderer {
     if (prof.enabled) { prof.count('render.entCount', ents.length); prof.count('render.entFrames'); }
     const _re = prof.enabled ? performance.now() : 0;
     for (const e of ents) {
-      if (e.b) this.drawBuildingSprite(ctx, g, e.b, proj, v.selectedBuilding === e.b.id);
+      if (e.b) this.drawBuildingSprite(ctx, g, e.b, proj, v.selectedBuilding === e.b.id, e.bp ?? -1);
       else if (e.u) this.drawUnitSprite(ctx, g, e.u, proj, v.selectedUnits.includes(e.u.id));
       else if (e.tr) this.drawTree(ctx, g, e.tr, proj);
     }
@@ -2427,12 +2447,22 @@ export class Renderer {
     c.save();
     path(); c.clip();
     const g = c.createRadialGradient(0, 0, Math.min(rx, ry) * 0.2, 0, 0, Math.max(rx, ry));
-    g.addColorStop(0, 'rgba(58,50,38,0.34)');     // sous le bâtiment : terre tassée
-    g.addColorStop(0.52, 'rgba(40,33,24,0.52)');  // contact/ombre au pied : poids
-    g.addColorStop(0.78, 'rgba(64,56,42,0.30)');
+    g.addColorStop(0, 'rgba(54,46,34,0.26)');     // sous le bâtiment : terre tassée (la dalle la couvre)
+    g.addColorStop(0.5, 'rgba(46,38,27,0.32)');
+    g.addColorStop(0.7, 'rgba(28,23,16,0.52)');   // OMBRE DE CONTACT au pied des murs
+    g.addColorStop(0.88, 'rgba(60,52,39,0.28)');
     g.addColorStop(1, 'rgba(74,66,50,0)');         // se fond dans le terrain
     c.fillStyle = g;
     c.fillRect(-cv.width / 2, -cv.height / 2, cv.width, cv.height);
+    // ombre de contact SERRÉE qui épouse l'emprise (rectangle projeté = losange
+    // du pied) : le bâtiment « pèse » sur le sol au lieu de flotter.
+    c.save();
+    c.shadowColor = 'rgba(0,0,0,0.5)';
+    c.shadowBlur = B * 0.4;
+    c.strokeStyle = 'rgba(0,0,0,0.28)';
+    c.lineWidth = B * 0.14;
+    c.strokeRect(-fw / 2, -fh / 2, fw, fh);
+    c.restore();
 
     // 2) poussière / terre claire mouchetée, plus dense vers les bords usés
     for (let i = 0; i < 90; i++) {
@@ -3766,9 +3796,66 @@ export class Renderer {
   // perspective, surcouches animées (fumée/vapeur/flamme/balise/soudure)
   // positionnées par les ancres du bake, tourelles pivotantes posées sur le
   // plan du sol, sélection et rally en losange/ellipses au sol.
+  // bâtiments dont une unité est en train de sortir (rempli à chaque frame)
+  private exitActiveB = new Set<number>();
+  // état d'ouverture de la porte de production (k lissé 0..1 par bâtiment) —
+  // purement visuel et local au renderer : robuste même quand doorT n'est pas
+  // connu (client multijoueur), et la porte reste ouverte entre deux sorties
+  // rapprochées au lieu de claquer
+  private doorAnim = new Map<number, { k: number; t: number }>();
+
+  // panneau roulant de la porte de PRODUCTION : FERMÉ au repos, il coulisse
+  // vers le haut pendant qu'une unité sort, puis se referme. Dessiné juste
+  // après la part qui contient le mur de la porte → même profondeur qu'elle.
+  private drawExitDoor(
+    ctx: CanvasRenderingContext2D, g: Game, b: Building, proj: Proj,
+    d: NonNullable<IsoBuildingSprite['exitDoor']>, x0: number, y0: number,
+  ) {
+    const OPEN = 0.32, CLOSE = 0.45;
+    const openNow = this.exitActiveB.has(b.id);
+    let k = 0;   // 0 = fermé, 1 = grand ouvert
+    const st = this.doorAnim.get(b.id);
+    if (st || openNow) {
+      const a = st ?? { k: 0, t: g.time };
+      const dtA = Math.max(0, Math.min(0.1, g.time - a.t));
+      a.k = openNow ? Math.min(1, a.k + dtA / OPEN) : Math.max(0, a.k - dtA / CLOSE);
+      a.t = g.time;
+      if (!openNow && a.k <= 0) this.doorAnim.delete(b.id);
+      else this.doorAnim.set(b.id, a);
+      k = a.k;
+    }
+    if (k >= 0.98) return;
+    const z = proj.z;
+    const hLow = d.h * k;   // le bord bas remonte quand la porte s'ouvre
+    const PT = (a: number, hh: number) => d.side === 'left'
+      ? { x: proj.sx(x0 + a, y0 + d.fixed), y: proj.sy(x0 + a, y0 + d.fixed, hh) }
+      : { x: proj.sx(x0 + d.fixed, y0 + a), y: proj.sy(x0 + d.fixed, y0 + a, hh) };
+    const p00 = PT(d.a0, d.h), p10 = PT(d.a1, d.h);
+    const p11 = PT(d.a1, hLow), p01 = PT(d.a0, hLow);
+    ctx.beginPath();
+    ctx.moveTo(p00.x, p00.y); ctx.lineTo(p10.x, p10.y);
+    ctx.lineTo(p11.x, p11.y); ctx.lineTo(p01.x, p01.y);
+    ctx.closePath();
+    ctx.fillStyle = '#49514a';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(10,12,10,0.5)'; ctx.lineWidth = 1;
+    ctx.stroke();
+    // nervures du rideau métallique
+    ctx.strokeStyle = 'rgba(15,18,15,0.35)';
+    for (let i = 1; i < 5; i++) {
+      const hh = hLow + ((d.h - hLow) * i) / 5;
+      const rA = PT(d.a0, hh), rB = PT(d.a1, hh);
+      ctx.beginPath(); ctx.moveTo(rA.x, rA.y); ctx.lineTo(rB.x, rB.y); ctx.stroke();
+    }
+    // barre de seuil (bord bas renforcé)
+    ctx.strokeStyle = 'rgba(184,145,47,0.85)';
+    ctx.lineWidth = Math.max(1.5, z * 0.045);
+    ctx.beginPath(); ctx.moveTo(p01.x, p01.y); ctx.lineTo(p11.x, p11.y); ctx.stroke();
+  }
+
   private drawBuildingSprite(
     ctx: CanvasRenderingContext2D, g: Game, b: Building,
-    proj: Proj, selected: boolean,
+    proj: Proj, selected: boolean, partIdx = -1,
   ) {
     const z = proj.z;
     const col = PLAYER_COLORS[b.owner];
@@ -3919,7 +4006,21 @@ export class Renderer {
       this.constructing.delete(b.id);
       this.builtFlash.set(b.id, g.time);
     }
-    drawSprite(1);
+    if (asset || partIdx < 0) {
+      drawSprite(1);
+    } else {
+      // rendu d'UNE part triée en profondeur
+      const p = spr.parts[partIdx];
+      if (p) ctx.drawImage(p.canvas, pc.x - spr.ax * s + p.ox * s, pc.y - spr.ay * s + p.oy * s, p.canvas.width * s, p.canvas.height * s);
+      // le panneau de porte animé part avec LA part qui contient son mur :
+      // il reste devant la baie baked, mais derrière les parts plus au sud
+      if (spr.exitDoor && partIdx === spr.exitDoorPart) {
+        this.drawExitDoor(ctx, g, b, proj, spr.exitDoor, x0, y0);
+      }
+      // les surcouches (overlays, tourelle, sélection, jauges) partent avec la
+      // part la plus EN AVANT (clé max) : dessinées au-dessus de tout le bâtiment
+      if (partIdx !== spr.topPart) return;
+    }
 
     // flash d'activation à l'achèvement
     const fT = this.builtFlash.get(b.id);

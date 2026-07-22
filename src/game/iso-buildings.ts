@@ -37,8 +37,26 @@ export interface OverlayAnchor {
   u: number; v: number; h: number; s: number;   // position locale + échelle
 }
 
+/** Fragment de structure trié individuellement en profondeur : chaque groupe
+ *  de volumes (hall, silo, tour…) devient une part avec SA clé (u+v de son
+ *  bord avant). Le moteur trie les parts AVEC les unités → une unité qui
+ *  longe un module passe devant ou derrière CE module, plus jamais devant ou
+ *  derrière le bâtiment entier. Canvas recadré au contenu (ox/oy = offset). */
+export interface IsoPart {
+  canvas: HTMLCanvasElement;
+  ox: number; oy: number;
+  key: number;               // profondeur locale : (u+v) du bord avant du groupe
+}
+
 export interface IsoBuildingSprite {
-  canvas: HTMLCanvasElement;  // STRUCTURE : volumes, murs, toits, modules
+  canvas: HTMLCanvasElement;  // composite structure (chantier, flash, icônes)
+  parts: IsoPart[];           // structure découpée pour le tri peintre fin
+  topPart: number;            // index de la part la plus EN AVANT (clé max) —
+                              // porte les surcouches (overlays, tourelle,
+                              // sélection, jauges), dessinées après TOUTES les parts
+  exitDoorPart?: number;      // index de la part contenant le mur de la porte
+                              // de production : le panneau animé est dessiné
+                              // juste après ELLE, à la même profondeur
   ground: HTMLCanvasElement;  // SOL : dalle, tarmac, marquages, ombre portée —
                               // dessiné SOUS toutes les entités (les véhicules
                               // roulent dessus, jamais « sous » le bâtiment)
@@ -48,6 +66,9 @@ export interface IsoBuildingSprite {
   turretMount?: { u: number; v: number; h: number };
   overlays: OverlayAnchor[];
   door?: { u: number; v: number };   // ancre de la porte (lumière de sortie)
+  // porte de PRODUCTION animée (usines/casernes) : géométrie du panneau
+  // roulant dessiné au runtime sur le mur (a0..a1 le long du mur, h = linteau)
+  exitDoor?: { side: 'left' | 'right'; a0: number; a1: number; fixed: number; h: number };
 }
 
 // ------------------------------------------------------------------ couleurs
@@ -638,11 +659,20 @@ class Kit {
    *  qui unifie visuellement toute la base. */
   slab(u0: number, v0: number, u1: number, v1: number) {
     const c = this.c;
-    // plinthe sombre (assoit la dalle dans le sol)
-    this.fillP([[u0, v0, 0], [u1, v0, 0], [u1, v1, 0], [u0, v1, 0]], 'rgba(40,42,38,0.4)', false);
-    // dalle claire
-    const m = 0.07;
-    this.fillP([[u0 + m, v0 + m, 0], [u1 - m, v0 + m, 0], [u1 - m, v1 - m, 0], [u0 + m, v1 - m, 0]], 'rgba(158,155,142,0.72)', false);
+    const uc = (u0 + u1) / 2, vc = (v0 + v1) / 2;
+    const cx = this.lx(uc, vc), cy = this.ly(uc, vc);
+    c.save();
+    // toute la dalle est peinte À L'INTÉRIEUR de l'emprise, puis ses BORDS sont
+    // rongés pour se fondre dans la terre remuée (décal de sol) : plus de
+    // losange de béton net « posé » sur l'herbe — le bâtiment paraît coulé
+    // dans le terrain.
+    this.path([[u0, v0, 0], [u1, v0, 0], [u1, v1, 0], [u0, v1, 0]]);
+    c.clip();
+    // 1) lit de pose sombre (assoit la dalle dans le sol)
+    this.fillP([[u0, v0, 0], [u1, v0, 0], [u1, v1, 0], [u0, v1, 0]], 'rgba(44,45,40,0.55)', false);
+    // 2) dalle béton, légèrement en retrait
+    const m = 0.05;
+    this.fillP([[u0 + m, v0 + m, 0], [u1 - m, v0 + m, 0], [u1 - m, v1 - m, 0], [u0 + m, v1 - m, 0]], 'rgba(150,148,135,0.7)', false);
     // joints de coulée
     c.strokeStyle = 'rgba(0,0,0,0.14)'; c.lineWidth = 1;
     const n = Math.max(1, Math.round(u1 - u0) - 1);
@@ -653,7 +683,7 @@ class Kit {
       c.lineTo(this.lx(uu, v1 - m), this.ly(uu, v1 - m));
       c.stroke();
     }
-    // taches d'huile + fissures
+    // taches d'huile + fissures (au centre, avant l'érosion des bords)
     for (let i = 0; i < 3; i++) {
       const su = u0 + 0.2 + this.rng() * (u1 - u0 - 0.4), sv = v0 + 0.2 + this.rng() * (v1 - v0 - 0.4);
       c.fillStyle = `rgba(24,24,20,${0.1 + this.rng() * 0.12})`;
@@ -669,12 +699,50 @@ class Kit {
       c.lineTo(this.lx(su + 0.2 + this.rng() * 0.3, sv + this.rng() * 0.2), this.ly(su + 0.3, sv + 0.15));
       c.stroke();
     }
+    // 3) ÉROSION des bords : gradient elliptique (aspect iso 2:1) qui efface
+    //    progressivement le béton vers l'extérieur → il se dissout dans la
+    //    terre du décal de sol, sans arête franche.
+    c.globalCompositeOperation = 'destination-out';
+    c.save();
+    c.translate(cx, cy); c.scale(1, 0.5);
+    const R = (u1 - u0 + v1 - v0) * ISO_S / 2;
+    const g = c.createRadialGradient(0, 0, R * 0.5, 0, 0, R * 1.02);
+    g.addColorStop(0, 'rgba(0,0,0,0)');
+    g.addColorStop(0.6, 'rgba(0,0,0,0)');
+    g.addColorStop(0.82, 'rgba(0,0,0,0.4)');
+    g.addColorStop(1, 'rgba(0,0,0,0.9)');
+    c.fillStyle = g;
+    c.fillRect(-R, -R, 2 * R, 2 * R);
+    c.restore();
+    c.globalCompositeOperation = 'source-over';
+    c.restore();  // fin du clip
+    // 4) terre/gravier qui empiète sur le pourtour (rupture organique de l'arête)
+    const edges: [number, number, number, number][] = [
+      [u0, v0, u1, v0], [u1, v0, u1, v1], [u1, v1, u0, v1], [u0, v1, u0, v0],
+    ];
+    for (let i = 0; i < 18; i++) {
+      const e = edges[(this.rng() * 4) | 0];
+      const t = this.rng();
+      const uu = e[0] + (e[2] - e[0]) * t + (this.rng() - 0.5) * 0.14;
+      const vv = e[1] + (e[3] - e[1]) * t + (this.rng() - 0.5) * 0.14;
+      const light = this.rng() < 0.4;
+      c.fillStyle = light
+        ? `rgba(120,112,96,${0.12 + this.rng() * 0.12})`   // gravier clair
+        : `rgba(58,50,36,${0.16 + this.rng() * 0.16})`;     // terre sombre
+      c.beginPath();
+      c.ellipse(this.lx(uu, vv), this.ly(uu, vv), 2 + this.rng() * 4, 1.4 + this.rng() * 2, this.rng() * 3, 0, Math.PI * 2);
+      c.fill();
+    }
   }
 
-  /** Dalle au sol (tarmac, parade, quai) avec bordure. */
+  /** Dalle au sol (tarmac, parade, quai) avec bordure fondue dans le terrain. */
   pad(u0: number, v0: number, u1: number, v1: number, col: string, border = 'rgba(220,220,210,0.28)') {
-    this.fillP([[u0, v0, 0], [u1, v0, 0], [u1, v1, 0], [u0, v1, 0]], col, false);
     const c = this.c;
+    const cx = this.lx((u0 + u1) / 2, (v0 + v1) / 2), cy = this.ly((u0 + u1) / 2, (v0 + v1) / 2);
+    c.save();
+    this.path([[u0, v0, 0], [u1, v0, 0], [u1, v1, 0], [u0, v1, 0]]);
+    c.clip();
+    this.fillP([[u0, v0, 0], [u1, v0, 0], [u1, v1, 0], [u0, v1, 0]], col, false);
     c.strokeStyle = border; c.lineWidth = 1.4;
     this.path([[u0 + 0.05, v0 + 0.05, 0], [u1 - 0.05, v0 + 0.05, 0], [u1 - 0.05, v1 - 0.05, 0], [u0 + 0.05, v1 - 0.05, 0]]);
     c.stroke();
@@ -687,6 +755,21 @@ class Kit {
       c.lineTo(this.lx(su + 0.2 + this.rng() * 0.3, sv + this.rng() * 0.2), this.ly(su + 0.3, sv + 0.15));
       c.stroke();
     }
+    // érosion des bords (fond le tarmac dans le sol, comme la dalle)
+    c.globalCompositeOperation = 'destination-out';
+    c.save();
+    c.translate(cx, cy); c.scale(1, 0.5);
+    const R = (u1 - u0 + v1 - v0) * ISO_S / 2;
+    const g = c.createRadialGradient(0, 0, R * 0.55, 0, 0, R * 1.02);
+    g.addColorStop(0, 'rgba(0,0,0,0)');
+    g.addColorStop(0.68, 'rgba(0,0,0,0)');
+    g.addColorStop(0.88, 'rgba(0,0,0,0.32)');
+    g.addColorStop(1, 'rgba(0,0,0,0.8)');
+    c.fillStyle = g;
+    c.fillRect(-R, -R, 2 * R, 2 * R);
+    c.restore();
+    c.globalCompositeOperation = 'source-over';
+    c.restore();
   }
 
   /** Ligne peinte au sol entre deux points monde locaux. */
@@ -813,18 +896,57 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
   const cv = document.createElement('canvas');
   cv.width = Math.ceil((w + h) * ISO_S + PAD * 2);
   cv.height = Math.ceil(((w + h) * ISO_S) / 2 + hmax * EL + PAD * 2);
-  const c = cv.getContext('2d')!;
   // canvas SOL séparé : dalle, tarmac, marquages, ombre — même géométrie,
   // dessiné par le moteur SOUS toutes les entités (tri de profondeur sain)
   const gcv = document.createElement('canvas');
   gcv.width = cv.width; gcv.height = cv.height;
   const gc = gcv.getContext('2d')!;
-  const K = new Kit(c, w, h, hmax, type.length * 131 + type.charCodeAt(0) * 17);
+  const K = new Kit(cv.getContext('2d')!, w, h, hmax, type.length * 131 + type.charCodeAt(0) * 17);
   const G = new Kit(gc, w, h, hmax, type.length * 131 + type.charCodeAt(0) * 17 + 1);
   const overlays: OverlayAnchor[] = [];
   let turret: HTMLCanvasElement | undefined;
   let turretMount: { u: number; v: number; h: number } | undefined;
   let door: { u: number; v: number } | undefined;
+  let exitDoor: IsoBuildingSprite['exitDoor'];
+  let exitDoorKey: number | undefined;   // clé de la part contenant la porte
+
+  // ---- système de PARTS : chaque appel part(clé) ouvre un nouveau canvas de
+  // travail ; tout ce qui est dessiné ensuite (via K ou c) appartient à cette
+  // part, recadrée à son contenu à la clôture. Les cases DOIVENT dessiner
+  // arrière → avant à L'INTÉRIEUR d'une part ; entre parts, l'ordre est géré
+  // par le tri du moteur (clé = u+v du bord avant du groupe).
+  const parts: IsoPart[] = [];
+  let curCv: HTMLCanvasElement | null = null;
+  let curKey = 0;
+  let c: CanvasRenderingContext2D = K.c;   // suit toujours la part courante
+  const finishPart = () => {
+    if (!curCv) return;
+    K.grime(0.10);
+    const pc = curCv.getContext('2d')!;
+    const img = pc.getImageData(0, 0, curCv.width, curCv.height).data;
+    let x0 = curCv.width, y0 = curCv.height, x1 = -1, y1 = -1;
+    for (let y = 0; y < curCv.height; y++)
+      for (let x = 0; x < curCv.width; x++)
+        if (img[(y * curCv.width + x) * 4 + 3] > 8) {
+          if (x < x0) x0 = x; if (x > x1) x1 = x;
+          if (y < y0) y0 = y; if (y > y1) y1 = y;
+        }
+    if (x1 >= x0) {
+      const p = document.createElement('canvas');
+      p.width = x1 - x0 + 1; p.height = y1 - y0 + 1;
+      p.getContext('2d')!.drawImage(curCv, -x0, -y0);
+      parts.push({ canvas: p, ox: x0, oy: y0, key: curKey });
+    }
+    curCv = null;
+  };
+  const part = (key: number) => {
+    finishPart();
+    curCv = document.createElement('canvas');
+    curCv.width = cv.width; curCv.height = cv.height;
+    K.c = curCv.getContext('2d')!;
+    c = K.c;
+    curKey = key;
+  };
 
   switch (type) {
     case 'hq': {
@@ -832,8 +954,9 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       G.slab(0, 0, 3, 3);
       G.shadow(0.15, 0.15, 2.85, 2.85, 1.6);
       G.paint(1.55, 2.95, 1.55, 2.99, 'rgba(214,178,80,0.4)', 3);   // seuil peint
-      // ---- structure, de l'ARRIÈRE vers l'AVANT (u+v croissant)
+      // ---- structure en PARTS (clé = u+v du bord avant du groupe)
       // bloc principal deux niveaux
+      part(4.8);
       K.box(0.15, 0.15, 2.4, 2.4, 0, 1.05, CONCRETE, { roofBorder: true });
       K.box(0.45, 0.45, 2.0, 2.0, 1.05, 1.75, shade(CONCRETE, -0.06), { roofBorder: true });
       K.windows('left', 0.35, 2.25, 2.4, 0.55, 4);
@@ -849,6 +972,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       K.railing(0.15, 2.4, 2.4, 2.4, 1.05);
       K.whip(1.9, 0.5, 1.9, 0.7);
       // tour de commandement + verrière (angle est, devant en u)
+      part(3.9);
       K.box(2.05, 0.2, 2.85, 1.0, 0, 1.9, shade(STEEL, -0.04), { roofBorder: true });
       K.fillP([[2.12, 0.95, 1.62], [2.8, 0.95, 1.62], [2.8, 0.95, 1.34], [2.12, 0.95, 1.34]], GLASS, false);
       K.railing(2.85, 0.2, 2.85, 1.0, 1.9);
@@ -858,10 +982,13 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       overlays.push({ kind: 'beacon', u: 2.45, v: 0.6, h: 2.9, s: 1 });
       K.cable(2.45, 0.6, 2.6, 1.2, 1.2, 1.78, 0.2);
       // aile d'entrée (avant) : porte + escalier + lampe
+      part(5.1);
       K.box(1.0, 2.4, 2.1, 2.95, 0, 0.55, CONCRETE_D);
       K.door('left', 1.25, 1.85, 2.95, 0.42, team);
       door = { u: 1.55, v: 2.95 };
       K.lamp(2.25, 2.75, 0.6);
+      // mât porte-drapeau au sol (ouest)
+      part(2.95);
       K.mast(0.4, 2.5, 0, 1.7, team);
       break;
     }
@@ -869,9 +996,9 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       // ---- sol
       G.slab(0, 0, 2, 2);
       G.shadow(0.1, 0.15, 1.9, 1.85, 1.2);
-      // ---- structure, arrière → avant
-      // deux tours de refroidissement (fond nord) — dessinées AVANT le hall :
-      // leur pied disparaît correctement derrière le toit
+      // ---- structure en parts
+      // deux tours de refroidissement (fond nord) + conduites
+      part(2.3);
       K.coolTower(0.55, 0.42, 0.3, 1.75, '#96938a');
       K.coolTower(1.4, 0.42, 0.3, 1.55, '#96938a');
       overlays.push({ kind: 'steam', u: 0.55, v: 0.42, h: 1.75, s: 1.1 });
@@ -880,6 +1007,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       K.pipe(0.55, 0.7, 0.62, 0.55, 1.0, 0.5);
       K.pipe(1.4, 0.7, 0.58, 1.4, 1.0, 0.48);
       // hall turbine (avant) — recouvre le pied des conduites : raccord net
+      part(3.4);
       K.gable(0.1, 0.95, 1.55, 1.85, 0.62, 0.95, CONCRETE_D, METAL_ROOF, 'u');
       K.windows('left', 0.3, 1.35, 1.85, 0.3, 2);
       K.teamBand('left', 0.1, 1.55, 1.85, 0.52, team);
@@ -887,10 +1015,12 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       door = { u: 1.05, v: 1.85 };
       K.ladder('right', 1.15, 1.55, 0, 0.62);
       // poste électrique SUR LA DALLE, à l'est du hall (plus dans son emprise)
+      part(3.55);
       K.transformer(1.72, 1.15);
       K.transformer(1.72, 1.6);
       K.cable(1.72, 1.15, 0.38, 1.55, 1.05, 0.5, 0.1);
       K.cable(1.72, 1.6, 0.38, 1.55, 1.5, 0.5, 0.1);
+      part(1.95);
       K.lamp(0.18, 1.72, 0.55);
       break;
     }
@@ -898,8 +1028,9 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       // ---- sol
       G.slab(0, 0, 2, 2);
       G.shadow(0.1, 0.1, 1.9, 1.9, 1.8);
-      // ---- structure, arrière → avant
+      // ---- structure en parts
       // bloc chaudière (fond nord) : les cheminées y sont PLANTÉES, pas posées
+      part(2.55);
       K.box(0.15, 0.18, 1.85, 0.68, 0, 0.55, shade(STEEL, -0.1), { roofBorder: true });
       for (let i = 0; i < 3; i++) {
         const u = 0.42 + i * 0.62;
@@ -910,6 +1041,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       K.pipe(0.42, 0.66, 0.7, 0.42, 1.0, 0.6);
       K.pipe(1.04, 0.66, 0.7, 1.04, 1.0, 0.6);
       // hall haut à sheds (avant) — recouvre le pied cheminées/conduites
+      part(3.8);
       K.box(0.1, 0.75, 1.9, 1.9, 0, 1.0, shade(CONCRETE, -0.1), { roofBorder: true });
       K.fillP([[0.1, 0.75, 1.0], [0.55, 0.75, 1.32], [0.55, 1.9, 1.32], [0.1, 1.9, 1.0]], shade(METAL_ROOF, 0.12));
       K.fillP([[0.72, 0.75, 1.0], [1.16, 0.75, 1.32], [1.16, 1.9, 1.32], [0.72, 1.9, 1.0]], shade(METAL_ROOF, 0.12));
@@ -923,65 +1055,121 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       K.railing(0.1, 1.9, 1.9, 1.9, 1.0);
       K.ladder('right', 1.45, 1.9, 0, 1.0);
       K.vent(1.7, 1.6, 1.0, 1.42);
+      part(2.15);
       K.lamp(0.16, 1.95, 0.55);
       break;
     }
     case 'refinery': {
+      // ARCHITECTURE REFAITE : plus de trémie flottante ni de béquilles sur la
+      // voie. Le récolteur roule sur une FOSSE DE RÉCEPTION à ras du sol
+      // (grille sombre dans le quai) ; un CONVOYEUR incliné, ancré sur la
+      // dalle À CÔTÉ de la voie, monte le minerai vers les silos. Silhouette :
+      // hall + 2 silos + torchère + convoyeur — lisible et constructible.
       // ---- sol
       G.slab(0, 0, 3, 3);
       G.shadow(0.1, 0.1, 2.9, 2.9, 1.5);
-      // quai de déchargement du récolteur : tarmac + marquages AU SOL
-      G.pad(1.15, 1.9, 2.85, 2.95, 'rgba(52,54,50,0.85)', 'rgba(214,178,80,0.5)');
-      G.paint(1.3, 2.42, 2.7, 2.42, 'rgba(214,178,80,0.4)', 2);
-      door = { u: 2.0, v: 2.9 };
-      // ---- structure, arrière → avant
-      // torchère (fond gauche)
-      K.cyl(0.4, 0.35, 0.07, 0, 2.05, '#6f6a60');
-      overlays.push({ kind: 'flame', u: 0.4, v: 0.35, h: 2.05, s: 1 });
-      overlays.push({ kind: 'smoke', u: 0.4, v: 0.35, h: 2.2, s: 0.7 });
-      // deux silos de stockage (fond) + passerelle + échelle d'accès
-      K.cyl(1.25, 0.42, 0.36, 0, 1.3, '#84867e');
-      K.cyl(2.25, 0.6, 0.42, 0, 1.5, '#8f9188');
-      K.pipe(1.25, 0.42, 1.24, 2.25, 0.6, 1.42);
-      K.ladder('right', 0.6, 2.62, 0, 1.42);
-      // hall de traitement (milieu) — recouvre le pied des silos qui le jouxtent
-      K.gable(0.15, 0.85, 1.6, 2.4, 0.8, 1.2, shade(CONCRETE_D, -0.02), METAL_ROOF, 'v');
-      K.teamBand('right', 0.9, 2.35, 1.6, 0.66, team);
-      K.windows('right', 1.0, 1.6, 1.6, 0.34, 2);
-      K.ac(0.45, 1.1, 1.2, 0.11);
-      // conduite silo → trémie (elle ALIMENTE le quai : lecture du flux)
-      K.pipe(2.25, 0.85, 0.9, 2.1, 1.9, 0.9);
-      // trémie de réception au-dessus du quai, PORTÉE par 4 béquilles acier
-      c.strokeStyle = shade(STEEL_D, -0.05); c.lineWidth = 3;
-      for (const [lu, lv] of [[1.52, 1.98], [2.48, 1.98], [1.75, 2.32], [2.25, 2.32]] as const) {
+      // quai de déchargement : tarmac + FOSSE grillagée à ras du sol
+      G.pad(1.0, 2.05, 2.9, 2.95, 'rgba(52,54,50,0.85)', 'rgba(214,178,80,0.5)');
+      G.fillP([[1.7, 2.25, 0], [2.5, 2.25, 0], [2.5, 2.8, 0], [1.7, 2.8, 0]], 'rgba(16,17,15,0.92)', false);
+      gc.strokeStyle = 'rgba(120,122,112,0.5)'; gc.lineWidth = 1.2;
+      for (let i = 0; i <= 5; i++) {
+        const uu = 1.7 + (0.8 * i) / 5;
+        gc.beginPath();
+        gc.moveTo(G.lx(uu, 2.25), G.ly(uu, 2.25));
+        gc.lineTo(G.lx(uu, 2.8), G.ly(uu, 2.8));
+        gc.stroke();
+      }
+      G.paint(1.15, 2.52, 1.6, 2.52, 'rgba(214,178,80,0.45)', 2);
+      G.paint(2.6, 2.52, 2.82, 2.52, 'rgba(214,178,80,0.45)', 2);
+      door = { u: 2.1, v: 2.5 };
+      // ---- structure en parts
+      // torchère (fond nord-ouest)
+      part(0.85);
+      K.cyl(0.35, 0.3, 0.07, 0, 2.05, '#6f6a60');
+      overlays.push({ kind: 'flame', u: 0.35, v: 0.3, h: 2.05, s: 1 });
+      overlays.push({ kind: 'smoke', u: 0.35, v: 0.3, h: 2.2, s: 0.7 });
+      // deux silos de stockage (nord-est) + passerelle + échelle
+      part(3.55);
+      K.cyl(1.85, 0.5, 0.4, 0, 1.6, '#8f9188');
+      K.cyl(2.6, 0.78, 0.36, 0, 1.4, '#84867e');
+      K.pipe(1.85, 0.5, 1.52, 2.6, 0.78, 1.34);
+      K.ladder('right', 0.78, 2.94, 0, 1.32);
+      overlays.push({ kind: 'steam', u: 1.85, v: 0.5, h: 1.6, s: 0.55 });
+      // hall de traitement (ouest) — au NORD du quai, n'empiète plus dessus
+      part(3.45);
+      K.gable(0.15, 0.8, 1.45, 1.95, 0.8, 1.15, shade(CONCRETE_D, -0.02), METAL_ROOF, 'v');
+      K.teamBand('right', 0.9, 1.9, 1.45, 0.66, team);
+      K.windows('right', 1.0, 1.6, 1.45, 0.34, 2);
+      K.ac(0.45, 1.05, 1.15, 0.11);
+      K.vent(0.5, 1.7, 1.0, 1.3);
+      K.pipe(1.45, 1.0, 0.9, 1.85, 0.8, 1.0);   // hall → silo (flux process)
+      // CONVOYEUR incliné : réceptacle en bord NORD du quai (hors voie) puis
+      // bande montante ancrée sur la dalle, jusqu'au sommet du silo
+      part(4.3);
+      K.box(1.95, 1.82, 2.35, 2.06, 0, 0.42, shade(RUST, -0.05));
+      c.strokeStyle = shade(STEEL_D, -0.05); c.lineWidth = 2.6;   // béquilles HORS voie
+      for (const [lu, lv, lh] of [[2.02, 1.45, 0.75], [1.95, 1.0, 1.15]] as const) {
         c.beginPath();
-        c.moveTo(K.lx(lu, lv), K.ly(lu, lv, lu < 1.6 || lu > 2.4 ? 1.05 : 0.6));
+        c.moveTo(K.lx(lu, lv), K.ly(lu, lv, lh));
         c.lineTo(K.lx(lu, lv), K.ly(lu, lv, 0));
         c.stroke();
       }
-      K.fillP([[1.45, 1.9, 1.15], [2.55, 1.9, 1.15], [2.3, 2.15, 0.6], [1.7, 2.15, 0.6]], shade(RUST, 0.05));
-      K.fillP([[1.45, 1.9, 1.15], [1.7, 2.15, 0.6], [1.7, 2.4, 0.6], [1.45, 2.15, 1.15]], shade(RUST, -0.2), false);
-      K.lamp(2.78, 2.05, 0.7);
-      // stock avant : caisses + fûts
-      K.crates(0.5, 2.7, 3, team);
+      // bande : deux longerons + tapis + flasques
+      const beltA = [2.15, 1.94, 0.45] as const, beltB = [1.9, 0.62, 1.62] as const;
+      c.strokeStyle = shade(STEEL, -0.25); c.lineWidth = 6;
+      c.beginPath();
+      c.moveTo(K.lx(beltA[0], beltA[1]), K.ly(beltA[0], beltA[1], beltA[2]));
+      c.lineTo(K.lx(beltB[0], beltB[1]), K.ly(beltB[0], beltB[1], beltB[2]));
+      c.stroke();
+      c.strokeStyle = shade(RUST, 0.18); c.lineWidth = 3;
+      c.beginPath();
+      c.moveTo(K.lx(beltA[0], beltA[1]), K.ly(beltA[0], beltA[1], beltA[2]) - 1);
+      c.lineTo(K.lx(beltB[0], beltB[1]), K.ly(beltB[0], beltB[1], beltB[2]) - 1);
+      c.stroke();
+      c.strokeStyle = 'rgba(240,238,225,0.25)'; c.lineWidth = 1;
+      c.beginPath();
+      c.moveTo(K.lx(beltA[0], beltA[1]), K.ly(beltA[0], beltA[1], beltA[2]) - 3);
+      c.lineTo(K.lx(beltB[0], beltB[1]), K.ly(beltB[0], beltB[1], beltB[2]) - 3);
+      c.stroke();
+      K.lamp(2.85, 2.12, 0.7);
+      // stock avant-ouest : caisses
+      part(3.35);
+      K.crates(0.5, 2.65, 2, team);
       break;
     }
     case 'refinery2': {
+      // ARCHITECTURE ALIGNÉE sur la raffinerie T1 : fosse de réception à ras
+      // du quai (la voie reste LIBRE), galerie de convoyage couverte ancrée
+      // hors voie qui monte au silo central. Plus de trémie sur béquilles.
       // ---- sol
       G.slab(0, 0, 3, 3);
       G.shadow(0.1, 0.1, 2.9, 2.9, 2.0);
-      G.pad(1.0, 2.0, 2.9, 2.95, 'rgba(48,50,46,0.9)', 'rgba(214,178,80,0.55)');
-      G.paint(1.15, 2.5, 2.75, 2.5, 'rgba(214,178,80,0.45)', 2);
-      door = { u: 1.95, v: 2.9 };
-      // ---- structure, arrière → avant
+      G.pad(1.0, 2.05, 2.9, 2.95, 'rgba(48,50,46,0.9)', 'rgba(214,178,80,0.55)');
+      // fosse grillagée double largeur
+      G.fillP([[1.5, 2.25, 0], [2.55, 2.25, 0], [2.55, 2.82, 0], [1.5, 2.82, 0]], 'rgba(14,15,13,0.92)', false);
+      gc.strokeStyle = 'rgba(120,122,112,0.5)'; gc.lineWidth = 1.2;
+      for (let i = 0; i <= 7; i++) {
+        const uu = 1.5 + (1.05 * i) / 7;
+        gc.beginPath();
+        gc.moveTo(G.lx(uu, 2.25), G.ly(uu, 2.25));
+        gc.lineTo(G.lx(uu, 2.82), G.ly(uu, 2.82));
+        gc.stroke();
+      }
+      G.paint(1.1, 2.52, 1.42, 2.52, 'rgba(214,178,80,0.45)', 2);
+      G.paint(2.62, 2.52, 2.85, 2.52, 'rgba(214,178,80,0.45)', 2);
+      door = { u: 2.0, v: 2.5 };
+      // ---- structure en parts
       // batterie de 3 grands silos reliés par passerelles (fond nord)
+      part(3.85);
       K.cyl(0.6, 0.7, 0.44, 0, 2.05, '#8b8d85', { band: paintTeam(team), bandAt: 0.2 });
       K.cyl(1.55, 0.55, 0.44, 0, 2.25, '#93958c', { band: paintTeam(team), bandAt: 0.18 });
       K.cyl(2.5, 0.7, 0.44, 0, 2.05, '#8b8d85', { band: paintTeam(team), bandAt: 0.2 });
       K.pipe(0.6, 0.7, 1.95, 1.55, 0.55, 2.15);
       K.pipe(1.55, 0.55, 2.15, 2.5, 0.7, 1.95);
       K.ladder('right', 0.72, 2.9, 0, 1.95);
+      overlays.push({ kind: 'steam', u: 1.55, v: 0.55, h: 2.25, s: 0.7 });
       // hall de craquage + colonnes ANCRÉES sur son toit
+      part(3.9);
       K.box(0.2, 1.5, 1.15, 2.35, 0, 0.9, shade(STEEL, -0.06), { roofBorder: true });
       K.cyl(0.45, 1.75, 0.12, 0.9, 1.9, '#7d786e');
       K.cyl(0.85, 1.75, 0.12, 0.9, 1.7, '#7d786e');
@@ -989,22 +1177,29 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       K.railing(0.2, 2.35, 1.15, 2.35, 0.9);
       K.stairs('left', 0.5, 2.35, 0.34, 0.9, 4);
       // double torchère (est)
+      part(4.35);
       K.cyl(2.72, 1.5, 0.07, 0, 2.5, '#6f6a60');
       overlays.push({ kind: 'flame', u: 2.72, v: 1.5, h: 2.5, s: 1.25 });
       overlays.push({ kind: 'smoke', u: 2.72, v: 1.5, h: 2.66, s: 0.9 });
-      overlays.push({ kind: 'steam', u: 1.55, v: 0.55, h: 2.25, s: 0.7 });
-      // conduite d'alimentation silo central → trémie du quai
-      K.pipe(1.55, 1.0, 1.1, 1.8, 2.0, 1.1);
-      // trémie élargie au-dessus du quai, portée par béquilles
-      c.strokeStyle = shade(STEEL_D, -0.05); c.lineWidth = 3.4;
-      for (const [lu, lv] of [[1.28, 2.08], [2.62, 2.08], [1.52, 2.42], [2.38, 2.42]] as const) {
+      // GALERIE DE CONVOYAGE couverte : réceptacle bord nord du quai (hors
+      // voie) → caisson incliné sur béquilles → sommet du silo central
+      part(4.2);
+      K.box(1.72, 1.78, 2.18, 2.06, 0, 0.5, shade(RUST, -0.08));
+      c.strokeStyle = shade(STEEL_D, -0.05); c.lineWidth = 3;   // béquilles HORS voie
+      for (const [lu, lv, lh] of [[1.85, 1.42, 0.95], [1.72, 1.02, 1.5]] as const) {
         c.beginPath();
-        c.moveTo(K.lx(lu, lv), K.ly(lu, lv, lv < 2.2 ? 1.2 : 0.7));
+        c.moveTo(K.lx(lu, lv), K.ly(lu, lv, lh));
         c.lineTo(K.lx(lu, lv), K.ly(lu, lv, 0));
         c.stroke();
       }
-      K.fillP([[1.2, 2.0, 1.3], [2.7, 2.0, 1.3], [2.45, 2.25, 0.7], [1.45, 2.25, 0.7]], shade(RUST, 0.02));
-      K.fillP([[1.2, 2.0, 1.3], [1.45, 2.25, 0.7], [1.45, 2.5, 0.7], [1.2, 2.25, 1.3]], shade(RUST, -0.22), false);
+      // caisson (galerie fermée = lecture T2) : deux quads parallèles
+      K.fillP([[1.82, 1.94, 0.55], [1.62, 0.72, 1.9], [1.78, 0.66, 1.9], [1.98, 1.88, 0.55]], shade(STEEL, -0.12));
+      K.fillP([[1.98, 1.88, 0.55], [1.78, 0.66, 1.9], [1.78, 0.66, 1.74], [1.98, 1.88, 0.38]], shade(STEEL, -0.32), false);
+      c.strokeStyle = 'rgba(240,238,225,0.2)'; c.lineWidth = 1;
+      c.beginPath();
+      c.moveTo(K.lx(1.82, 1.94), K.ly(1.82, 1.94, 0.55));
+      c.lineTo(K.lx(1.62, 0.72), K.ly(1.62, 0.72, 1.9));
+      c.stroke();
       K.lamp(2.84, 2.15, 0.7);
       break;
     }
@@ -1017,20 +1212,26 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       G.paint(0.25, 1.75, 1.05, 1.75, 'rgba(226,226,214,0.3)', 1.6);
       // sacs de sable à l'entrée (au sol, les unités passent devant)
       G.sandbags(0.62, 1.42, 0.34, Math.PI * 0.75, Math.PI * 1.6, 4);
-      // ---- structure, arrière → avant
-      // baraquement long à toit de tôle
+      // ---- structure en parts
+      // baraquement long à toit de tôle + PORTE DE SORTIE animée
+      part(3.15);
       K.gable(0.1, 0.3, 1.9, 1.2, 0.55, 0.85, '#5d6154', '#575b48', 'u');
       K.windows('left', 0.25, 0.7, 1.2, 0.28, 2);
       K.teamBand('left', 0.1, 1.9, 1.2, 0.5, team);
-      K.door('left', 0.75, 1.15, 1.2, 0.4, team);
+      K.door('left', 0.7, 1.2, 1.2, 0.42, team);
       door = { u: 0.95, v: 1.2 };
+      exitDoor = { side: 'left', a0: 0.7, a1: 1.2, fixed: 1.2, h: 0.42 };
+      exitDoorKey = curKey;
       K.vent(1.55, 0.5, 0.78, 1.02);
       // mât porte-drapeau AU SOL, devant le baraquement (plus sur le toit)
+      part(2.8);
       K.mast(1.12, 1.62, 0, 0.95, team);
       // annexe sanitaire + clim + bidon d'eau
+      part(3.75);
       K.box(1.25, 1.3, 1.9, 1.8, 0, 0.42, CANVAS_TENT);
       K.ac(1.42, 1.88, 0, 0.1);
       K.cyl(1.85, 1.9, 0.08, 0, 0.3, '#6f6448');
+      part(1.6);
       K.lamp(0.16, 1.35, 0.5);
       break;
     }
@@ -1039,9 +1240,9 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       G.slab(0, 0, 2, 2);
       G.shadow(0.1, 0.1, 1.9, 1.9, 1.3);
       G.sandbags(0.35, 1.95, 0.22, Math.PI * 0.9, Math.PI * 1.55, 3);
-      // ---- structure, arrière → avant
-      // tour de guet d'angle sur pilotis (fond est) — AVANT le bloc : ses
-      // pilotis arrière disparaissent derrière le bâtiment, pas l'inverse
+      // ---- structure en parts
+      // tour de guet d'angle sur pilotis (fond est)
+      part(2.75);
       const twU = 1.75, twV = 0.45;
       c.strokeStyle = STEEL_D; c.lineWidth = 2.6;
       for (const [du, dv] of [[-0.14, -0.1], [0.14, -0.1], [-0.14, 0.14], [0.14, 0.14]] as const) {
@@ -1060,7 +1261,8 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       K.fillP([[twU - 0.24, twV + 0.24, 1.62], [twU + 0.24, twV + 0.24, 1.62], [twU + 0.24, twV + 0.24, 1.44], [twU - 0.24, twV + 0.24, 1.44]], GLASS, false);
       K.ladder('left', twU - 0.02, twV + 0.24, 0, 1.28);
       overlays.push({ kind: 'beacon', u: twU, v: twV, h: 1.8, s: 0.8 });
-      // bloc d'instruction béton deux étages
+      // bloc d'instruction béton deux étages + PORTE DE SORTIE animée
+      part(3.6);
       K.box(0.1, 0.35, 1.55, 1.9, 0, 1.3, CONCRETE, { roofBorder: true });
       K.windows('left', 0.3, 1.4, 1.9, 0.85, 3);
       K.windows('left', 0.3, 1.4, 1.9, 0.35, 3);
@@ -1068,11 +1270,13 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       K.teamBand('left', 0.1, 1.55, 1.9, 1.16, team);
       K.door('left', 0.6, 1.05, 1.9, 0.5, team);
       door = { u: 0.82, v: 1.9 };
-      K.stairs('left', 0.64, 1.9, 0.36, 0.14, 2);
+      exitDoor = { side: 'left', a0: 0.6, a1: 1.05, fixed: 1.9, h: 0.5 };
+      exitDoorKey = curKey;
       K.railing(0.1, 1.9, 1.55, 1.9, 1.3);
       K.roofKit(0.3, 0.55, 1.35, 1.7, 1.3, 2);
       K.ac(1.3, 0.6, 1.3);
       K.cable(twU, twV, 1.75, 1.5, 0.7, 1.32, 0.16);
+      part(3.35);
       K.lamp(1.75, 1.55, 0.55);
       break;
     }
@@ -1085,12 +1289,14 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       for (let i = 0; i < 4; i++) {
         G.paint(0.95 + i * 0.35, 2.25, 1.15 + i * 0.35, 2.8, `rgba(184,145,47,${0.5 - i * 0.08})`, 3);
       }
-      // ---- structure, arrière → avant
-      // bloc bureaux accolé (ouest, derrière) — dessiné AVANT le hangar
+      // ---- structure en parts
+      // bloc bureaux accolé (ouest, derrière)
+      part(2.25);
       K.box(0.05, 0.35, 0.42, 1.8, 0, 0.72, CONCRETE_D, { roofBorder: true });
       K.windows('left', 0.5, 1.7, 1.8, 0.3, 3);
       K.ac(0.22, 0.6, 0.72, 0.1);
       // grand hangar d'assemblage, faîte vers le quai sud
+      part(5.0);
       K.gable(0.3, 0.1, 2.9, 2.1, 0.95, 1.5, shade(STEEL, -0.02), '#57604f', 'v');
       // cheminée d'atelier : elle PERCE le toit (base sous la pente, embase visible)
       K.cyl(2.6, 0.35, 0.11, 1.0, 2.0, '#6d6a60', { band: HAZARD, bandAt: 0.2 });
@@ -1104,11 +1310,17 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       K.teamBand('right', 0.2, 2.0, 2.9, 0.8, team);
       K.windows('right', 0.3, 1.0, 2.9, 0.45, 2);
       K.ladder('right', 1.55, 2.9, 0, 0.95);
-      // grande porte de sortie des véhicules (mur gauche du hangar) + lampes
+      // grande porte de sortie des véhicules (mur gauche du hangar) : baie
+      // sombre baked OUVERTE ; le PANNEAU roulant animé est dessiné au runtime
       K.door('left', 0.85, 2.2, 2.1, 0.82, team, 0.2);
       door = { u: 1.5, v: 2.35 };
+      exitDoor = { side: 'left', a0: 0.85, a1: 2.2, fixed: 2.1, h: 0.82 };
+      exitDoorKey = curKey;
+      part(3.0);
       K.lamp(0.6, 2.25, 0.65);
+      part(4.9);
       K.lamp(2.5, 2.25, 0.65);
+      part(5.45);
       K.crates(2.7, 2.55, 2, team);
       break;
     }
@@ -1117,15 +1329,23 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       G.slab(0, 0, 3, 3);
       G.shadow(0.05, 0.05, 2.95, 2.95, 1.8);
       G.pad(0.35, 2.75, 1.5, 2.98, 'rgba(56,58,54,0.85)', 'rgba(200,200,190,0.3)');
-      // ---- structure, arrière → avant
-      // jambe ARRIÈRE du portique (nord, hors toiture) — avant les travées :
-      // elle disparaît derrière les toits, comme dans la réalité
+      // ---- structure en parts
+      // jambe ARRIÈRE du portique (nord, hors toiture)
+      part(0.6);
       c.strokeStyle = STEEL_D; c.lineWidth = 2.2;
       c.beginPath(); c.moveTo(K.lx(0.5, 0.04), K.ly(0.5, 0.04, 1.7)); c.lineTo(K.lx(0.5, 0.04), K.ly(0.5, 0.04, 0)); c.stroke();
-      // double travée parallèle
+      // travée nord
+      part(3.95);
       K.gable(0.1, 0.1, 2.6, 1.35, 0.9, 1.35, shade(STEEL, -0.08), '#4e574c', 'u');
+      // travée sud + PORTE DE SORTIE animée
+      part(5.35);
       K.gable(0.1, 1.5, 2.6, 2.75, 0.9, 1.35, shade(STEEL, -0.04), '#535c50', 'u');
-      // portique roulant : poutre au-dessus des travées, jambes HORS toiture
+      K.door('left', 0.5, 1.15, 2.75, 0.78, team, 0.18);
+      door = { u: 0.85, v: 2.85 };
+      exitDoor = { side: 'left', a0: 0.5, a1: 1.15, fixed: 2.75, h: 0.78 };
+      exitDoorKey = curKey;
+      // portique roulant : poutre au-dessus des travées, jambe avant HORS toiture
+      part(3.45);
       c.strokeStyle = shade(HAZARD, -0.15); c.lineWidth = 3.4;
       c.beginPath();
       c.moveTo(K.lx(0.5, 0.04), K.ly(0.5, 0.04, 1.7));
@@ -1139,18 +1359,20 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       c.strokeStyle = 'rgba(220,220,210,0.5)'; c.lineWidth = 1;
       c.beginPath(); c.moveTo(K.lx(0.5, 1.42), K.ly(0.5, 1.42, 1.7)); c.lineTo(K.lx(0.5, 1.42), K.ly(0.5, 1.42, 1.42)); c.stroke();
       // tour d'assemblage (est) + échelle + garde-corps
+      part(4.0);
       K.box(2.65, 0.15, 2.95, 1.0, 0, 2.05, shade(CONCRETE, -0.12), { roofBorder: true });
       K.teamBand('left', 2.65, 2.95, 1.0, 1.85, team);
       K.railing(2.95, 0.15, 2.95, 1.0, 2.05);
       K.ladder('left', 2.8, 1.0, 0, 2.05);
       overlays.push({ kind: 'beacon', u: 2.8, v: 0.2, h: 2.1, s: 0.9 });
       // cheminée d'atelier (sud-est, au sol)
+      part(5.55);
       K.cyl(2.8, 2.6, 0.12, 0, 1.5, '#6d6a60', { band: HAZARD, bandAt: 0.18 });
       overlays.push({ kind: 'smoke', u: 2.8, v: 2.6, h: 1.5, s: 0.8 });
-      // grande porte double travée + lampe + transfo d'alimentation
-      K.door('left', 0.5, 1.15, 2.75, 0.78, team, 0.18);
-      door = { u: 0.85, v: 2.85 };
+      // lampe + transfo d'alimentation (avant)
+      part(4.6);
       K.lamp(1.7, 2.85, 0.65);
+      part(5.3);
       K.transformer(2.3, 2.85, 0.13);
       K.cable(2.3, 2.85, 0.27, 2.6, 2.4, 0.85, 0.12);
       overlays.push({ kind: 'weld', u: 1.4, v: 0.7, h: 0.5, s: 1.2 });
@@ -1161,12 +1383,12 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       // ---- sol
       G.slab(0, 0, 2, 2);
       G.shadow(0.15, 0.2, 1.85, 1.8, 1.0);
-      // ---- structure, arrière → avant
-      // bunker technique bas
+      // ---- structure en parts
+      // bunker technique bas + pylône/parabole ancrés sur son toit
+      part(3.35);
       K.box(0.15, 0.5, 1.5, 1.8, 0, 0.62, CONCRETE_D, { roofBorder: true });
       K.windows('left', 0.35, 1.3, 1.8, 0.3, 2);
       K.teamBand('left', 0.15, 1.5, 1.8, 0.5, team);
-      // pylône + GRANDE parabole, ANCRÉS sur le toit du bunker
       K.mast(1.15, 0.95, 0.62, 1.32);
       K.dish(1.15, 0.95, 1.55, 0.62, '#a2a89f', 1.28);
       K.cable(1.15, 0.95, 1.3, 0.5, 0.7, 0.64, 0.12);
@@ -1176,14 +1398,16 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       K.door('left', 0.55, 0.95, 1.8, 0.4, team);
       door = { u: 0.75, v: 1.8 };
       K.stairs('left', 0.58, 1.8, 0.34, 0.1, 2);
-      // petit radôme d'appoint + groupe électrogène + fût
+      K.whip(0.35, 0.6, 0.62, 0.8);
+      // petit radôme d'appoint + groupe électrogène + fût (est)
+      part(3.4);
       c.fillStyle = shade('#9aa39c', 0.06);
       c.beginPath(); c.ellipse(K.lx(1.7, 1.45), K.ly(1.7, 1.45, 0.2), 9, 7, 0, Math.PI, 0); c.fill();
       c.strokeStyle = 'rgba(10,12,10,0.4)'; c.stroke();
       K.box(1.62, 0.5, 1.9, 0.8, 0, 0.24, STEEL_D);
       K.cyl(1.88, 0.95, 0.07, 0, 0.26, RUST);
       K.cable(1.76, 0.8, 0.22, 1.5, 1.0, 0.4, 0.1);
-      K.whip(0.35, 0.6, 0.62, 0.8);
+      part(2.1);
       K.lamp(0.18, 1.88, 0.5);
       break;
     }
@@ -1191,11 +1415,13 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       // ---- sol
       G.slab(0, 0, 2, 2);
       G.shadow(0.1, 0.1, 1.9, 1.9, 1.4);
-      // ---- structure, arrière → avant
-      // pylône d'antennes panneaux (fond nord-est) — avant le socle
+      // ---- structure en parts
+      // pylône d'antennes panneaux (fond nord-est)
+      part(2.65);
       K.box(1.62, 0.42, 1.9, 0.7, 0, 0.95, STEEL_D);
       K.fillP([[1.62, 0.72, 0.9], [1.9, 0.72, 0.9], [1.9, 0.72, 0.45], [1.62, 0.72, 0.45]], '#39423d', false);
       // socle + grand radôme (dôme = silhouette unique)
+      part(3.8);
       K.box(0.25, 0.5, 1.75, 1.9, 0, 0.72, shade(CONCRETE, -0.05), { roofBorder: true });
       K.teamBand('left', 0.25, 1.75, 1.9, 0.6, team);
       const dx = K.lx(1.0, 1.2), dy = K.ly(1.0, 1.2, 0.72);
@@ -1223,6 +1449,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       K.whip(0.4, 0.55, 0.72, 1.1);
       K.whip(0.62, 0.42, 0.72, 0.85);
       K.cable(1.76, 0.7, 0.92, 1.4, 1.0, 0.74, 0.14);
+      part(2.3);
       K.ac(0.45, 1.7, 0, 0.11);
       overlays.push({ kind: 'beacon', u: 1.0, v: 1.2, h: 1.85, s: 1 });
       break;
@@ -1241,16 +1468,17 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
         gc.beginPath(); gc.arc(G.lx(1.6 + i * 0.4, 0.68), G.ly(1.6 + i * 0.4, 0.68), 1.6, 0, Math.PI * 2); gc.fill();
         gc.beginPath(); gc.arc(G.lx(1.6 + i * 0.4, 1.32), G.ly(1.6 + i * 0.4, 1.32), 1.6, 0, Math.PI * 2); gc.fill();
       }
-      // ---- structure, arrière → avant
-      // hangar d'entretien (toit voûté)
+      // ---- structure en parts
+      // hangar d'entretien (toit voûté) + citerne kérosène accolée
+      part(2.5);
       K.gable(0.15, 0.15, 1.35, 1.05, 0.6, 0.98, shade(STEEL, -0.04), '#4f584e', 'u');
       K.door('left', 0.35, 1.1, 1.05, 0.5, team, 0.16);
       door = { u: 0.7, v: 1.05 };
       K.vent(1.15, 0.35, 0.9, 1.14);
-      // citerne kérosène + pompe contre le hangar
       K.tankH(0.3, 0.9, 1.28, 0.13, 0, '#7c6f52');
       K.pipe(0.9, 1.28, 0.14, 1.15, 1.18, 0.1, '#5f6860');
       // tour de contrôle : fût + cabine vitrée ÉTAYÉE (consoles sous l'encorbellement)
+      part(2.6);
       K.cyl(0.5, 1.55, 0.17, 0, 1.35, CONCRETE);
       c.strokeStyle = STEEL_D; c.lineWidth = 2;
       for (const [du, dv] of [[-0.2, -0.19], [0.2, -0.19], [-0.2, 0.21], [0.2, 0.21]] as const) {
@@ -1265,6 +1493,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       K.ladder('left', 0.6, 1.72, 0, 1.32);
       overlays.push({ kind: 'beacon', u: 0.5, v: 1.55, h: 1.78, s: 1 });
       // manche à air sur mât (angle est du tarmac)
+      part(4.55);
       K.whip(2.75, 1.75, 0, 0.6);
       c.fillStyle = paintTeam(team);
       c.beginPath();
@@ -1273,6 +1502,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       c.lineTo(K.lx(2.75, 1.75) + 11, K.ly(2.75, 1.75, 0.6) + 5);
       c.lineTo(K.lx(2.75, 1.75) + 2, K.ly(2.75, 1.75, 0.6) + 3);
       c.closePath(); c.fill();
+      part(3.4);
       K.lamp(1.5, 1.85, 0.6);
       break;
     }
@@ -1280,13 +1510,15 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       // ---- sol
       G.pad(0, 0, 3, 2, 'rgba(60,62,58,0.7)', 'rgba(210,210,200,0.3)');
       G.shadow(0.1, 0.15, 1.05, 1.85, 0.85);
-      // ---- structure, arrière → avant
+      // ---- structure en parts
       // hangar (fond ouest)
+      part(2.15);
       K.gable(0.12, 0.15, 1.1, 1.0, 0.55, 0.85, shade(STEEL, -0.06), '#4d564d', 'u');
       K.door('left', 0.3, 0.9, 1.0, 0.45, team, 0.14);
       door = { u: 0.6, v: 1.0 };
       K.vent(0.9, 0.32, 0.78, 1.0);
       // plateforme H surélevée + rampe d'accès depuis le tarmac
+      part(4.62);
       K.box(1.3, 0.2, 2.85, 1.75, 0, 0.14, '#4a4e48', { roof: '#3f443f' });
       K.fillP([[1.3, 0.55, 0.14], [1.3, 1.4, 0.14], [1.12, 1.4, 0], [1.12, 0.55, 0]], shade('#4a4e48', -0.08), false);
       const hx = K.lx(2.07, 0.97), hy = K.ly(2.07, 0.97, 0.14);
@@ -1305,11 +1537,15 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
         c.beginPath(); c.arc(K.lx(uu, vv), K.ly(uu, vv, 0.16), 1.7, 0, Math.PI * 2); c.fill();
       }
       // dépôt carburant : citerne + flexible vers la plateforme + extincteur
+      part(2.7);
       K.tankH(0.25, 0.95, 1.5, 0.16, 0, '#7c6f52');
       K.cable(0.95, 1.5, 0.18, 1.32, 1.3, 0.15, 0.1);
       K.cyl(1.14, 1.62, 0.05, 0, 0.18, '#8a3b30');
+      part(2.45);
       K.crates(0.35, 1.78, 2, team);
+      part(2.95);
       K.mast(1.15, 1.7, 0, 0.9, team);
+      part(4.85);
       K.lamp(2.9, 1.85, 0.55);
       break;
     }
@@ -1319,6 +1555,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       G.shadow(0.1, 0.15, 0.9, 0.9, 0.5);
       G.sandbags(0.5, 0.5, 0.44, Math.PI * 0.15, Math.PI * 1.05, 7);
       // ---- structure
+      part(1.5);
       K.cyl(0.5, 0.5, 0.4, 0, 0.42, CONCRETE_D);
       K.teamBand('left', 0.28, 0.72, 0.9, 0.3, team);
       // caisse de munitions contre le bunker
@@ -1332,6 +1569,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       G.slab(0.02, 0.02, 0.98, 0.98);
       G.shadow(0.1, 0.15, 0.92, 0.9, 0.55);
       // ---- structure : casemate angulaire (blindage apparent)
+      part(1.8);
       K.fillP([[0.1, 0.3, 0.5], [0.9, 0.3, 0.5], [0.98, 0.55, 0.28], [0.9, 0.9, 0], [0.1, 0.9, 0], [0.02, 0.55, 0.28]], shade('#4f574f', -0.05));
       K.fillP([[0.1, 0.3, 0.5], [0.9, 0.3, 0.5], [0.9, 0.34, 0.5], [0.1, 0.34, 0.5]], shade('#4f574f', 0.14), false);
       K.teamBand('left', 0.25, 0.75, 0.88, 0.16, team);
@@ -1346,6 +1584,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       G.slab(0.02, 0.02, 0.98, 0.98);
       G.shadow(0.12, 0.15, 0.9, 0.88, 0.55);
       // ---- structure : plateforme + antenne + coffre électrique
+      part(1.75);
       K.box(0.15, 0.15, 0.85, 0.85, 0, 0.4, '#565e58', { roofBorder: true });
       K.whip(0.22, 0.25, 0.4, 0.55);
       K.teamBand('right', 0.25, 0.75, 0.85, 0.28, team);
@@ -1359,14 +1598,17 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       // ---- sol
       G.slab(0, 0, 2, 2);
       G.shadow(0.12, 0.12, 1.88, 1.88, 1.1);
-      // ---- structure, arrière → avant
-      // caisses de matériel (fond nord-ouest, DERRIÈRE l'atelier)
+      // ---- structure en parts
+      // caisses de matériel (fond nord-ouest)
+      part(1.1);
       K.crates(0.35, 0.3, 2, team);
       // banc d'essai extérieur (nord-est) : moteur sur châssis
+      part(3.05);
       K.box(1.6, 0.6, 1.92, 1.1, 0, 0.3, STEEL_D);
       K.cyl(1.76, 0.85, 0.11, 0.3, 0.62, '#6d7268');
       overlays.push({ kind: 'weld', u: 1.76, v: 0.85, h: 0.4, s: 0.8 });
       // atelier d'études : bloc + shed vitré
+      part(3.5);
       K.box(0.15, 0.5, 1.5, 1.85, 0, 0.85, CONCRETE, { roofBorder: true });
       K.fillP([[0.15, 0.5, 0.85], [0.6, 0.5, 1.18], [0.6, 1.85, 1.18], [0.15, 1.85, 0.85]], shade(METAL_ROOF, 0.1));
       K.fillP([[0.6, 0.5, 1.18], [0.62, 0.5, 1.18], [0.62, 1.85, 1.18], [0.6, 1.85, 1.18]], 'rgba(240,240,230,0.2)', false);
@@ -1379,9 +1621,11 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       K.roofKit(0.7, 0.6, 1.4, 1.7, 0.85, 2);
       K.ac(1.3, 0.72, 0.85);
       // mât d'instrumentation + parabole ancrée + câble vers l'atelier
+      part(3.42);
       K.mast(1.75, 1.55, 0, 1.45);
       K.dish(1.75, 1.55, 1.5, 0.22, '#9aa39a', 1.42);
       K.cable(1.75, 1.55, 1.4, 1.5, 1.4, 0.87, 0.14);
+      part(2.15);
       K.lamp(0.16, 1.95, 0.5);
       break;
     }
@@ -1391,12 +1635,12 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       G.shadow(0.3, 0.3, 1.8, 1.7, 0.8);
       G.paint(0.15, 1.0, 1.85, 1.0, 'rgba(214,178,80,0.35)', 2);
       G.paint(0.15, 1.22, 1.85, 1.22, 'rgba(214,178,80,0.25)', 1.4);
-      // ---- structure, arrière → avant
+      // ---- structure en parts
       // conteneurs alignés (rangée nord)
+      part(1.55);
       K.box(0.2, 0.2, 0.95, 0.55, 0, 0.34, shade(paintTeam(team), -0.15));
+      part(2.45);
       K.box(1.1, 0.25, 1.8, 0.6, 0, 0.32, '#57605a');
-      K.box(0.25, 0.62, 0.9, 0.95, 0, 0.3, RUST);
-      K.box(0.3, 0.62, 0.85, 0.95, 0.3, 0.55, '#5d665e');
       // nervures de conteneur (cannelures verticales)
       c.strokeStyle = 'rgba(15,18,15,0.25)'; c.lineWidth = 1;
       for (let i = 1; i < 5; i++) {
@@ -1406,7 +1650,11 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
         c.lineTo(K.lx(uu, 0.6), K.ly(uu, 0.6, 0.02));
         c.stroke();
       }
+      part(1.9);
+      K.box(0.25, 0.62, 0.9, 0.95, 0, 0.3, RUST);
+      K.box(0.3, 0.62, 0.85, 0.95, 0.3, 0.55, '#5d665e');
       // grue portique au-dessus de l'allée peinte
+      part(3.1);
       c.strokeStyle = shade(HAZARD, -0.1); c.lineWidth = 3;
       c.beginPath();
       c.moveTo(K.lx(0.3, 1.28), K.ly(0.3, 1.28, 1.05));
@@ -1420,13 +1668,17 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       c.beginPath(); c.moveTo(K.lx(1.0, 1.28), K.ly(1.0, 1.28, 1.05)); c.lineTo(K.lx(1.0, 1.28), K.ly(1.0, 1.28, 0.4)); c.stroke();
       c.fillStyle = '#2e332e';
       c.fillRect(K.lx(1.0, 1.28) - 4, K.ly(1.0, 1.28, 0.42) - 3, 8, 6);
-      // citerne + cabane de gestion (avant) + détails
+      // citerne + caisses + cabane de gestion (avant)
+      part(2.75);
       K.tankH(0.25, 0.85, 1.72, 0.15, 0, '#6f6448');
+      part(2.95);
       K.crates(1.05, 1.65, 3, team);
+      part(3.85);
       K.box(1.35, 1.45, 1.9, 1.9, 0, 0.5, CANVAS_TENT, { roofBorder: true });
       K.windows('left', 1.45, 1.8, 1.9, 0.22, 1);
       K.ac(1.55, 1.35, 0.5, 0.09);
       door = { u: 1.6, v: 1.9 };
+      part(2.1);
       K.lamp(0.14, 1.9, 0.55);
       break;
     }
@@ -1434,9 +1686,10 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       // ---- sol
       G.slab(0, 0, 3, 3);
       G.shadow(0.1, 0.1, 2.9, 2.9, 1.6);
-      // ---- structure, arrière → avant
-      // réservoirs cryo verticaux (fond nord) — AVANT le bloc : leur pied
-      // disparaît derrière le bâtiment, ils dépassent au-dessus du toit
+      // ---- structure en parts
+      // réservoirs cryo verticaux (fond nord) : leur pied disparaît derrière
+      // le bloc, ils dépassent au-dessus du toit
+      part(2.35);
       K.cyl(0.5, 0.45, 0.2, 0, 1.35, '#8b9089');
       K.cyl(1.05, 0.35, 0.2, 0, 1.5, '#939890');
       K.cyl(1.6, 0.45, 0.2, 0, 1.35, '#8b9089');
@@ -1446,6 +1699,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       K.pipe(1.05, 0.6, 1.0, 1.05, 0.95, 0.9);
       overlays.push({ kind: 'steam', u: 1.05, v: 0.35, h: 1.5, s: 0.6 });
       // bloc principal
+      part(4.65);
       K.box(0.15, 0.9, 2.1, 2.55, 0, 1.15, shade(CONCRETE, -0.02), { roofBorder: true });
       K.windows('left', 0.4, 1.9, 2.55, 0.72, 4);
       K.windows('right', 1.1, 2.4, 2.1, 0.72, 3);
@@ -1455,6 +1709,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       K.ac(1.85, 1.1, 1.15);
       K.vent(0.45, 2.3, 1.15, 1.5);
       // dôme d'expérimentation sur socle (est) + câble vers le bloc
+      part(4.15);
       const dx = K.lx(2.35, 1.15), dy = K.ly(2.35, 1.15, 0.4);
       K.cyl(2.35, 1.15, 0.5, 0, 0.4, shade(CONCRETE, -0.1));
       const R = 0.48 * ISO_S;
@@ -1470,6 +1725,7 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
       K.cable(2.35, 1.6, 0.4, 2.1, 1.9, 0.6, 0.12);
       overlays.push({ kind: 'beacon', u: 2.35, v: 1.15, h: 1.35, s: 0.9 });
       // porte + escalier + lampe (avant)
+      part(5.05);
       K.door('left', 1.0, 1.45, 2.55, 0.5, team);
       door = { u: 1.2, v: 2.55 };
       K.stairs('left', 1.05, 2.55, 0.36, 0.12, 2);
@@ -1478,13 +1734,23 @@ export function bakeIsoBuilding(type: BuildingTypeId, team: string): IsoBuilding
     }
   }
 
-  K.grime(0.12);
+  finishPart();
+  // composite pour le chantier, le flash d'achèvement et les icônes :
+  // toutes les parts recomposées dans l'ordre de profondeur
+  const comp = cv.getContext('2d')!;
+  for (const p of [...parts].sort((a, b) => a.key - b.key)) comp.drawImage(p.canvas, p.ox, p.oy);
+  let topPart = 0;
+  for (let i = 1; i < parts.length; i++) if (parts[i].key > parts[topPart].key) topPart = i;
+  const doorIdx = exitDoorKey !== undefined ? parts.findIndex(p => p.key === exitDoorKey) : -1;
 
   return {
     canvas: cv,
+    parts,
+    topPart,
+    exitDoorPart: doorIdx >= 0 ? doorIdx : undefined,
     ground: gcv,
     ax: K.lx(w / 2, h / 2),
     ay: K.ly(w / 2, h / 2, 0),
-    turret, turretMount, overlays, door,
+    turret, turretMount, overlays, door, exitDoor,
   };
 }

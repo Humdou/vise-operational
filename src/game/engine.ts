@@ -64,6 +64,11 @@ export interface Unit {
   transportedBy?: number;
   // animation de sortie de bâtiment — purement visuel, jamais lu par le gameplay
   exitFx?: { x: number; y: number; t0: number };
+  // sortie de PRODUCTION pilotée par le moteur (usines/casernes) : la porte
+  // s'ouvre (délai t0+0.35), l'unité roule depuis l'intérieur via le point de
+  // passage w puis jusqu'à (x,y) à sa vitesse réelle ; les ordres reçus
+  // pendant la sortie sont mémorisés dans `order` et appliqués à l'arrivée.
+  exiting?: { x: number; y: number; w?: { x: number; y: number }; bId: number; t0: number; order?: Order };
   // correction post-snapshot (client multijoueur) : écart restant entre la
   // position affichée et la position autoritative, résorbé en ~200 ms pour
   // éviter les téléportations à chaque snapshot. x/y/dir incluent déjà cet
@@ -95,6 +100,7 @@ export interface Snapshot {
     i: number; o: number; ty: UnitTypeId; x: number; y: number; d: number; h: number;
     or: Order; cg: number; cv: number; ul: number; cd: number; ei: number; eb: boolean;
     as?: 'pad' | 'fly' | 'return'; pb?: number; am?: number; rt?: number; ps?: number[]; tb?: number;
+    xg?: { x: number; y: number; w?: { x: number; y: number }; b: number; t: number; or?: Order };
   }[];
   buildings: {
     i: number; o: number; ty: BuildingTypeId; tx: number; ty2: number; h: number;
@@ -195,6 +201,18 @@ export interface Player {
 
 const FOG_INTERVAL = 0.25;
 const ACQUIRE_BONUS = 1.6;    // portée d'acquisition au-delà de la portée d'arme
+
+// Portes de PRODUCTION (coordonnées du bake : 0..w / 0..h, monde = t−0.5+u/v).
+// Les unités produites par ces bâtiments SORTENT physiquement par la porte :
+// spawn à l'intérieur, la porte s'ouvre, l'unité roule/marche dehors à sa
+// vitesse réelle, puis le joueur récupère la main.
+const EXIT_DOORS: Partial<Record<BuildingTypeId, { u: number; v: number }>> = {
+  factory: { u: 1.5, v: 2.1 },
+  factory2: { u: 0.82, v: 2.75 },
+  barracks: { u: 0.95, v: 1.2 },
+  barracks2: { u: 0.82, v: 1.9 },
+};
+const EXIT_DOOR_DELAY = 0.35;   // temps d'ouverture de la porte avant de rouler
 
 function emptyStats(): PlayerStats {
   return {
@@ -384,6 +402,11 @@ export class Game {
         as: u.airState, pb: u.padBuildingId, am: u.ammo, rt: u.rearmT !== undefined ? r2(u.rearmT) : undefined,
         ps: u.passengers && u.passengers.length ? [...u.passengers] : undefined,
         tb: u.transportedBy,
+        xg: u.exiting ? {
+          x: r2(u.exiting.x), y: r2(u.exiting.y),
+          w: u.exiting.w ? { x: r2(u.exiting.w.x), y: r2(u.exiting.w.y) } : undefined,
+          b: u.exiting.bId, t: r2(u.exiting.t0), or: u.exiting.order,
+        } : undefined,
       })),
       buildings: this.buildings.filter(b => !b.dead).map(b => ({
         i: b.id, o: b.owner, ty: b.type, tx: b.tx, ty2: b.ty, h: r2(b.hp),
@@ -427,6 +450,11 @@ export class Game {
         airState: us.as, padBuildingId: us.pb, ammo: us.am, rearmT: us.rt,
         passengers: us.ps ? [...us.ps] : undefined,
         transportedBy: us.tb,
+        exiting: us.xg ? {
+          x: us.xg.x, y: us.xg.y,
+          w: us.xg.w ? { ...us.xg.w } : undefined,
+          bId: us.xg.b, t0: us.xg.t, order: us.xg.or,
+        } : undefined,
       };
       const old = prevById.get(us.i);
       if (old && old.type === us.ty) {
@@ -667,6 +695,15 @@ export class Game {
 
   // ----------------------------------------------------------------- ordres
 
+  /** Unité en train de SORTIR d'un bâtiment : l'ordre est mémorisé et sera
+   *  appliqué dès qu'elle a fini de sortir (le joueur ne perd pas son clic,
+   *  mais l'unité termine d'abord sa sortie). */
+  private deferExitOrder(u: Unit, order: Order): boolean {
+    if (!u.exiting) return false;
+    u.exiting.order = order;
+    return true;
+  }
+
   cmdMove(ids: number[], x: number, y: number, attackMove = false) {
     const spots = this.formationSpots(x, y, ids.length);
     let i = 0;
@@ -678,7 +715,9 @@ export class Game {
       if (u.airState) { this.airOrder(u, { kind: attackMove ? 'attackmove' : 'move', x: s.x, y: s.y }); continue; }
       if (u.type === 'harvester' && attackMove) continue;
       const canFight = !!UNITS[u.type].weapon || u.type === 'kamikaze';
-      u.order = { kind: attackMove && canFight ? 'attackmove' : 'move', x: s.x, y: s.y };
+      const ord: Order = { kind: attackMove && canFight ? 'attackmove' : 'move', x: s.x, y: s.y };
+      if (this.deferExitOrder(u, ord)) continue;
+      u.order = ord;
       u.engageId = 0;
       u.path = null;
       u.unloadT = 0;
@@ -703,6 +742,7 @@ export class Game {
       }
       if (!UNITS[u.type].weapon && u.type !== 'kamikaze') continue;
       if (u.airState) { this.airOrder(u, { kind: 'attack', targetId, targetIsBuilding }); continue; }
+      if (this.deferExitOrder(u, { kind: 'attack', targetId, targetIsBuilding })) continue;
       u.order = { kind: 'attack', targetId, targetIsBuilding };
       u.engageId = targetId;
       u.engageIsBuilding = targetIsBuilding;
@@ -715,6 +755,7 @@ export class Game {
       const u = this.unitById.get(id);
       if (!u || u.dead || u.type !== 'harvester') continue;
       if (u.transportedBy) continue;
+      if (this.deferExitOrder(u, { kind: 'harvest', nodeId })) continue;
       u.order = { kind: 'harvest', nodeId };
       u.path = null;
       u.unloadT = 0;
@@ -726,6 +767,7 @@ export class Game {
       const u = this.unitById.get(id);
       if (!u || u.dead || u.type !== 'engineer') continue;
       if (u.transportedBy) continue;
+      if (this.deferExitOrder(u, { kind: 'repair', targetId, targetIsBuilding })) continue;
       u.order = { kind: 'repair', targetId, targetIsBuilding };
       u.path = null;
     }
@@ -741,6 +783,7 @@ export class Game {
       if (!u || u.dead || u.airState) continue;
       if (u.transportedBy) continue;
       if (u.owner !== target.owner) continue;
+      if (this.deferExitOrder(u, { kind: 'escort', targetId })) continue;
       u.order = { kind: 'escort', targetId };
       u.engageId = 0;
       u.path = null;
@@ -753,6 +796,7 @@ export class Game {
       if (!u || u.dead) continue;
       if (u.transportedBy) continue;
       if (u.airState && u.airState !== 'pad') { this.airOrder(u, { kind: 'move' }); continue; }
+      if (this.deferExitOrder(u, { kind: 'idle' })) continue;
       u.order = { kind: 'idle' };
       u.path = null;
       u.engageId = 0;
@@ -767,6 +811,7 @@ export class Game {
       const u = this.unitById.get(id);
       if (!u || u.dead || u.id === carrier.id || u.owner !== carrier.owner || u.transportedBy) continue;
       if (!this.canCarryUnit(carrier, u)) continue;
+      if (this.deferExitOrder(u, { kind: 'load', targetId: carrier.id })) continue;
       u.order = { kind: 'load', targetId: carrier.id };
       u.path = null;
       u.engageId = 0;
@@ -1156,20 +1201,47 @@ export class Game {
               u.exitFx = { x: c.x, y: c.y, t0: this.time };
               b.doorT = this.time;
             } else {
-              const spot = this.findFreeTileNear(b.tx + b.w / 2, b.ty + b.h + 0.5);
-              const u = this.spawnUnit(b.owner, item.unit, spot.x, spot.y);
-              const bc = this.buildingCenter(b);
-              u.exitFx = { x: bc.x, y: bc.y, t0: this.time };
-              b.doorT = this.time;
-              if (item.unit === 'harvester') {
-                const node = this.bestNodeFor(b.owner, u.x, u.y);
-                if (node) u.order = { kind: 'harvest', nodeId: node.id };
-              } else if (b.rally) {
-                u.order = {
-                  kind: def.weapon ? 'attackmove' : 'move',
-                  x: b.rally.x + (this.rng() - 0.5) * 2,
-                  y: b.rally.y + (this.rng() - 0.5) * 2,
+              const exit = EXIT_DOORS[b.type];
+              if (exit) {
+                // VRAIE sortie : spawn À L'INTÉRIEUR, porte, roulage dehors ;
+                // l'ordre initial (récolte/ralliement) est appliqué à l'arrivée
+                const doorX = b.tx - 0.5 + exit.u;
+                const doorY = b.ty - 0.5 + exit.v;
+                const spot = this.findFreeTileNear(doorX, b.ty + b.h + 0.3);
+                const u = this.spawnUnit(b.owner, item.unit, doorX, doorY - 0.55);
+                u.dir = Math.PI / 4;   // face à la porte (sud-écran)
+                u.exiting = {
+                  x: spot.x, y: spot.y,
+                  w: { x: doorX, y: b.ty + b.h - 0.1 },
+                  bId: b.id, t0: this.time,
                 };
+                b.doorT = this.time;
+                if (item.unit === 'harvester') {
+                  const node = this.bestNodeFor(b.owner, spot.x, spot.y);
+                  if (node) u.exiting.order = { kind: 'harvest', nodeId: node.id };
+                } else if (b.rally) {
+                  u.exiting.order = {
+                    kind: def.weapon ? 'attackmove' : 'move',
+                    x: b.rally.x + (this.rng() - 0.5) * 2,
+                    y: b.rally.y + (this.rng() - 0.5) * 2,
+                  };
+                }
+              } else {
+                const spot = this.findFreeTileNear(b.tx + b.w / 2, b.ty + b.h + 0.5);
+                const u = this.spawnUnit(b.owner, item.unit, spot.x, spot.y);
+                const bc = this.buildingCenter(b);
+                u.exitFx = { x: bc.x, y: bc.y, t0: this.time };
+                b.doorT = this.time;
+                if (item.unit === 'harvester') {
+                  const node = this.bestNodeFor(b.owner, u.x, u.y);
+                  if (node) u.order = { kind: 'harvest', nodeId: node.id };
+                } else if (b.rally) {
+                  u.order = {
+                    kind: def.weapon ? 'attackmove' : 'move',
+                    x: b.rally.x + (this.rng() - 0.5) * 2,
+                    y: b.rally.y + (this.rng() - 0.5) * 2,
+                  };
+                }
               }
             }
             this.events.push({ type: 'trained', owner: b.owner, unit: item.unit });
@@ -1199,11 +1271,38 @@ export class Game {
 
   private scratch: Unit[] = [];
 
+  // Sortie de production : la porte s'ouvre (délai), puis l'unité roule en
+  // ligne droite (intérieur → seuil → place libre) à sa vitesse réelle, sans
+  // pathfinding ni ciblage — elle est « dans l'emprise » de son bâtiment.
+  // À l'arrivée, l'ordre mémorisé (ralliement, récolte, clic du joueur
+  // pendant la sortie) est appliqué et le contrôle est rendu.
+  private updateExiting(u: Unit, dt: number) {
+    const e = u.exiting!;
+    if (this.time - e.t0 < EXIT_DOOR_DELAY) return;
+    const def = UNITS[u.type];
+    const tgt = e.w ?? e;
+    const dx = tgt.x - u.x, dy = tgt.y - u.y;
+    const d = Math.hypot(dx, dy);
+    const step = def.speed * dt;
+    if (d > 0.001) u.dir = Math.atan2(dy, dx);
+    if (d <= step + 0.02) {
+      u.x = tgt.x; u.y = tgt.y;
+      if (e.w) { e.w = undefined; return; }
+      u.order = e.order ?? { kind: 'idle' };
+      u.exiting = undefined;
+      u.path = null;
+    } else {
+      u.x += (dx / d) * step;
+      u.y += (dy / d) * step;
+    }
+  }
+
   private updateUnits(dt: number) {
     for (const u of this.units) {
       if (u.dead) continue;
       if (u.transportedBy) continue;
       if (u.cd > 0) u.cd -= dt;
+      if (u.exiting) { this.updateExiting(u, dt); continue; }
       if (u.airState) { this.updateAircraft(u, dt); continue; }
       const def = UNITS[u.type];
 
